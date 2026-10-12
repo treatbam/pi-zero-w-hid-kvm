@@ -1,0 +1,1 @@
+# Intentionally empty: server uses only the Python 3 stdlib (python3 ships with Raspberry Pi OS Lite).

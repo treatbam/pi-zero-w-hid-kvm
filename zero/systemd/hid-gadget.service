@@ -1,0 +1,11 @@
+[Unit]
+Description=USB HID composite gadget (keyboard+mouse)
+Wants=systemd-modules-load.service
+After=systemd-modules-load.service sys-kernel-config.mount
+Requires=sys-kernel-config.mount
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /opt/pi-zero-w-hid-kvm/zero/gadget/hid-gadget.sh
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=HID KVM web console (port 8080)
+After=hid-gadget.service network-online.target
+Wants=network-online.target
+Requires=hid-gadget.service
+[Service]
+# Runs as root for simplicity (writes /dev/hidg*). TODO: dedicated user + udev rule.
+ExecStart=/usr/bin/python3 /opt/pi-zero-w-hid-kvm/zero/web/server.py --port 8080
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target

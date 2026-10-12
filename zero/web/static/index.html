@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pi Zero W HID KVM</title><style>
+body{font-family:sans-serif;margin:8px;background:#111;color:#eee}button{margin:2px;padding:8px;min-width:36px}
+#pad{width:100%;height:260px;background:#333;border-radius:8px;touch-action:none;margin:8px 0}
+#st{font-size:13px}.on{color:#4c4}.off{color:#c44}</style></head><body>
+<div id="st">status: …</div>
+<div id="pad"></div>
+<button data-b="1">Left</button><button data-b="4">Middle</button><button data-b="2">Right</button>
+<button onclick="m({wheel:1})">Scroll ↑</button><button onclick="m({wheel:-1})">Scroll ↓</button>
+<p><input id="txt" placeholder="type text…" style="width:60%"><button onclick="typeTxt()">Send</button></p>
+<div id="kb"></div>
+<p><button onclick="post('/api/macro',{name:'ctrl_alt_del'})">Ctrl+Alt+Del</button>
+<button onclick="post('/api/macro',{name:'alt_tab'})">Alt+Tab</button>
+<button onclick="post('/api/macro',{name:'win_l'})">Win+L</button>
+Mods: <label><input type=checkbox id=ctrl>Ctrl</label><label><input type=checkbox id=alt>Alt</label>
+<label><input type=checkbox id=shift>Shift</label><label><input type=checkbox id=gui>Win</label></p>
+<script src="app.js"></script></body></html>
