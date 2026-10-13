@@ -60,7 +60,8 @@ SemaphoreHandle_t gLock;
 QueueHandle_t gMacroQ;               // const char* macro names
 volatile bool gRefresh = false;
 volatile int  gLastMacroCode = 0;
-volatile bool gMacroDone = false;   // set by net task when a macro POST finishes
+volatile bool gMacroDone = false;
+bool gMacroBusy = false;             // UI-side: a macro is queued or in flight   // set by net task when a macro POST finishes
 
 static const char* MACROS[]      = {"ctrl_alt_del", "win_l", "alt_tab"};
 static const char* MACRO_LABEL[] = {"Ctrl+Alt+Del", "Win+L (lock)", "Alt+Tab"};
@@ -269,7 +270,8 @@ void doSelect(Ev e) {
   if (e == EV_DOUBLE) { gRefresh = true; flash("refreshing"); }
   else if (e == EV_LONG && inMenu) {
     const char* m = MACROS[menuSel];
-    if (xQueueSend(gMacroQ, &m, 0) == pdTRUE) flash(String("sending ") + MACRO_LABEL[menuSel] + "...");
+    if (gMacroBusy) { flash("still sending..."); return; }   // one macro in flight at a time
+    if (xQueueSend(gMacroQ, &m, 0) == pdTRUE) gMacroBusy = true, flash(String("sending ") + MACRO_LABEL[menuSel] + "...");
     else flash("busy, try again");
   }
   else if (e == EV_SHORT && !inMenu) go(page, true, 1);
@@ -308,7 +310,7 @@ void setup() {
     tft.setCursor(6, 50); tft.print("no RAM for UI"); Serial.println("framebuffer alloc failed");
     for (;;) delay(1000);
   }
-  gLock = xSemaphoreCreateMutex(); gMacroQ = xQueueCreate(4, sizeof(const char*));
+  gLock = xSemaphoreCreateMutex(); gMacroQ = xQueueCreate(1, sizeof(const char*));
   WiFi.mode(WIFI_STA); WiFi.setAutoReconnect(true); WiFi.begin(KVM_WIFI_SSID, KVM_WIFI_PASS);
   xTaskCreatePinnedToCore(netTask, "net", 8192, nullptr, 1, nullptr, 0);   // UI loop stays on core 1
 }
@@ -316,7 +318,7 @@ void setup() {
 void loop() {
   uint32_t now = millis();
   if (gMacroDone) {
-    gMacroDone = false; int c = gLastMacroCode;
+    gMacroDone = false; gMacroBusy = false; int c = gLastMacroCode;
     flash(c == 200 ? "sent OK" : c == 0 ? "not sent: Wi-Fi down" : c == 409 ? "not sent: no host"
           : c == 503 ? "not sent: HID busy" : c < 0 ? "not sent: Zero unreachable" : String("not sent: HTTP ") + c);
   }
