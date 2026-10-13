@@ -60,8 +60,8 @@ SemaphoreHandle_t gLock;
 QueueHandle_t gMacroQ;               // const char* macro names
 volatile bool gRefresh = false;
 volatile int  gLastMacroCode = 0;
-volatile bool gMacroDone = false;
-bool gMacroBusy = false;             // UI-side: a macro is queued or in flight   // set by net task when a macro POST finishes
+volatile bool gMacroDone = false;   // set by net task when a macro POST finishes
+bool gMacroBusy = false;            // UI-side: a macro is queued or in flight
 
 static const char* MACROS[]      = {"ctrl_alt_del", "win_l", "alt_tab"};
 static const char* MACRO_LABEL[] = {"Ctrl+Alt+Del", "Win+L (lock)", "Alt+Tab"};

@@ -28,7 +28,7 @@ then set `KVM_HOST` to the Zero's LAN IP; not covered here.)
 # Lite may need: sudo apt install -y rsync
 #   rsync -a pi-zero-w-hid-kvm/ pi@<zero>:~/pi-zero-w-hid-kvm/ && ssh pi@<zero>
 cd ~/pi-zero-w-hid-kvm
-sudo bash zero/install.sh    # ensures [all] dtoverlay=dwc2, dwc2+libcomposite modules, installs services
+sudo bash zero/install.sh    # ensures [all] dtoverlay=dwc2 (accepts options; new installs use dr_mode=peripheral), dwc2+libcomposite modules, installs services
 sudo reboot
 ```
 Access point (Bookworm / NetworkManager) — note this takes over wlan0, do it from console/serial:
