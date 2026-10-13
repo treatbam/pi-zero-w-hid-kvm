@@ -2,7 +2,7 @@
 <title>Pi Zero W HID KVM</title><style>
 body{font-family:sans-serif;margin:8px;background:#111;color:#eee}button{margin:2px;padding:8px;min-width:36px}
 #pad{width:100%;height:260px;background:#333;border-radius:8px;touch-action:none;margin:8px 0}
-#st{font-size:13px}.on{color:#4c4}.off{color:#c44}</style></head><body>
+#st{font-size:13px}.on{color:#4c4}.off{color:#c44}.danger{background:#622;color:#fff}.hw{opacity:.5}fieldset{border:1px solid #444}</style></head><body>
 <div id="st">status: …</div>
 <div id="pad"></div>
 <button data-b="1">Left</button><button data-b="4">Middle</button><button data-b="2">Right</button>
@@ -14,4 +14,14 @@ body{font-family:sans-serif;margin:8px;background:#111;color:#eee}button{margin:
 <button onclick="post('/api/macro',{name:'win_l'})">Win+L</button>
 Mods: <label><input type=checkbox id=ctrl>Ctrl</label><label><input type=checkbox id=alt>Alt</label>
 <label><input type=checkbox id=shift>Shift</label><label><input type=checkbox id=gui>Win</label></p>
+<fieldset><legend>Power</legend>
+Host: <button onclick="power('host','power','Shut down host')">Shut down</button>
+<button onclick="power('host','sleep','Sleep host')">Sleep</button>
+<button onclick="power('host','wake','Wake host')">Wake</button>
+<button class=hw onclick="power('host','hard_reset','Hard reset host')">Hard reset</button>
+<button class=hw onclick="power('host','hard_power','Hard power host')">Hard power</button><br>
+Zero: <button class=danger onclick="power('zero','reboot','Reboot the Zero')">Reboot Zero</button>
+<button class=danger onclick="power('zero','shutdown','Shut down the Zero')">Shut down Zero</button>
+<button onclick="logout()">Change PIN</button>
+<div id="pwr" style="font-size:13px"></div></fieldset>
 <script src="app.js"></script></body></html>

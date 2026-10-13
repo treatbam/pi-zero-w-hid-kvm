@@ -7,11 +7,16 @@ API:
   POST /api/type   {"text":"hello"}
   POST /api/mouse  {"dx":0,"dy":0,"wheel":0,"buttons":0}
   POST /api/macro  {"name":"ctrl_alt_del"}
-POSTs require Content-Type: application/json and (if sent) a same-origin Origin header;
-this blocks simple cross-page form POSTs but is NOT auth.
-NO AUTH: anyone on the LAN/AP can type into the host. TODO: token or AP-only binding.
+  POST /api/auth   {}                          -> 200 if the PIN header is right (UI login check)
+  POST /api/power  {"target":"host","action":"power|sleep|wake|hard_reset|hard_power","confirm":true}
+                   {"target":"zero","action":"shutdown|reboot","confirm":true}
+Every POST needs Content-Type: application/json, a same-origin Origin (if sent), and the PIN
+in the X-KVM-PIN header. The PIN lives in /etc/pi-zero-w-hid-kvm/pin (made by install.sh).
+A custom header also forces a CORS preflight, so other web pages can't send these POSTs.
+5 wrong PINs from one address locks that address out for 60 s.
+GET /api/status stays open (read-only; the GEEK and the console poll it).
 """
-import argparse, json, os, socket, threading
+import argparse, hmac, json, os, socket, subprocess, threading, time
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import hid
 
@@ -22,6 +27,26 @@ MACROS = {"ctrl_alt_del": lambda: hid.key_combo(["delete"], ["ctrl", "alt"]),
 LOCK = threading.Lock()  # serialize writes so reports don't interleave
 
 MAX_BODY = 8192
+PIN_FILE = os.environ.get("KVM_PIN_FILE", "/etc/pi-zero-w-hid-kvm/pin")
+FAILS = {}            # ip -> (count, first_fail_time)
+MAX_FAILS, LOCKOUT_S = 5, 60
+HOST_POWER = ("power", "sleep", "wake")          # soft: System Control keys over USB
+HOST_HARD = ("hard_reset", "hard_power")         # needs optocoupler wiring (not built yet)
+ZERO_POWER = {"shutdown": "poweroff", "reboot": "reboot"}
+
+def load_pin():
+    try: pin = open(PIN_FILE).read().strip()
+    except OSError: pin = ""
+    if not pin: raise SystemExit(f"no PIN in {PIN_FILE}; re-run install.sh (refusing to run without auth)")
+    return pin
+
+def zero_power(action):
+    """Run after the HTTP reply is sent. Root runs systemctl directly; a non-root service
+    needs the sudoers rule from the README (only these two commands, no password)."""
+    time.sleep(1)
+    cmd = ["systemctl", ZERO_POWER[action]]
+    if os.geteuid() != 0: cmd = ["sudo", "-n"] + cmd
+    subprocess.run(cmd, check=False)
 
 def _int(body, k, lo, hi):
     v = body.get(k, 0)
@@ -47,6 +72,14 @@ def validate(path, body):
         m = hid.MAX_MOVE
         return (_int(body, "dx", -m, m), _int(body, "dy", -m, m),
                 _int(body, "wheel", -127, 127), _int(body, "buttons", 0, 7))
+    if path == "/api/auth":
+        return ()
+    if path == "/api/power":
+        if body.get("confirm") is not True: raise ValueError("confirm must be true")
+        t, a = body.get("target"), body.get("action")
+        if t == "host" and a in HOST_POWER + HOST_HARD: return (t, a)
+        if t == "zero" and a in ZERO_POWER: return (t, a)
+        raise ValueError("unknown target/action")
     if path == "/api/macro":
         if body.get("name") not in MACROS: raise ValueError("unknown macro")
         return (body["name"],)
@@ -93,12 +126,24 @@ class H(SimpleHTTPRequestHandler):
         if not o: return True  # curl / same-origin GET-less clients
         return o.split("://", 1)[-1] == self.headers.get("Host", "")
 
+    def _pin_ok(self):
+        ip = self.client_address[0]; now = time.monotonic()
+        n, t0 = FAILS.get(ip, (0, now))
+        if n >= MAX_FAILS and now - t0 < LOCKOUT_S: return None      # locked out
+        if now - t0 >= LOCKOUT_S: n, t0 = 0, now
+        if hmac.compare_digest((self.headers.get("X-KVM-PIN") or "").encode(), PIN.encode()):
+            FAILS.pop(ip, None); return True
+        FAILS[ip] = (n + 1, t0 if n else now); return False
+
     def do_POST(self):
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if ctype != "application/json":
             return self._json(415, {"error": "Content-Type must be application/json"})
         if not self._origin_ok():
             return self._json(403, {"error": "cross-origin request refused"})
+        ok = self._pin_ok()
+        if ok is None: return self._json(429, {"error": "too many wrong PINs, wait a minute"})
+        if not ok: return self._json(401, {"error": "wrong or missing PIN"})
         try:
             n = int(self.headers.get("Content-Length", 0))
             if n < 0 or n > MAX_BODY: raise ValueError("bad length")
@@ -109,6 +154,14 @@ class H(SimpleHTTPRequestHandler):
             return self._json(404, {"error": "not found"})
         except (ValueError, TypeError) as e:  # JSONDecodeError is a ValueError
             return self._json(400, {"error": f"bad request: {e}"})
+        if self.path == "/api/auth": return self._json(200, {"ok": True})
+        if self.path == "/api/power":
+            target, action = args
+            if target == "zero":
+                threading.Thread(target=zero_power, args=(action,), daemon=True).start()
+                return self._json(202, {"ok": True, "note": f"Zero {action} in 1 s"})
+            if action in HOST_HARD:
+                return self._json(501, {"error": "hard power/reset needs the optocoupler wiring (not installed)"})
         if not hid.status()["host_connected"]:
             return self._json(409, {"error": "host not connected"})  # avoid blocking write
         try:
@@ -117,6 +170,7 @@ class H(SimpleHTTPRequestHandler):
                 elif self.path == "/api/type": hid.type_text(*args)
                 elif self.path == "/api/mouse": hid.mouse(*args)
                 elif self.path == "/api/macro": MACROS[args[0]]()
+                elif self.path == "/api/power": hid.system_key(args[1])
         except hid.HIDTimeout as e:
             return self._json(503, {"error": str(e)})
         except OSError as e:
@@ -128,5 +182,6 @@ class H(SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     p = argparse.ArgumentParser(); p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=8080); a = p.parse_args()
+    PIN = load_pin()
     print(f"KVM console on http://{a.host}:{a.port}")
     ThreadingHTTPServer((a.host, a.port), H).serve_forever()

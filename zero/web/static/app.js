@@ -1,5 +1,24 @@
 // Plain JS console: on-screen keys, mouse pad (drag=move, tap=click, 2-finger/wheel=scroll).
-const post = (u, b) => fetch(u, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(b)});
+// PIN is kept in this browser (localStorage) and sent on every POST as X-KVM-PIN.
+let pin = localStorage.getItem('kvmPin') || '';
+const askPin = msg => { const p = prompt(msg || 'Console PIN'); if (p !== null) { pin = p.trim(); localStorage.setItem('kvmPin', pin); } };
+async function post(u, b) {
+  const r = await fetch(u, {method: 'POST', headers: {'Content-Type': 'application/json', 'X-KVM-PIN': pin}, body: JSON.stringify(b)});
+  if (r.status === 401) { askPin('Wrong or missing PIN. Console PIN:'); }
+  else if (r.status === 429) { alert('Too many wrong PINs. Wait a minute.'); }
+  return r;
+}
+if (!pin) askPin();
+function logout() { pin = ''; localStorage.removeItem('kvmPin'); askPin(); }
+
+// Power: every action asks first; Zero actions need the word typed for extra safety.
+async function power(target, action, label) {
+  if (target === 'zero') { if (prompt(`Type "${action}" to ${label}`) !== action) return; }
+  else if (!confirm(`${label}?`)) return;
+  const r = await post('/api/power', {target, action, confirm: true});
+  const j = await r.json().catch(() => ({}));
+  document.getElementById('pwr').textContent = r.ok ? `${label}: sent` : `${label}: ${j.error || r.status}`;
+}
 let held = 0;                                      // currently held mouse buttons (for drag)
 // Ordered send queue: mouse reports go one at a time so a release can't overtake the last move.
 let q = Promise.resolve();

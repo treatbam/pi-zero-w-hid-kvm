@@ -16,6 +16,9 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
 #include "secrets.h"
+#ifndef KVM_PIN
+#error "add #define KVM_PIN \"<pin>\" to secrets.h (see secrets.example.h)"
+#endif
 
 // LCD pins: confirmed working on hardware (2026-10-13).
 #define LCD_MOSI 11
@@ -105,7 +108,7 @@ void netTask(void*) {
       int code = 0;                                   // 0 = not sent (Wi-Fi down)
       if (WiFi.status() == WL_CONNECTED) {
         HTTPClient http; http.setTimeout(1500); http.setConnectTimeout(1500); http.begin(BASE + "/api/macro");
-        http.addHeader("Content-Type", "application/json");
+        http.addHeader("Content-Type", "application/json"); http.addHeader("X-KVM-PIN", KVM_PIN);
         code = http.POST(String("{\"name\":\"") + m + "\"}"); http.end();
       }
       Serial.printf("macro %s -> %d\n", m, code);
@@ -366,6 +369,7 @@ void loop() {
   if (gMacroDone) {
     gMacroDone = false; gMacroBusy = false; int c = gLastMacroCode;
     flash(c == 200 ? "sent OK" : c == 0 ? "not sent: Wi-Fi down" : c == 409 ? "not sent: no host"
+          : c == 401 ? "not sent: wrong PIN" : c == 429 ? "not sent: PIN locked out"
           : c == 503 ? "not sent: HID busy" : c < 0 ? "not sent: Zero unreachable" : String("not sent: HTTP ") + c);
   }
   handle(bBack, bBack.poll(now)); handle(bUp, bUp.poll(now));

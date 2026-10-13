@@ -4,3 +4,4 @@
 #define KVM_WIFI_PASS "change-me-please"
 #define KVM_HOST      "192.168.4.1"   // Zero W AP address
 #define KVM_PORT      8080
+#define KVM_PIN       "00000000"      // console PIN printed by install.sh (/etc/pi-zero-w-hid-kvm/pin)

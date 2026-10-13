@@ -76,3 +76,16 @@ pio run -t upload && pio device monitor
 - Origin/Content-Type check reduces cross-page typing; it is not auth. Token auth deferred.
 - `type_text` holds the lock for the whole string (≤1000 chars, each write bounded by 0.5 s timeout).
 - GEEK LCD pins still unverified TODOs (not guessed).
+
+## Console PIN and power controls
+
+`install.sh` creates an 8-digit console PIN in `/etc/pi-zero-w-hid-kvm/pin` (root-only) and prints it at the end. The web console asks for it once and remembers it in that browser. Every POST needs it in the `X-KVM-PIN` header, and five wrong tries from one address locks that address out for 60 s. The server refuses to start without a PIN. Put the same PIN in `KVM_PIN` in `geek/src/secrets.h` so the GEEK's macros keep working.
+
+Power buttons (all ask for confirmation first):
+
+- **Host, soft:** Shut down, Sleep and Wake are sent as USB System Control keys from a third HID device (`/dev/hidg2`). The host's OS decides what "power" does, usually its power-button action. After updating, the host sees the device re-connect once.
+- **Host, hard:** Hard reset and Hard power need optocouplers wired to the motherboard headers. Until then they return "not installed".
+- **Zero:** Reboot and Shut down need you to type the action name. The service runs as root today. If it moves to its own user, allow just these two commands:
+  `kvm ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff, /usr/bin/systemctl reboot` in `/etc/sudoers.d/kvm-power`.
+
+To shut the Zero down by hand: `sudo poweroff`, then wait for the green LED to stop blinking before unplugging.
