@@ -7,7 +7,7 @@
 //   UP / DOWN : short = move;            long = jump to first / last
 //   SELECT    : short = open / choose;   double = refresh now;  long = send highlighted macro
 //   BOOT(back): short = back;            long = backlight on/off
-// Three-button mode (no SELECT pin): see THREE_BTN below.
+// Default is one-button mode (BOOT only); three-button mode when UP/DOWN are set. See below.
 // With BTN_UP/BTN_DOWN set to -1 the panel still works: SELECT short then cycles pages.
 #include <Arduino.h>
 #include <WiFi.h>
@@ -30,17 +30,22 @@
 #define BTN_BACK    0    // on-board BOOT button
 #endif
 #ifndef BTN_UP
-#define BTN_UP      6    // 3-pin header GPIO6 (confirmed on Waveshare docs)
+#define BTN_UP     -1    // set to 6 (3-pin header GPIO6) once the button is wired
 #endif
 #ifndef BTN_DOWN
-#define BTN_DOWN   -1    // TODO: second header pin, pending silkscreen check
+#define BTN_DOWN   -1    // second header pin, pending silkscreen check
 #endif
 #ifndef BTN_SELECT
 #define BTN_SELECT -1    // -1 = three-button mode (see below)
 #endif
 // Three-button mode (BTN_SELECT == -1): BOOT short = select, double = refresh, long = back;
 // UP long = backlight toggle. Four-button mode uses the mapping in the header comment.
-#define THREE_BTN (BTN_SELECT < 0)
+// One-button mode (UP and DOWN both unset, the default): everything on BOOT.
+//   short = next page / next item;  double = open menu / choose item;
+//   in menu, choosing a macro arms it for 4 s: long press sends, short cancels;
+//   very long (3 s) = backlight. Long on a page = refresh. Menu has a "Back" item.
+#define ONE_BTN   (BTN_UP < 0 && BTN_DOWN < 0)
+#define THREE_BTN (!ONE_BTN && BTN_SELECT < 0)
 
 static const int W = 240, H = 135;
 Adafruit_ST7789 tft(&SPI, LCD_CS, LCD_DC, LCD_RST);
@@ -66,6 +71,7 @@ bool gMacroBusy = false;            // UI-side: a macro is queued or in flight
 static const char* MACROS[]      = {"ctrl_alt_del", "win_l", "alt_tab"};
 static const char* MACRO_LABEL[] = {"Ctrl+Alt+Del", "Win+L (lock)", "Alt+Tab"};
 static const int   NMACRO = 3;
+static const int   NMENU = NMACRO + 1;   // last item = Back
 
 void pollOnce() {
   Status s; s.wifi = WiFi.status() == WL_CONNECTED; s.rssi = s.wifi ? WiFi.RSSI() : 0;
@@ -110,12 +116,13 @@ void netTask(void*) {
 }
 
 // ---------- buttons: debounced short / double / long ----------
-enum Ev { EV_NONE, EV_SHORT, EV_DOUBLE, EV_LONG };
+enum Ev { EV_NONE, EV_SHORT, EV_DOUBLE, EV_LONG, EV_VLONG };
 struct Btn {
-  Btn(int p, bool d) : pin(p), dbl(d) {}
-  int pin; bool dbl; bool down = false, raw = false, longFired = false, pendingShort = false;
+  // vlong: long fires on release (0.6-3 s) and EV_VLONG fires while held at 3 s.
+  Btn(int p, bool d, bool v = false) : pin(p), dbl(d), vlong(v) {}
+  int pin; bool dbl, vlong; bool down = false, raw = false, longFired = false, pendingShort = false;
   uint32_t edgeMs = 0, pressMs = 0, releaseMs = 0;
-  static const uint32_t DEB = 25, LONG = 600, DBL = 280;
+  static const uint32_t DEB = 25, LONG = 600, VLONG = 3000, DBL = 280;
   Ev poll(uint32_t now) {
     if (pin < 0) return EV_NONE;
     bool r = digitalRead(pin) == LOW;
@@ -124,17 +131,21 @@ struct Btn {
       down = r;
       if (down) { pressMs = now; longFired = false; }
       else if (!longFired) {
+        if (vlong && now - pressMs >= LONG) { pendingShort = false; return EV_LONG; }
         if (!dbl) return EV_SHORT;                     // no double: fire immediately
         if (pendingShort && now - releaseMs < DBL) { pendingShort = false; return EV_DOUBLE; }
         pendingShort = true; releaseMs = now;
       }
     }
-    if (down && !longFired && now - pressMs >= LONG) { longFired = true; pendingShort = false; return EV_LONG; }
+    if (down && !longFired) {
+      if (vlong && now - pressMs >= VLONG) { longFired = true; pendingShort = false; return EV_VLONG; }
+      if (!vlong && now - pressMs >= LONG) { longFired = true; pendingShort = false; return EV_LONG; }
+    }
     if (pendingShort && !down && now - releaseMs >= DBL) { pendingShort = false; return EV_SHORT; }
     return EV_NONE;
   }
 };
-Btn bBack{BTN_BACK, THREE_BTN}, bUp{BTN_UP, false}, bDown{BTN_DOWN, false}, bSel{BTN_SELECT, true};
+Btn bBack{BTN_BACK, THREE_BTN || ONE_BTN, ONE_BTN}, bUp{BTN_UP, false}, bDown{BTN_DOWN, false}, bSel{BTN_SELECT, true};
 
 // ---------- drawing helpers (shading = vertical gradients + bevels) ----------
 uint16_t rgb(uint8_t r, uint8_t g, uint8_t b) { return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3); }
@@ -167,7 +178,8 @@ String fmtUp(long s) { if (s < 0) return "--"; char b[16]; snprintf(b, sizeof b,
 enum Page { P_DASH, P_SYS, P_LINK, NPAGES };
 const char* PAGE_NAME[] = {"KVM", "ZERO SYS", "LINK"};
 int page = P_DASH, menuSel = 0; bool inMenu = false;
-uint32_t pressFxUntil = 0, toastUntil = 0; String toast;
+uint32_t pressFxUntil = 0, toastUntil = 0, armedUntil = 0; String toast;
+int armed = -1;                       // one-button mode: macro index awaiting confirm
 
 void header(const char* title, const Status& s) {
   vgrad(0, 0, W, 16, C_HI, C_PANEL); fb.drawFastHLine(0, 16, W, C_LO);
@@ -223,13 +235,19 @@ void drawLink(int ox, const Status& s) {
 }
 
 void drawMenu(int ox) {
-  txt(ox + 8, 22, THREE_BTN ? "BOOT x2 send, hold back" : "Hold SELECT to send", C_DIM);
-  for (int i = 0; i < NMACRO; i++) {
-    int y = 36 + i * 31; bool sel = i == menuSel;
-    panel(ox + 4 + (sel ? 0 : 6), y, 232 - (sel ? 0 : 12), 26, sel && millis() < pressFxUntil, sel ? rgb(40, 70, 120) : C_PANEL);
-    if (sel) fb.fillTriangle(ox + 10, y + 8, ox + 10, y + 18, ox + 16, y + 13, C_ACC);
-    txt(ox + 22, y + 6, MACRO_LABEL[i], sel ? C_TXT : C_DIM, 2);
+  bool arm = armed >= 0 && millis() < armedUntil;
+  const char* hint = ONE_BTN ? (arm ? "HOLD to send, tap to cancel" : "tap next, x2 choose")
+                   : THREE_BTN ? "BOOT x2 send, hold back" : "Hold SELECT to send";
+  txt(ox + 8, 20, hint, arm ? C_WARN : C_DIM);
+  // 4 rows (3 macros + Back) at 26 px; window scrolls if needed
+  for (int i = 0; i < NMENU; i++) {
+    int y = 31 + i * 26; bool sel = i == menuSel; bool isArmed = arm && i == armed;
+    uint16_t tint = isArmed ? rgb(120, 60, 20) : sel ? rgb(40, 70, 120) : C_PANEL;
+    panel(ox + 4 + (sel ? 0 : 6), y, 232 - (sel ? 0 : 12), 22, sel && millis() < pressFxUntil, tint);
+    if (sel) fb.fillTriangle(ox + 10, y + 6, ox + 10, y + 16, ox + 16, y + 11, isArmed ? C_WARN : C_ACC);
+    txt(ox + 22, y + 4, i < NMACRO ? MACRO_LABEL[i] : "< Back", sel ? C_TXT : C_DIM, 2);
   }
+  if (arm) { int w = (int)(232L * (armedUntil - millis()) / 4000); fb.fillRect(ox + 4, 132, w, 2, C_WARN); }
 }
 
 void render(int ox, int pg, bool menu, const Status& s) {
@@ -266,21 +284,47 @@ void go(int newPage, bool newMenu, int dir) {
 void flash(const String& m) { toast = m; toastUntil = millis() + 1200; }
 
 void toggleBacklight() { static bool bl = true; bl = !bl; digitalWrite(LCD_BL, bl); }
+void doBack() { armed = -1; if (inMenu) go(page, false, -1); }
+void sendMacro(int i) {
+  armed = -1;
+  if (gMacroBusy) { flash("still sending..."); return; }   // one macro in flight at a time
+  const char* m = MACROS[i];
+  if (xQueueSend(gMacroQ, &m, 0) == pdTRUE) gMacroBusy = true, flash(String("sending ") + MACRO_LABEL[i] + "...");
+  else flash("busy, try again");
+}
 void doSelect(Ev e) {
   if (e == EV_DOUBLE) { gRefresh = true; flash("refreshing"); }
-  else if (e == EV_LONG && inMenu) {
-    const char* m = MACROS[menuSel];
-    if (gMacroBusy) { flash("still sending..."); return; }   // one macro in flight at a time
-    if (xQueueSend(gMacroQ, &m, 0) == pdTRUE) gMacroBusy = true, flash(String("sending ") + MACRO_LABEL[menuSel] + "...");
-    else flash("busy, try again");
-  }
-  else if (e == EV_SHORT && !inMenu) go(page, true, 1);
+  else if (e == EV_LONG && inMenu) { if (menuSel == NMACRO) doBack(); else sendMacro(menuSel); }
+  else if (e == EV_SHORT) { if (!inMenu) go(page, true, 1); else if (menuSel == NMACRO) doBack(); }
 }
-void doBack() { if (inMenu) go(page, false, -1); }
+
+void handleOne(Ev e) {
+  bool arm = armed >= 0 && millis() < armedUntil;
+  if (e == EV_VLONG) { armed = -1; toggleBacklight(); return; }
+  if (!inMenu) {
+    if (e == EV_SHORT) go((page + 1) % NPAGES, false, 1);
+    else if (e == EV_DOUBLE) { menuSel = 0; armed = -1; go(page, true, 1); }
+    else if (e == EV_LONG) { gRefresh = true; flash("refreshing"); }
+    return;
+  }
+  if (arm) {                                   // confirm step
+    if (e == EV_LONG) sendMacro(armed);
+    else { armed = -1; flash("cancelled"); }
+    return;
+  }
+  armed = -1;
+  if (e == EV_SHORT) menuSel = (menuSel + 1) % NMENU;
+  else if (e == EV_DOUBLE) {
+    if (menuSel == NMACRO) doBack();
+    else { armed = menuSel; armedUntil = millis() + 4000; }
+  }
+  else if (e == EV_LONG) doBack();             // long without arming = back
+}
 
 void handle(Btn& b, Ev e) {
   if (e == EV_NONE) return;
   pressFxUntil = millis() + 90;
+  if (ONE_BTN) { if (&b == &bBack) handleOne(e); return; }
   if (&b == &bBack) {
     if (THREE_BTN) {
       // Outside menu: short = open macros, double = refresh. In menu: double = send
@@ -288,13 +332,14 @@ void handle(Btn& b, Ev e) {
       if (e == EV_LONG) doBack();
       else if (!inMenu) doSelect(e);
       else if (e == EV_DOUBLE) doSelect(EV_LONG);
+      else if (menuSel == NMACRO) doBack();
       else flash("double-press BOOT to send");
     } else if (e == EV_LONG) toggleBacklight();
     else doBack();
   } else if (&b == &bUp || &b == &bDown) {
     int d = &b == &bUp ? -1 : 1;
     if (THREE_BTN && &b == &bUp && e == EV_LONG) { toggleBacklight(); return; }
-    if (inMenu) menuSel = e == EV_LONG ? (d < 0 ? 0 : NMACRO - 1) : (menuSel + d + NMACRO) % NMACRO;
+    if (inMenu) menuSel = e == EV_LONG ? (d < 0 ? 0 : NMENU - 1) : (menuSel + d + NMENU) % NMENU;
     else go(e == EV_LONG ? (d < 0 ? 0 : NPAGES - 1) : (page + d + NPAGES) % NPAGES, false, d);
   } else if (&b == &bSel) doSelect(e);
 }
@@ -317,6 +362,7 @@ void setup() {
 
 void loop() {
   uint32_t now = millis();
+  if (armed >= 0 && now >= armedUntil) { armed = -1; flash("cancelled"); }
   if (gMacroDone) {
     gMacroDone = false; gMacroBusy = false; int c = gLastMacroCode;
     flash(c == 200 ? "sent OK" : c == 0 ? "not sent: Wi-Fi down" : c == 409 ? "not sent: no host"
@@ -325,7 +371,7 @@ void loop() {
   handle(bBack, bBack.poll(now)); handle(bUp, bUp.poll(now));
   handle(bDown, bDown.poll(now)); handle(bSel, bSel.poll(now));
   static uint32_t lastFrame = 0;
-  uint32_t period = (animDir || now < pressFxUntil) ? 16 : 250;          // ~60 fps while animating
+  uint32_t period = (animDir || now < pressFxUntil) ? 16 : armed >= 0 ? 50 : 250;          // ~60 fps while animating
   if (now - lastFrame >= period) { lastFrame = now; frame(); }
   delay(2);
 }
