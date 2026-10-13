@@ -7,6 +7,7 @@
 //   UP / DOWN : short = move;            long = jump to first / last
 //   SELECT    : short = open / choose;   double = refresh now;  long = send highlighted macro
 //   BOOT(back): short = back;            long = backlight on/off
+// Three-button mode (no SELECT pin): see THREE_BTN below.
 // With BTN_UP/BTN_DOWN set to -1 the panel still works: SELECT short then cycles pages.
 #include <Arduino.h>
 #include <WiFi.h>
@@ -35,8 +36,11 @@
 #define BTN_DOWN   -1    // TODO: second header pin, pending silkscreen check
 #endif
 #ifndef BTN_SELECT
-#define BTN_SELECT -1    // TODO: pending pin choice
+#define BTN_SELECT -1    // -1 = three-button mode (see below)
 #endif
+// Three-button mode (BTN_SELECT == -1): BOOT short = select, double = refresh, long = back;
+// UP long = backlight toggle. Four-button mode uses the mapping in the header comment.
+#define THREE_BTN (BTN_SELECT < 0)
 
 static const int W = 240, H = 135;
 Adafruit_ST7789 tft(&SPI, LCD_CS, LCD_DC, LCD_RST);
@@ -56,6 +60,7 @@ SemaphoreHandle_t gLock;
 QueueHandle_t gMacroQ;               // const char* macro names
 volatile bool gRefresh = false;
 volatile int  gLastMacroCode = 0;
+volatile bool gMacroDone = false;   // set by net task when a macro POST finishes
 
 static const char* MACROS[]      = {"ctrl_alt_del", "win_l", "alt_tab"};
 static const char* MACRO_LABEL[] = {"Ctrl+Alt+Del", "Win+L (lock)", "Alt+Tab"};
@@ -89,11 +94,15 @@ void netTask(void*) {
   uint32_t last = 0;
   for (;;) {
     const char* m;
-    if (xQueueReceive(gMacroQ, &m, pdMS_TO_TICKS(50)) == pdTRUE && WiFi.status() == WL_CONNECTED) {
-      HTTPClient http; http.setTimeout(1500); http.begin(BASE + "/api/macro");
-      http.addHeader("Content-Type", "application/json");
-      gLastMacroCode = http.POST(String("{\"name\":\"") + m + "\"}");
-      Serial.printf("macro %s -> %d\n", m, gLastMacroCode); http.end();
+    if (xQueueReceive(gMacroQ, &m, pdMS_TO_TICKS(50)) == pdTRUE) {
+      int code = 0;                                   // 0 = not sent (Wi-Fi down)
+      if (WiFi.status() == WL_CONNECTED) {
+        HTTPClient http; http.setTimeout(1500); http.setConnectTimeout(1500); http.begin(BASE + "/api/macro");
+        http.addHeader("Content-Type", "application/json");
+        code = http.POST(String("{\"name\":\"") + m + "\"}"); http.end();
+      }
+      Serial.printf("macro %s -> %d\n", m, code);
+      gLastMacroCode = code; gMacroDone = true;
     }
     if (gRefresh || millis() - last > 2000) { gRefresh = false; last = millis(); pollOnce(); }
   }
@@ -124,7 +133,7 @@ struct Btn {
     return EV_NONE;
   }
 };
-Btn bBack{BTN_BACK, false}, bUp{BTN_UP, false}, bDown{BTN_DOWN, false}, bSel{BTN_SELECT, true};
+Btn bBack{BTN_BACK, THREE_BTN}, bUp{BTN_UP, false}, bDown{BTN_DOWN, false}, bSel{BTN_SELECT, true};
 
 // ---------- drawing helpers (shading = vertical gradients + bevels) ----------
 uint16_t rgb(uint8_t r, uint8_t g, uint8_t b) { return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3); }
@@ -213,7 +222,7 @@ void drawLink(int ox, const Status& s) {
 }
 
 void drawMenu(int ox) {
-  txt(ox + 8, 22, "Hold SELECT to send", C_DIM);
+  txt(ox + 8, 22, THREE_BTN ? "BOOT x2 send, hold back" : "Hold SELECT to send", C_DIM);
   for (int i = 0; i < NMACRO; i++) {
     int y = 36 + i * 31; bool sel = i == menuSel;
     panel(ox + 4 + (sel ? 0 : 6), y, 232 - (sel ? 0 : 12), 26, sel && millis() < pressFxUntil, sel ? rgb(40, 70, 120) : C_PANEL);
@@ -255,23 +264,37 @@ void go(int newPage, bool newMenu, int dir) {
 }
 void flash(const String& m) { toast = m; toastUntil = millis() + 1200; }
 
+void toggleBacklight() { static bool bl = true; bl = !bl; digitalWrite(LCD_BL, bl); }
+void doSelect(Ev e) {
+  if (e == EV_DOUBLE) { gRefresh = true; flash("refreshing"); }
+  else if (e == EV_LONG && inMenu) {
+    const char* m = MACROS[menuSel];
+    if (xQueueSend(gMacroQ, &m, 0) == pdTRUE) flash(String("sending ") + MACRO_LABEL[menuSel] + "...");
+    else flash("busy, try again");
+  }
+  else if (e == EV_SHORT && !inMenu) go(page, true, 1);
+}
+void doBack() { if (inMenu) go(page, false, -1); }
+
 void handle(Btn& b, Ev e) {
   if (e == EV_NONE) return;
   pressFxUntil = millis() + 90;
-  bool hasNav = BTN_UP >= 0 || BTN_DOWN >= 0;
   if (&b == &bBack) {
-    if (e == EV_LONG) { static bool bl = true; bl = !bl; digitalWrite(LCD_BL, bl); }
-    else if (inMenu) go(page, false, -1);
-    else if (BTN_SELECT < 0) go((page + 1) % NPAGES, false, 1);          // minimal-button fallback
+    if (THREE_BTN) {
+      // Outside menu: short = open macros, double = refresh. In menu: double = send
+      // (deliberate, since long is back), short = hint only, long = back.
+      if (e == EV_LONG) doBack();
+      else if (!inMenu) doSelect(e);
+      else if (e == EV_DOUBLE) doSelect(EV_LONG);
+      else flash("double-press BOOT to send");
+    } else if (e == EV_LONG) toggleBacklight();
+    else doBack();
   } else if (&b == &bUp || &b == &bDown) {
     int d = &b == &bUp ? -1 : 1;
+    if (THREE_BTN && &b == &bUp && e == EV_LONG) { toggleBacklight(); return; }
     if (inMenu) menuSel = e == EV_LONG ? (d < 0 ? 0 : NMACRO - 1) : (menuSel + d + NMACRO) % NMACRO;
     else go(e == EV_LONG ? (d < 0 ? 0 : NPAGES - 1) : (page + d + NPAGES) % NPAGES, false, d);
-  } else if (&b == &bSel) {
-    if (e == EV_DOUBLE) { gRefresh = true; flash("refreshing"); }
-    else if (e == EV_LONG && inMenu) { const char* m = MACROS[menuSel]; xQueueSend(gMacroQ, &m, 0); flash(String("sent ") + MACRO_LABEL[menuSel]); }
-    else if (e == EV_SHORT) { if (!inMenu) { if (hasNav) go(page, true, 1); else go((page + 1) % NPAGES, false, 1); } }
-  }
+  } else if (&b == &bSel) doSelect(e);
 }
 
 void setup() {
@@ -280,6 +303,11 @@ void setup() {
   pinMode(LCD_BL, OUTPUT); digitalWrite(LCD_BL, HIGH);
   SPI.begin(LCD_SCLK, -1, LCD_MOSI, LCD_CS);
   tft.init(135, 240); tft.setSPISpeed(40000000); tft.setRotation(1);
+  if (!fb.getBuffer()) {                       // 64.8 KB frame buffer failed to allocate
+    tft.fillScreen(ST77XX_RED); tft.setTextColor(ST77XX_WHITE); tft.setTextSize(2);
+    tft.setCursor(6, 50); tft.print("no RAM for UI"); Serial.println("framebuffer alloc failed");
+    for (;;) delay(1000);
+  }
   gLock = xSemaphoreCreateMutex(); gMacroQ = xQueueCreate(4, sizeof(const char*));
   WiFi.mode(WIFI_STA); WiFi.setAutoReconnect(true); WiFi.begin(KVM_WIFI_SSID, KVM_WIFI_PASS);
   xTaskCreatePinnedToCore(netTask, "net", 8192, nullptr, 1, nullptr, 0);   // UI loop stays on core 1
@@ -287,6 +315,11 @@ void setup() {
 
 void loop() {
   uint32_t now = millis();
+  if (gMacroDone) {
+    gMacroDone = false; int c = gLastMacroCode;
+    flash(c == 200 ? "sent OK" : c == 0 ? "not sent: Wi-Fi down" : c == 409 ? "not sent: no host"
+          : c == 503 ? "not sent: HID busy" : c < 0 ? "not sent: Zero unreachable" : String("not sent: HTTP ") + c);
+  }
   handle(bBack, bBack.poll(now)); handle(bUp, bUp.poll(now));
   handle(bDown, bDown.poll(now)); handle(bSel, bSel.poll(now));
   static uint32_t lastFrame = 0;
