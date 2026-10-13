@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Tiny stdlib HTTP server: static console + JSON API. Binds 0.0.0.0 (default port 8080).
 API:
-  GET  /api/status              -> {"hid_ready","host_connected","udc_state","ip"}
+  GET  /api/status              -> {"hid_ready","host_connected","udc_state","ip",
+                                      "temp_c","load1","mem_pct","uptime_s"}  (sys fields optional)
   POST /api/key    {"keys":["a"],"mods":["ctrl"]}
   POST /api/type   {"text":"hello"}
   POST /api/mouse  {"dx":0,"dy":0,"wheel":0,"buttons":0}
@@ -51,6 +52,22 @@ def validate(path, body):
         return (body["name"],)
     raise LookupError(path)
 
+def sysstats():
+    """Cheap /proc reads for the GEEK dashboard; any failure just omits the field."""
+    out = {}
+    try: out["temp_c"] = round(int(open("/sys/class/thermal/thermal_zone0/temp").read()) / 1000, 1)
+    except (OSError, ValueError): pass
+    try: out["load1"] = float(open("/proc/loadavg").read().split()[0])
+    except (OSError, ValueError, IndexError): pass
+    try:
+        m = dict(l.split(":", 1) for l in open("/proc/meminfo"))
+        tot, avail = int(m["MemTotal"].split()[0]), int(m["MemAvailable"].split()[0])
+        out["mem_pct"] = round(100 * (tot - avail) / tot)
+    except (OSError, ValueError, KeyError, ZeroDivisionError): pass
+    try: out["uptime_s"] = int(float(open("/proc/uptime").read().split()[0]))
+    except (OSError, ValueError, IndexError): pass
+    return out
+
 def local_ip():
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("10.255.255.255", 1))
@@ -68,7 +85,7 @@ class H(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/api/status":
-            return self._json(200, {**hid.status(), "ip": local_ip()})
+            return self._json(200, {**hid.status(), "ip": local_ip(), **sysstats()})
         super().do_GET()
 
     def _origin_ok(self):
