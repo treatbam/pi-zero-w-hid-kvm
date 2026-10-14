@@ -48,6 +48,8 @@ Then browse to `http://192.168.4.1:8080`. Manual run: `sudo bash zero/gadget/hid
 | POST | /api/type | `{"text":"hello"}` (US layout) |
 | POST | /api/mouse | `{"dx":0,"dy":0,"wheel":0,"buttons":0}` |
 | POST | /api/macro | `{"name":"ctrl_alt_del"|"alt_tab"|"win_l"}` |
+| GET | /api/term?n=40 | → `{"seq","lines":[...],"partial","open","error"}` (needs `X-KVM-PIN`) |
+| POST | /api/term | `{"text":"ls","newline":true}` → keystrokes to the host serial console |
 
 `host_connected` = `/sys/class/udc/*/state == configured` (host enumerated the gadget). Approximate:
 it does not mean the host has focus/is unlocked. POSTs return 409 when not configured,
@@ -60,8 +62,44 @@ cd geek && cp src/secrets.example.h src/secrets.h   # edit SSID/pass to match th
 pio run -t upload && pio device monitor
 ```
 
+## Host terminal (USB serial)
+
+The gadget also exposes a CDC ACM serial port (`acm.usb0`): `/dev/ttyGS0` on the Zero,
+`/dev/ttyACM0` on a Linux host, a `COMx` port on Windows. `kvm-web` reads it into a ring
+buffer of the last 200 lines (ANSI colours stripped). View it at `http://<zero>:8080/term.html`
+(send box, Ctrl+C/Ctrl+D) or on the GEEK's **TERMINAL** page (last 14 lines, 39 cols).
+This is a text console, not video: it shows only what the host writes to the serial port.
+
+**Linux host** — login shell on the port:
+```bash
+sudo systemctl enable --now serial-getty@ttyACM0.service
+```
+Log in from the web terminal's send box. Optional: add `console=ttyACM0` only if your
+distro supports it this late in boot; kernel boot messages generally won't appear because
+the port only exists once the USB driver has loaded.
+
+**Windows host** — no getty; find the port in Device Manager → Ports (COM & LPT)
+("USB Serial Device", driver `usbser.sys` is automatic on Windows 10/11), then stream a
+script into it, e.g. PowerShell:
+```powershell
+$p = New-Object System.IO.Ports.SerialPort COM5,115200; $p.Open()
+while ($true) { $p.WriteLine("$(Get-Date -f HH:mm:ss) CPU $((Get-CimInstance Win32_Processor).LoadPercentage)%"); Start-Sleep 2 }
+```
+(Interactive shells over COM need a third-party tool; status/log streaming is the practical use.)
+
+**Limitations**
+- Only works **after the host OS has booted** and loaded its USB serial driver. No BIOS/UEFI,
+  bootloader, or early-boot output, and nothing if the host hangs before login.
+- The baud rate is ignored (it's USB); any value works.
+- Re-running `hid-gadget.sh` on a Zero with an older gadget (no `acm.usb0`) rebuilds it, so
+  the host re-enumerates once. If the gadget fails to bind after this change, the dwc2
+  endpoint budget is the likely cause; see `journalctl -u hid-gadget`.
+- A login over this port is a real shell on the host; it's behind the console PIN, but
+  anyone with the PIN gets it.
+
 ## Out of scope
 - Any video (HDMI capture, UVC, CSI). Zero W has one OTG port, already used for HID.
+  The serial host terminal above is the text-only substitute.
 - Absolute-pointer/touch emulation, auth/TLS, non-US keyboard layouts.
 
 ## Known TODOs / risks

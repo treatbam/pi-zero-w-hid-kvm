@@ -8,6 +8,8 @@ API:
   POST /api/mouse  {"dx":0,"dy":0,"wheel":0,"buttons":0}
   POST /api/macro  {"name":"ctrl_alt_del"}
   POST /api/auth   {}                          -> 200 if the PIN header is right (UI login check)
+  GET  /api/term?n=40            -> {"seq","lines":[..],"partial","open","error"}  (PIN required)
+  POST /api/term   {"text":"ls","newline":true}  -> keystrokes to the host's serial console
   POST /api/power  {"target":"host","action":"power|sleep|wake|hard_reset|hard_power","confirm":true}
                    {"target":"zero","action":"shutdown|reboot","confirm":true}
 Every POST needs Content-Type: application/json, a same-origin Origin (if sent), and the PIN
@@ -15,10 +17,12 @@ in the X-KVM-PIN header. The PIN lives in /etc/pi-zero-w-hid-kvm/pin (made by in
 A custom header also forces a CORS preflight, so other web pages can't send these POSTs.
 5 wrong PINs from one address locks that address out for 60 s.
 GET /api/status stays open (read-only; the GEEK and the console poll it).
+GET /api/term needs the X-KVM-PIN header too (host terminal output can hold secrets).
 """
 import argparse, hmac, json, os, socket, subprocess, threading, time
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
-import hid
+import hid, term
+from urllib.parse import urlsplit, parse_qs
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 MACROS = {"ctrl_alt_del": lambda: hid.key_combo(["delete"], ["ctrl", "alt"]),
@@ -74,6 +78,12 @@ def validate(path, body):
                 _int(body, "wheel", -127, 127), _int(body, "buttons", 0, 7))
     if path == "/api/auth":
         return ()
+    if path == "/api/term":
+        t = body.get("text", "")
+        if not isinstance(t, str) or len(t) > 1000: raise ValueError("text must be a string (max 1000)")
+        nl = body.get("newline", True)
+        if not isinstance(nl, bool): raise ValueError("newline must be a bool")
+        return (t, nl)
     if path == "/api/power":
         if body.get("confirm") is not True: raise ValueError("confirm must be true")
         t, a = body.get("target"), body.get("action")
@@ -119,6 +129,14 @@ class H(SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/status":
             return self._json(200, {**hid.status(), "ip": local_ip(), **sysstats()})
+        u = urlsplit(self.path)
+        if u.path == "/api/term":
+            ok = self._pin_ok()
+            if ok is None: return self._json(429, {"error": "too many wrong PINs, wait a minute"})
+            if not ok: return self._json(401, {"error": "wrong or missing PIN"})
+            try: n = int(parse_qs(u.query).get("n", ["200"])[0])
+            except ValueError: return self._json(400, {"error": "n must be an int"})
+            return self._json(200, term.snapshot(n))
         super().do_GET()
 
     def _origin_ok(self):
@@ -155,6 +173,12 @@ class H(SimpleHTTPRequestHandler):
         except (ValueError, TypeError) as e:  # JSONDecodeError is a ValueError
             return self._json(400, {"error": f"bad request: {e}"})
         if self.path == "/api/auth": return self._json(200, {"ok": True})
+        if self.path == "/api/term":
+            try:
+                if not term.send(*args): return self._json(409, {"error": "serial port not open"})
+            except (TimeoutError, OSError) as e:
+                return self._json(503, {"error": str(e)})
+            return self._json(200, {"ok": True})
         if self.path == "/api/power":
             target, action = args
             if target == "zero":
@@ -183,5 +207,6 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(); p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=8080); a = p.parse_args()
     PIN = load_pin()
+    term.start()
     print(f"KVM console on http://{a.host}:{a.port}")
     ThreadingHTTPServer((a.host, a.port), H).serve_forever()

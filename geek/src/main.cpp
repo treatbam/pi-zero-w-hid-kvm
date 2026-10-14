@@ -1,4 +1,5 @@
 // ESP32-S3-GEEK KVM panel: polls the Zero W's /api/status and shows paged, shaded stats
+// plus a TERMINAL page (host serial console via /api/term, polled only while it's shown)
 // with a button-driven menu. Networking runs in its own FreeRTOS task (core 0) so the
 // UI loop (buttons + drawing) never blocks on HTTP. Frames are rendered into an
 // off-screen canvas and pushed in one go, so there's no flicker.
@@ -67,6 +68,12 @@ Status gStat;
 SemaphoreHandle_t gLock;
 QueueHandle_t gMacroQ;               // const char* macro names
 volatile bool gRefresh = false;
+volatile bool gTermOn = false;      // UI sets while the Terminal page is visible
+
+// Terminal page: 6x8 font -> 40 cols x 14 rows below the header. Lines are wrapped here.
+static const int TCOLS = 39, TROWS = 14;
+struct Term { char row[TROWS][TCOLS + 1]; int n = 0, code = 0; bool open = false; uint32_t seq = 0, stampMs = 0; };
+Term gTerm;
 volatile int  gLastMacroCode = 0;
 volatile bool gMacroDone = false;   // set by net task when a macro POST finishes
 bool gMacroBusy = false;            // UI-side: a macro is queued or in flight
@@ -100,8 +107,41 @@ void pollOnce() {
   xSemaphoreGive(gLock);
 }
 
+void pollTerm() {
+  Term t; t.n = 0;
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http; http.setTimeout(1500); http.setConnectTimeout(1500);
+    http.begin(BASE + "/api/term?n=" + TROWS); http.addHeader("X-KVM-PIN", KVM_PIN);
+    t.code = http.GET();
+    if (t.code == 200) {
+      JsonDocument d;
+      if (!deserializeJson(d, http.getString())) {
+        t.open = d["open"] | false; t.seq = d["seq"] | 0;
+        // Wrap every line (plus the partial one) to TCOLS, keep the last TROWS rows.
+        static char tmp[64][TCOLS + 1]; int cnt = 0;   // static: net task only, keeps 2.5 KB off its stack
+        auto add = [&](const char* l) {
+          size_t len = strlen(l);
+          for (size_t o = 0; o == 0 || o < len; o += TCOLS) {
+            char* dst = tmp[cnt % 64]; size_t k = min((size_t)TCOLS, len - min(o, len));
+            memcpy(dst, l + o, k); dst[k] = 0; cnt++;
+            if (len == 0) break;
+          }
+        };
+        for (JsonVariant v : d["lines"].as<JsonArray>()) add(v | "");
+        const char* p = d["partial"] | "";
+        if (*p) add(p);
+        int first = max(0, cnt - TROWS);
+        for (int i = first; i < cnt; i++) memcpy(t.row[t.n++], tmp[i % 64], TCOLS + 1);
+      }
+    }
+    http.end();
+  }
+  t.stampMs = millis();
+  xSemaphoreTake(gLock, portMAX_DELAY); gTerm = t; xSemaphoreGive(gLock);
+}
+
 void netTask(void*) {
-  uint32_t last = 0;
+  uint32_t last = 0, lastTerm = 0;
   for (;;) {
     const char* m;
     if (xQueueReceive(gMacroQ, &m, pdMS_TO_TICKS(50)) == pdTRUE) {
@@ -114,6 +154,7 @@ void netTask(void*) {
       Serial.printf("macro %s -> %d\n", m, code);
       gLastMacroCode = code; gMacroDone = true;
     }
+    if (gTermOn && millis() - lastTerm > 800) { lastTerm = millis(); pollTerm(); }
     if (gRefresh || millis() - last > 2000) { gRefresh = false; last = millis(); pollOnce(); }
   }
 }
@@ -178,8 +219,8 @@ void bar(int x, int y, int w, int h, float frac, uint16_t c) {
 String fmtUp(long s) { if (s < 0) return "--"; char b[16]; snprintf(b, sizeof b, "%ldd%02ldh%02ldm", s / 86400, s / 3600 % 24, s / 60 % 60); return b; }
 
 // ---------- screens ----------
-enum Page { P_DASH, P_SYS, P_LINK, NPAGES };
-const char* PAGE_NAME[] = {"KVM", "ZERO SYS", "LINK"};
+enum Page { P_DASH, P_SYS, P_LINK, P_TERM, NPAGES };
+const char* PAGE_NAME[] = {"KVM", "ZERO SYS", "LINK", "TERMINAL"};
 int page = P_DASH, menuSel = 0; bool inMenu = false;
 uint32_t pressFxUntil = 0, toastUntil = 0, armedUntil = 0; String toast;
 int armed = -1;                       // one-button mode: macro index awaiting confirm
@@ -237,6 +278,20 @@ void drawLink(int ox, const Status& s) {
   row("geek up", fmtUp(millis() / 1000), C_TXT);
 }
 
+void drawTerm(int ox) {
+  Term t; xSemaphoreTake(gLock, portMAX_DELAY); t = gTerm; xSemaphoreGive(gLock);
+  fb.fillRect(ox, 17, W, H - 17, 0x0000);
+  fb.setTextWrap(false);
+  uint16_t fg = rgb(170, 255, 170);
+  if (t.stampMs == 0) txt(ox + 4, 22, "loading...", C_DIM);
+  else if (t.code != 200)
+    txt(ox + 4, 22, t.code == 401 ? "wrong PIN (secrets.h)" : t.code == 429 ? "PIN locked out"
+                  : t.code <= 0 ? "Zero unreachable" : String("HTTP ") + t.code, C_BAD);
+  else if (t.n == 0) txt(ox + 4, 22, t.open ? "(no output yet)" : "serial port closed", C_DIM);
+  for (int i = 0; i < t.n; i++) txt(ox + 2, 19 + i * 8, t.row[i], fg);
+  if (t.code == 200) fb.fillCircle(ox + W - 5, 21, 2, t.open ? C_OK : C_WARN);
+}
+
 void drawMenu(int ox) {
   bool arm = armed >= 0 && millis() < armedUntil;
   const char* hint = ONE_BTN ? (arm ? "HOLD to send, tap to cancel" : "tap next, x2 choose")
@@ -255,7 +310,8 @@ void drawMenu(int ox) {
 
 void render(int ox, int pg, bool menu, const Status& s) {
   if (menu) drawMenu(ox);
-  else if (pg == P_DASH) drawDash(ox, s); else if (pg == P_SYS) drawSys(ox, s); else drawLink(ox, s);
+  else if (pg == P_DASH) drawDash(ox, s); else if (pg == P_SYS) drawSys(ox, s);
+  else if (pg == P_TERM) drawTerm(ox); else drawLink(ox, s);
 }
 
 // Slide animation state: ~120 ms ease-out, rendered frame by frame without blocking input.
@@ -283,6 +339,7 @@ void frame() {
 void go(int newPage, bool newMenu, int dir) {
   animFromPage = page; animFromMenu = inMenu; animDir = dir; animStart = millis();
   page = newPage; inMenu = newMenu;
+  gTermOn = page == P_TERM && !inMenu;
 }
 void flash(const String& m) { toast = m; toastUntil = millis() + 1200; }
 
