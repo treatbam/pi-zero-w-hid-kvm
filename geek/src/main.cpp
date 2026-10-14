@@ -16,7 +16,14 @@
 #include <ArduinoJson.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
+#include <Preferences.h>
+#include <WebServer.h>
+#if __has_include("secrets.h")
 #include "secrets.h"
+#else
+#include "secrets.example.h"   // CI / web-flasher build: placeholders, real values set in the setup portal
+#define KVM_PLACEHOLDER_SECRETS 1
+#endif
 #ifndef KVM_PIN
 #error "add #define KVM_PIN \"<pin>\" to secrets.h (see secrets.example.h)"
 #endif
@@ -54,7 +61,54 @@
 static const int W = 240, H = 135;
 Adafruit_ST7789 tft(&SPI, LCD_CS, LCD_DC, LCD_RST);
 GFXcanvas16 fb(W, H);
-const String BASE = String("http://") + KVM_HOST + ":" + KVM_PORT;
+// ---------- runtime config: NVS (set via setup portal) overrides compiled-in defaults ----------
+struct Cfg { String ssid, pass, host, pin; int port; } cfg;
+String BASE;
+static void loadCfg() {
+  Preferences p; p.begin("kvm", true);
+  cfg.ssid = p.getString("ssid", KVM_WIFI_SSID); cfg.pass = p.getString("pass", KVM_WIFI_PASS);
+  cfg.host = p.getString("host", KVM_HOST);      cfg.pin  = p.getString("pin", KVM_PIN);
+  cfg.port = p.getInt("port", KVM_PORT); p.end();
+  BASE = String("http://") + cfg.host + ":" + cfg.port;
+}
+static bool cfgSaved() { Preferences p; p.begin("kvm", true); bool ok = p.isKey("ssid"); p.end(); return ok; }
+
+// First-boot / BOOT-held setup: open AP "KVM-GEEK-setup", form at http://192.168.4.1, save to NVS, reboot.
+static String esc(const String& v) { String o = v; o.replace("&", "&amp;"); o.replace("\"", "&quot;"); o.replace("<", "&lt;"); return o; }
+static void setupPortal() {
+  tft.fillScreen(ST77XX_BLACK); tft.setTextColor(ST77XX_YELLOW); tft.setTextSize(2);
+  tft.setCursor(6, 10); tft.print("GEEK setup");
+  tft.setTextSize(1); tft.setTextColor(ST77XX_WHITE);
+  tft.setCursor(6, 45); tft.print("1. Join Wi-Fi: KVM-GEEK-setup");
+  tft.setCursor(6, 62); tft.print("2. Open http://192.168.4.1");
+  tft.setCursor(6, 79); tft.print("3. Enter Zero Wi-Fi, host, PIN");
+  tft.setCursor(6, 110); tft.setTextColor(0x8410); tft.print("hold BOOT at power-on to return");
+  WiFi.mode(WIFI_AP); WiFi.softAP("KVM-GEEK-setup");
+  static WebServer srv(80);
+  srv.on("/", HTTP_GET, [] {
+    String h = F("<!doctype html><meta name=viewport content='width=device-width'><title>GEEK setup</title>"
+                 "<style>body{font-family:sans-serif;max-width:420px;margin:2em auto}input{width:100%;padding:6px;margin:4px 0 12px}</style>"
+                 "<h2>KVM GEEK setup</h2><form method=post action=/save>");
+    auto f = [&](const char* n, const char* l, const String& v, const char* t) {
+      h += String(l) + "<input name=" + n + " type=" + t + " value=\"" + esc(v) + "\">"; };
+    f("ssid", "Zero Wi-Fi SSID", cfg.ssid, "text"); f("pass", "Wi-Fi password", "", "password");
+    f("host", "Zero address", cfg.host, "text");   f("port", "Port", String(cfg.port), "number");
+    f("pin", "Console PIN (from install.sh)", "", "password");
+    h += F("<small>Blank password/PIN keeps the saved value.</small><br><br><button>Save &amp; reboot</button></form>");
+    srv.send(200, "text/html", h);
+  });
+  srv.on("/save", HTTP_POST, [] {
+    Preferences p; p.begin("kvm", false);
+    p.putString("ssid", srv.arg("ssid")); p.putString("host", srv.arg("host"));
+    p.putInt("port", srv.arg("port").toInt() > 0 ? srv.arg("port").toInt() : 8080);
+    if (srv.arg("pass").length()) p.putString("pass", srv.arg("pass")); else if (!p.isKey("pass")) p.putString("pass", cfg.pass);
+    if (srv.arg("pin").length())  p.putString("pin", srv.arg("pin"));   else if (!p.isKey("pin"))  p.putString("pin", cfg.pin);
+    p.end();
+    srv.send(200, "text/html", "<h3>Saved. GEEK is rebooting.</h3>"); delay(800); ESP.restart();
+  });
+  srv.begin(); Serial.println("setup portal: AP KVM-GEEK-setup, http://192.168.4.1");
+  for (;;) { srv.handleClient(); delay(2); }
+}
 
 // ---------- shared state (network task writes, UI reads) ----------
 struct Status {
@@ -111,7 +165,7 @@ void pollTerm() {
   Term t; t.n = 0;
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http; http.setTimeout(1500); http.setConnectTimeout(1500);
-    http.begin(BASE + "/api/term?n=" + TROWS); http.addHeader("X-KVM-PIN", KVM_PIN);
+    http.begin(BASE + "/api/term?n=" + TROWS); http.addHeader("X-KVM-PIN", cfg.pin);
     t.code = http.GET();
     if (t.code == 200) {
       JsonDocument d;
@@ -148,7 +202,7 @@ void netTask(void*) {
       int code = 0;                                   // 0 = not sent (Wi-Fi down)
       if (WiFi.status() == WL_CONNECTED) {
         HTTPClient http; http.setTimeout(1500); http.setConnectTimeout(1500); http.begin(BASE + "/api/macro");
-        http.addHeader("Content-Type", "application/json"); http.addHeader("X-KVM-PIN", KVM_PIN);
+        http.addHeader("Content-Type", "application/json"); http.addHeader("X-KVM-PIN", cfg.pin);
         code = http.POST(String("{\"name\":\"") + m + "\"}"); http.end();
       }
       Serial.printf("macro %s -> %d\n", m, code);
@@ -268,10 +322,10 @@ void drawLink(int ox, const Status& s) {
   panel(ox + 4, 22, 232, 108);
   int y = 28;
   auto row = [&](const String& k, const String& v, uint16_t c) { txt(ox + 10, y, k, C_DIM); txt(ox + 90, y, v, c); y += 13; };
-  row("wifi", s.wifi ? String(KVM_WIFI_SSID) : "down", s.wifi ? C_OK : C_BAD);
+  row("wifi", s.wifi ? cfg.ssid : "down", s.wifi ? C_OK : C_BAD);
   row("rssi", s.wifi ? String(s.rssi) + " dBm" : "--", C_TXT);
   row("geek ip", s.wifi ? WiFi.localIP().toString() : "--", C_TXT);
-  row("zero", String(KVM_HOST) + ":" + KVM_PORT, C_TXT);
+  row("zero", cfg.host + ":" + cfg.port, C_TXT);
   row("http", String(s.httpCode), s.httpCode == 200 ? C_OK : C_BAD);
   row("rtt", String(s.latencyMs) + " ms", C_TXT);
   row("heap", String(ESP.getFreeHeap() / 1024) + " KB", C_TXT);
@@ -285,7 +339,7 @@ void drawTerm(int ox) {
   uint16_t fg = rgb(170, 255, 170);
   if (t.stampMs == 0) txt(ox + 4, 22, "loading...", C_DIM);
   else if (t.code != 200)
-    txt(ox + 4, 22, t.code == 401 ? "wrong PIN (secrets.h)" : t.code == 429 ? "PIN locked out"
+    txt(ox + 4, 22, t.code == 401 ? "wrong PIN (setup portal)" : t.code == 429 ? "PIN locked out"
                   : t.code <= 0 ? "Zero unreachable" : String("HTTP ") + t.code, C_BAD);
   else if (t.n == 0) txt(ox + 4, 22, t.open ? "(no output yet)" : "serial port closed", C_DIM);
   for (int i = 0; i < t.n; i++) txt(ox + 2, 19 + i * 8, t.row[i], fg);
@@ -415,8 +469,16 @@ void setup() {
     tft.setCursor(6, 50); tft.print("no RAM for UI"); Serial.println("framebuffer alloc failed");
     for (;;) delay(1000);
   }
+  loadCfg();
+  bool bootHeld = digitalRead(BTN_BACK) == LOW;            // BOOT held at power-on => setup portal
+#ifdef KVM_PLACEHOLDER_SECRETS
+  bool unconfigured = !cfgSaved();                          // web-flasher build: no real creds yet
+#else
+  bool unconfigured = false;
+#endif
+  if (bootHeld || unconfigured) setupPortal();
   gLock = xSemaphoreCreateMutex(); gMacroQ = xQueueCreate(1, sizeof(const char*));
-  WiFi.mode(WIFI_STA); WiFi.setAutoReconnect(true); WiFi.begin(KVM_WIFI_SSID, KVM_WIFI_PASS);
+  WiFi.mode(WIFI_STA); WiFi.setAutoReconnect(true); WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
   xTaskCreatePinnedToCore(netTask, "net", 8192, nullptr, 1, nullptr, 0);   // UI loop stays on core 1
 }
 

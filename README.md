@@ -127,3 +127,29 @@ Power buttons (all ask for confirmation first):
   `kvm ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff, /usr/bin/systemctl reboot` in `/etc/sudoers.d/kvm-power`.
 
 To shut the Zero down by hand: `sudo poweroff`, then wait for the green LED to stop blinking before unplugging.
+
+## Flashing the GEEK without a PC toolchain
+
+The published firmware is built **without** `secrets.h` (placeholders from `secrets.example.h`), so no Wi-Fi password or PIN is ever in the downloadable bin. On first boot it opens a setup portal:
+
+1. Join Wi-Fi **`KVM-GEEK-setup`**, open **http://192.168.4.1**.
+2. Enter the Zero's SSID/password, address (default `192.168.4.1`), port `8080`, and the console PIN that `install.sh` printed (`/etc/pi-zero-w-hid-kvm/pin`).
+3. Save; it reboots and connects. Values live in NVS (`Preferences`, namespace `kvm`).
+
+Hold **BOOT** while powering on to reopen the portal anytime. (Builds made locally *with* `secrets.h` use those values as defaults and skip the portal unless BOOT is held.)
+
+### From the web page (Android tablet, any Chrome/Edge)
+Open **https://treatbam.github.io/pi-zero-w-hid-kvm/flash/** in Chrome, plug the GEEK in via USB-C OTG, tap **Install**, pick the port. If no port appears, unplug, hold BOOT, plug in, retry. (GitHub Pages on a private repo needs a paid plan; otherwise make the repo public or grab `kvm-geek.bin` from the workflow's artifact and use https://espressif.github.io/esptool-js/ at offset `0x0`.)
+
+### From Home Assistant (Terminal & SSH add-on) or a NAS
+Plug the GEEK into the HA box/NAS USB port, copy `kvm-geek.bin` over, then:
+
+```sh
+pip install esptool            # HA add-on: apk add py3-pip first if needed
+esptool.py --chip esp32s3 --port /dev/ttyACM0 --baud 460800 write_flash 0x0 kvm-geek.bin
+```
+
+Port may be `/dev/ttyUSB0`; check `ls /dev/tty{ACM,USB}*`. Hold BOOT while plugging in if it won't connect. On HA OS the add-on needs Protection mode off / the device mapped to see the port.
+
+### Building the merged bin yourself
+`tools/merge-geek-bin.sh` (needs `pio`) builds with placeholders and writes `docs/flash/kvm-geek.bin` (bootloader 0x0, partitions 0x8000, boot_app0 0xe000, app 0x10000 merged at 0x0, 8MB DIO).
