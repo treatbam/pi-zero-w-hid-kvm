@@ -2,7 +2,13 @@
 """Tiny stdlib HTTP server: static console + JSON API. Binds 0.0.0.0 (default port 8080).
 API:
   GET  /api/status              -> {"hid_ready","host_connected","udc_state","ip",
-                                      "temp_c","load1","mem_pct","uptime_s"}  (sys fields optional)
+                                      "temp_c","load1","mem_pct","uptime_s",
+                                      "link","pc_temp_c","pc_load1","pc_mem_pct",
+                                      "pc_age_s","frame_fresh"}
+                                    link is "LINKED", "KEYS", or "NO HOST".
+                                    PC fields are null unless link is LINKED.
+  GET  /api/frame                -> 240x135 RGB565-LE still, or 204 if it is stale
+                                    (PIN required; the GEEK polls this on the desktop page)
   POST /api/key    {"keys":["a"],"mods":["ctrl"]}
   POST /api/type   {"text":"hello"}
   POST /api/mouse  {"dx":0,"dy":0,"wheel":0,"buttons":0}
@@ -21,7 +27,7 @@ GET /api/term needs the X-KVM-PIN header too (host terminal output can hold secr
 """
 import argparse, hmac, json, os, socket, subprocess, threading, time
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
-import hid, term
+import hid, hostview, term
 from urllib.parse import urlsplit, parse_qs
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -128,8 +134,23 @@ class H(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/api/status":
-            return self._json(200, {**hid.status(), "ip": local_ip(), **sysstats()})
+            st = hid.status()
+            pc = hostview.shared.status_fields(st["host_connected"])
+            return self._json(200, {**st, "ip": local_ip(), **sysstats(), **pc})
         u = urlsplit(self.path)
+        if u.path == "/api/frame":
+            ok = self._pin_ok()
+            if ok is None: return self._json(429, {"error": "too many wrong PINs, wait a minute"})
+            if not ok: return self._json(401, {"error": "wrong or missing PIN"})
+            blob = hostview.shared.frame_bytes(hid.status()["host_connected"])
+            if not blob:
+                self.send_response(204); self.send_header("Content-Length", "0")
+                self.end_headers(); return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(blob)))
+            self.end_headers(); self.wfile.write(blob); return
         if u.path == "/api/term":
             ok = self._pin_ok()
             if ok is None: return self._json(429, {"error": "too many wrong PINs, wait a minute"})

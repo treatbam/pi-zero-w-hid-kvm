@@ -9,7 +9,7 @@ body{font-family:sans-serif;margin:8px;background:#111;color:#eee}button{margin:
 <button onclick="send(true)">Send ⏎</button><button onclick="send(false)">Send (no ⏎)</button>
 <button onclick="ctl('\x03')">Ctrl+C</button><button onclick="ctl('\x04')">Ctrl+D</button><button onclick="ctl('\r')">⏎</button>
 <button onclick="logout()">Change PIN</button></p>
-<p style="font-size:12px;color:#888">Only works once the host OS has booted and runs a getty or script on the serial port (see README).</p>
+<p style="font-size:12px;color:#888">Only works once the host OS has booted and runs a getty or script on the serial port (see README). Stop that getty while <code>kvm_helper.py</code> is writing the same port.</p>
 <script>
 let pin = localStorage.getItem('kvmPin') || '';
 const askPin = m => { const p = prompt(m || 'Console PIN'); if (p !== null) { pin = p.trim(); localStorage.setItem('kvmPin', pin); } };

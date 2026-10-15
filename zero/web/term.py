@@ -4,8 +4,12 @@ A background thread reads the port into a ring buffer of the last MAX_LINES line
 (ANSI escapes and control chars stripped). The host side runs a getty or a script on
 ttyACM0 / COMx. The port is put in raw mode with echo OFF: an echoing tty here would
 bounce the host getty's output straight back to it and loop.
+
+The same port also carries helper packets (PC stats and a desktop still). Those are
+removed before the ring buffer, so the terminal page does not print them.
 """
 import collections, os, re, termios, threading, time
+import hostview
 
 DEV = os.environ.get("KVM_TERM_DEV", "/dev/ttyGS0")
 MAX_LINES, MAX_LINE = 200, 400
@@ -54,10 +58,12 @@ def _reader():
             _raw(fd); _wfd = os.open(DEV, os.O_WRONLY | os.O_NOCTTY | os.O_NONBLOCK)
             _fd, _err = fd, None
             while True:
-                b = os.read(fd, 1024)
+                b = os.read(fd, 4096)
                 if not b: time.sleep(0.2); continue    # host closed the port
-                _feed(b.decode("utf-8", "replace"))
+                text = hostview.shared.feed(b)
+                if text: _feed(text.decode("utf-8", "replace"))
         except OSError as e:
+            hostview.shared.reset()
             _err = f"{DEV}: {e.strerror or e}"
             for f in (_fd, _wfd):
                 if f is not None:

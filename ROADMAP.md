@@ -49,4 +49,4 @@ Wi‑Fi note: the Zero W radio cannot cleanly run AP-for-GEEK *and* a heavy netw
 
 ---
 
-Out of scope until revisited: hardware KVM video / UVC (Zero W single OTG port; the serial terminal is the text substitute), Comet Q / iOS touch parity.
+Out of scope until revisited: hardware KVM video / UVC (Zero W single OTG port; a helper still over serial is the picture, and the serial terminal is the text substitute), Comet Q / iOS touch parity.

@@ -1,15 +1,16 @@
 # pi-zero-w-hid-kvm
 
 HID-only DIY "KVM cousin": a Raspberry Pi Zero W acts as a USB keyboard+mouse for a host and
-exposes a browser console; an ESP32-S3-GEEK is a WiFi status panel. **No video.**
+exposes a browser console; an ESP32-S3-GEEK is a WiFi scoreboard. There is no HDMI capture.
+A small Linux helper can send PC stats and a 240×135 desktop still over the USB serial port.
 
 ## Architecture
 ```
  phone/laptop browser ──WiFi──┐
                               ▼
  ESP32-S3-GEEK ──WiFi──▶ Pi Zero W (AP 192.168.4.1, web :8080) ──USB OTG (HID gadget)──▶ Host PC
- (polls /api/status,          /dev/hidg0 keyboard, /dev/hidg1 mouse
-  BOOT btn → Ctrl+Alt+Del)
+ (short press cycles pages)   /dev/hidg0 keyboard, /dev/hidg1 mouse, /dev/ttyGS0 serial
+                              Host helper (optional) writes stats + a still on ttyACM0
 ```
 
 **WiFi topology (chosen): Zero W is the access point** (SSID `pizero-kvm`, 192.168.4.1).
@@ -43,7 +44,8 @@ Then browse to `http://192.168.4.1:8080`. Manual run: `sudo bash zero/gadget/hid
 ### API (port 8080, bound to 0.0.0.0)
 | Method | Path | Body |
 |---|---|---|
-| GET | /api/status | → `{"hid_ready","host_connected","udc_state","ip"}` |
+| GET | /api/status | → `hid_ready`, `host_connected`, `udc_state`, `ip`, `temp_c`, `load1`, `mem_pct`, `link` (`LINKED` / `KEYS` / `NO HOST`), `pc_temp_c`, `pc_load1`, `pc_mem_pct`, `pc_age_s`, `frame_fresh`. PC fields are null unless `link` is `LINKED`. |
+| GET | /api/frame | 240×135 RGB565 little-endian still, or 204 when it is stale. Needs `X-KVM-PIN`. |
 | POST | /api/key | `{"keys":["a"],"mods":["ctrl"]}` |
 | POST | /api/type | `{"text":"hello"}` (US layout) |
 | POST | /api/mouse | `{"dx":0,"dy":0,"wheel":0,"buttons":0}` |
@@ -62,6 +64,11 @@ cd geek && cp src/secrets.example.h src/secrets.h   # edit SSID/pass to match th
 pio run -t upload && pio device monitor
 ```
 
+A short press on BOOT (or any wired button) advances **scoreboard → desktop still → terminal**.
+A long press and a double press do nothing. Hold BOOT while powering on to reopen the setup portal.
+
+The scoreboard’s left block is the status word from `link`. Green **LINKED** means the big figures are the PC and the small print is the Pi. Blue **KEYS** means the cable is in and there is no fresh PC reading, so the big figures are the Pi. Yellow **NO HOST** means the cable is out. If the Zero cannot be reached the word is **ZERO** and the figures are dashes. The desktop page stays on that blue KEYS waiting field until a fresh still arrives, and drops the picture when `/api/frame` is not 200.
+
 ## Host terminal (USB serial)
 
 The gadget also exposes a CDC ACM serial port (`acm.usb0`): `/dev/ttyGS0` on the Zero,
@@ -77,6 +84,26 @@ sudo systemctl enable --now serial-getty@ttyACM0.service
 Log in from the web terminal's send box. Optional: add `console=ttyACM0` only if your
 distro supports it this late in boot; kernel boot messages generally won't appear because
 the port only exists once the USB driver has loaded.
+
+Do not run that getty at the same time as the helper below. Both write the same port.
+
+### PC stats and desktop still (Linux helper)
+
+`host/kvm_helper.py` runs on the target PC. Every 2 seconds it writes three figures
+(package temperature, 1-minute load, memory percent) and, when `DISPLAY` is set and
+`ffmpeg` can grab X11, a 240×135 RGB565 still. The Zero removes those packets before
+the terminal buffer, and serves them as `link` / `/api/frame`. Three missed intervals
+(6 seconds) drop LINKED back to KEYS and drop the still. Until the helper has sent
+something, the panel stays on KEYS and the desktop page stays blank, including through
+BIOS and the login screen.
+
+```bash
+sudo systemctl disable --now serial-getty@ttyACM0.service   # this port only
+python3 host/kvm_helper.py                                  # KVM_HOST_DEV=/dev/ttyACM0
+```
+
+`ffmpeg` and `xrandr` are needed for the picture. Without them, or with `KVM_DISPLAY`
+empty, the helper still sends the three figures. The keyboard and mouse do not need it.
 
 **Windows host** — no getty; find the port in Device Manager → Ports (COM & LPT)
 ("USB Serial Device", driver `usbser.sys` is automatic on Windows 10/11), then stream a
@@ -98,12 +125,12 @@ while ($true) { $p.WriteLine("$(Get-Date -f HH:mm:ss) CPU $((Get-CimInstance Win
   anyone with the PIN gets it.
 
 ## Out of scope
-- Any video (HDMI capture, UVC, CSI). Zero W has one OTG port, already used for HID.
-  The serial host terminal above is the text-only substitute.
+- HDMI capture, UVC, or CSI. The Zero W has one OTG port, already used for HID.
+  The desktop page is a still from the helper, not live video.
 - Absolute-pointer/touch emulation, auth/TLS, non-US keyboard layouts.
 
 ## Known TODOs / risks
-- **No auth** on the API: anyone on the AP can type into the host. Use a strong AP password.
+- GET `/api/status` is open on the AP. Everything else needs the console PIN. Use a strong AP password.
 - GEEK LCD pins/backlight polarity and PlatformIO board def are unverified (marked TODO in code).
 - Uses Linux Foundation test VID/PID 1d6b:0104 — fine for hobby use.
 - Services run as root; better: dedicated user + udev rule for /dev/hidg*.
@@ -117,7 +144,7 @@ while ($true) { $p.WriteLine("$(Get-Date -f HH:mm:ss) CPU $((Get-CimInstance Win
 
 ## Console PIN and power controls
 
-`install.sh` creates an 8-digit console PIN in `/etc/pi-zero-w-hid-kvm/pin` (root-only) and prints it at the end. The web console asks for it once and remembers it in that browser. Every POST needs it in the `X-KVM-PIN` header, and five wrong tries from one address locks that address out for 60 s. The server refuses to start without a PIN. Put the same PIN in `KVM_PIN` in `geek/src/secrets.h` so the GEEK's macros keep working.
+`install.sh` creates an 8-digit console PIN in `/etc/pi-zero-w-hid-kvm/pin` (root-only) and prints it at the end. The web console asks for it once and remembers it in that browser. Every POST needs it in the `X-KVM-PIN` header, and five wrong tries from one address locks that address out for 60 s. The server refuses to start without a PIN. Put the same PIN in `KVM_PIN` in `geek/src/secrets.h` (or the setup portal) so the GEEK can read the terminal and the desktop still.
 
 Power buttons (all ask for confirmation first):
 
