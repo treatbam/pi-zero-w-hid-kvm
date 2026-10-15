@@ -18,25 +18,34 @@ CFG=/boot/firmware/config.txt; [ -f "$CFG" ] || CFG=/boot/config.txt   # Bookwor
 # WHY: Bookworm images often ship "dtoverlay=dwc2,dr_mode=host" under [cm5] (or other model
 # filters). A plain grep for ^dtoverlay=dwc2 matches that line and wrongly skips, but it never
 # applies to a Zero W and forces host mode anyway -> no UDC, no gadget. Only an exact
-# "dtoverlay=dwc2" in the [all] section (or before any section header) counts.
+# "dtoverlay=dwc2" (optionally with options, but never dr_mode=host) in the [all] section
+# (or before any section header) counts. New installs use dr_mode=peripheral so OTG
+# auto-detect can't leave the Zero in host mode.
 has_all_dwc2() {
   awk 'BEGIN{s="[all]"; f=0}
        { l=$0; sub(/#.*/,"",l); gsub(/^[ \t]+|[ \t\r]+$/,"",l) }
        l ~ /^\[.*\]$/ { s=l; next }
-       s=="[all]" && l=="dtoverlay=dwc2" { f=1 }
+       s=="[all]" && l ~ /^dtoverlay=dwc2(,.*)?$/ && l !~ /dr_mode=host/ { f=1 }
        END{ exit !f }' "$1"
 }
 if has_all_dwc2 "$CFG"; then
   echo "dwc2 overlay already present under [all] in $CFG"
 else
   cp -a "$CFG" "$CFG.bak.$(date +%s)"
-  printf '\n[all]\ndtoverlay=dwc2\n' >> "$CFG"
-  echo "Appended [all] dtoverlay=dwc2 to $CFG (backup saved)"
+  printf '\n[all]\ndtoverlay=dwc2,dr_mode=peripheral\n' >> "$CFG"
+  echo "Appended [all] dtoverlay=dwc2,dr_mode=peripheral to $CFG (backup saved)"
 fi
 grep -qx 'dwc2' /etc/modules || echo dwc2 >> /etc/modules
 grep -qx 'libcomposite' /etc/modules || echo libcomposite >> /etc/modules
 rsync -a --delete --exclude .git ./ /opt/pi-zero-w-hid-kvm/
+# Console PIN: made once, kept across re-installs. Root-only file; shown at the end.
+install -d -m 700 /etc/pi-zero-w-hid-kvm
+if [ ! -s /etc/pi-zero-w-hid-kvm/pin ]; then
+  ( umask 077; python3 -c 'import secrets; print("%08d" % secrets.randbelow(10**8))' > /etc/pi-zero-w-hid-kvm/pin )
+  NEW_PIN=1
+fi
 cp zero/systemd/*.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable hid-gadget.service kvm-web.service
 echo "Done. Reboot required for dwc2. AP setup: see README."
+echo "Console PIN: $(cat /etc/pi-zero-w-hid-kvm/pin)${NEW_PIN:+ (new)}  — change it by editing /etc/pi-zero-w-hid-kvm/pin and running: sudo systemctl restart kvm-web"

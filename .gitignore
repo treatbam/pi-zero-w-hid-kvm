@@ -4,3 +4,4 @@ __pycache__/
 .pio/
 .vscode/
 geek/src/secrets.h
+docs/flash/*.bin

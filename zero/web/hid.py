@@ -1,7 +1,8 @@
 """HID report writers for /dev/hidg0 (keyboard) and /dev/hidg1 (mouse). Stdlib only."""
 import errno, glob, os, select, struct, time
 
-KBD_DEV, MOUSE_DEV = "/dev/hidg0", "/dev/hidg1"
+KBD_DEV, MOUSE_DEV, SYS_DEV = "/dev/hidg0", "/dev/hidg1", "/dev/hidg2"
+SYS_KEYS = {"power": 0x01, "sleep": 0x02, "wake": 0x04}   # System Control bits (see hid-gadget.sh)
 
 MOD = {"ctrl": 0x01, "shift": 0x02, "alt": 0x04, "gui": 0x08,
        "rctrl": 0x10, "rshift": 0x20, "ralt": 0x40, "rgui": 0x80}
@@ -71,6 +72,10 @@ def mouse(dx=0, dy=0, wheel=0, buttons=0):
         dx -= sx; dy -= sy; wheel = 0
         if dx == 0 and dy == 0: break
 
+def system_key(name):
+    """Tap a System Control key (power/sleep/wake) on the host."""
+    _write(SYS_DEV, bytes([SYS_KEYS[name]])); time.sleep(0.1); _write(SYS_DEV, b"\x00")
+
 def status():
     """hid_ready: device nodes exist. host_connected: UDC state == 'configured'
     (host enumerated us). Approximate: a powered-but-idle host may still read configured;
@@ -78,4 +83,5 @@ def status():
     udcs = glob.glob("/sys/class/udc/*/state")
     state = open(udcs[0]).read().strip() if udcs else "no-udc"
     return {"hid_ready": os.path.exists(KBD_DEV) and os.path.exists(MOUSE_DEV),
+            "power_keys": os.path.exists(SYS_DEV),
             "host_connected": state == "configured", "udc_state": state}

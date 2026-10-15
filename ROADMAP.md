@@ -33,6 +33,14 @@ Wi‑Fi note: the Zero W radio cannot cleanly run AP-for-GEEK *and* a heavy netw
 - Prefer STA mode or USB WiFi stick for scan duty
 - Heavy work stays behind an explicit opt-in flag
 
+## Phase 1b — Host terminal over USB serial (done on `geek-menus`, untested on hardware)
+
+- CDC ACM function `acm.usb0` added to the gadget (`/dev/ttyGS0` ↔ host `ttyACM0` / `COMx`)
+- `kvm-web` keeps a 200-line ring buffer; `GET/POST /api/term` (PIN), web page `term.html`
+- GEEK **TERMINAL** page (4th page, one-button `short` reaches it), polls only while visible
+- Host must run `serial-getty@ttyACM0` (Linux) or a script (Windows); post-boot only
+- Next: verify on hardware (UDC still `configured`, HID unaffected, Windows COM binding)
+
 ## Phase 4 — Serial bridge (third device)
 
 - Third ESP32 / RP2350 ↔ Zero UART (GPIO 14/15) ↔ GEEK display
@@ -41,4 +49,4 @@ Wi‑Fi note: the Zero W radio cannot cleanly run AP-for-GEEK *and* a heavy netw
 
 ---
 
-Out of scope until revisited: hardware KVM video / UVC (Zero W single OTG port), Comet Q / iOS touch parity.
+Out of scope until revisited: hardware KVM video / UVC (Zero W single OTG port; the serial terminal is the text substitute), Comet Q / iOS touch parity.

@@ -28,7 +28,7 @@ then set `KVM_HOST` to the Zero's LAN IP; not covered here.)
 # Lite may need: sudo apt install -y rsync
 #   rsync -a pi-zero-w-hid-kvm/ pi@<zero>:~/pi-zero-w-hid-kvm/ && ssh pi@<zero>
 cd ~/pi-zero-w-hid-kvm
-sudo bash zero/install.sh    # ensures [all] dtoverlay=dwc2, dwc2+libcomposite modules, installs services
+sudo bash zero/install.sh    # ensures [all] dtoverlay=dwc2 (accepts options; new installs use dr_mode=peripheral), dwc2+libcomposite modules, installs services
 sudo reboot
 ```
 Access point (Bookworm / NetworkManager) — note this takes over wlan0, do it from console/serial:
@@ -48,6 +48,8 @@ Then browse to `http://192.168.4.1:8080`. Manual run: `sudo bash zero/gadget/hid
 | POST | /api/type | `{"text":"hello"}` (US layout) |
 | POST | /api/mouse | `{"dx":0,"dy":0,"wheel":0,"buttons":0}` |
 | POST | /api/macro | `{"name":"ctrl_alt_del"|"alt_tab"|"win_l"}` |
+| GET | /api/term?n=40 | → `{"seq","lines":[...],"partial","open","error"}` (needs `X-KVM-PIN`) |
+| POST | /api/term | `{"text":"ls","newline":true}` → keystrokes to the host serial console |
 
 `host_connected` = `/sys/class/udc/*/state == configured` (host enumerated the gadget). Approximate:
 it does not mean the host has focus/is unlocked. POSTs return 409 when not configured,
@@ -60,8 +62,44 @@ cd geek && cp src/secrets.example.h src/secrets.h   # edit SSID/pass to match th
 pio run -t upload && pio device monitor
 ```
 
+## Host terminal (USB serial)
+
+The gadget also exposes a CDC ACM serial port (`acm.usb0`): `/dev/ttyGS0` on the Zero,
+`/dev/ttyACM0` on a Linux host, a `COMx` port on Windows. `kvm-web` reads it into a ring
+buffer of the last 200 lines (ANSI colours stripped). View it at `http://<zero>:8080/term.html`
+(send box, Ctrl+C/Ctrl+D) or on the GEEK's **TERMINAL** page (last 14 lines, 39 cols).
+This is a text console, not video: it shows only what the host writes to the serial port.
+
+**Linux host** — login shell on the port:
+```bash
+sudo systemctl enable --now serial-getty@ttyACM0.service
+```
+Log in from the web terminal's send box. Optional: add `console=ttyACM0` only if your
+distro supports it this late in boot; kernel boot messages generally won't appear because
+the port only exists once the USB driver has loaded.
+
+**Windows host** — no getty; find the port in Device Manager → Ports (COM & LPT)
+("USB Serial Device", driver `usbser.sys` is automatic on Windows 10/11), then stream a
+script into it, e.g. PowerShell:
+```powershell
+$p = New-Object System.IO.Ports.SerialPort COM5,115200; $p.Open()
+while ($true) { $p.WriteLine("$(Get-Date -f HH:mm:ss) CPU $((Get-CimInstance Win32_Processor).LoadPercentage)%"); Start-Sleep 2 }
+```
+(Interactive shells over COM need a third-party tool; status/log streaming is the practical use.)
+
+**Limitations**
+- Only works **after the host OS has booted** and loaded its USB serial driver. No BIOS/UEFI,
+  bootloader, or early-boot output, and nothing if the host hangs before login.
+- The baud rate is ignored (it's USB); any value works.
+- Re-running `hid-gadget.sh` on a Zero with an older gadget (no `acm.usb0`) rebuilds it, so
+  the host re-enumerates once. If the gadget fails to bind after this change, the dwc2
+  endpoint budget is the likely cause; see `journalctl -u hid-gadget`.
+- A login over this port is a real shell on the host; it's behind the console PIN, but
+  anyone with the PIN gets it.
+
 ## Out of scope
 - Any video (HDMI capture, UVC, CSI). Zero W has one OTG port, already used for HID.
+  The serial host terminal above is the text-only substitute.
 - Absolute-pointer/touch emulation, auth/TLS, non-US keyboard layouts.
 
 ## Known TODOs / risks
@@ -76,3 +114,42 @@ pio run -t upload && pio device monitor
 - Origin/Content-Type check reduces cross-page typing; it is not auth. Token auth deferred.
 - `type_text` holds the lock for the whole string (≤1000 chars, each write bounded by 0.5 s timeout).
 - GEEK LCD pins still unverified TODOs (not guessed).
+
+## Console PIN and power controls
+
+`install.sh` creates an 8-digit console PIN in `/etc/pi-zero-w-hid-kvm/pin` (root-only) and prints it at the end. The web console asks for it once and remembers it in that browser. Every POST needs it in the `X-KVM-PIN` header, and five wrong tries from one address locks that address out for 60 s. The server refuses to start without a PIN. Put the same PIN in `KVM_PIN` in `geek/src/secrets.h` so the GEEK's macros keep working.
+
+Power buttons (all ask for confirmation first):
+
+- **Host, soft:** Shut down, Sleep and Wake are sent as USB System Control keys from a third HID device (`/dev/hidg2`). The host's OS decides what "power" does, usually its power-button action. After updating, the host sees the device re-connect once.
+- **Host, hard:** Hard reset and Hard power need optocouplers wired to the motherboard headers. Until then they return "not installed".
+- **Zero:** Reboot and Shut down need you to type the action name. The service runs as root today. If it moves to its own user, allow just these two commands:
+  `kvm ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff, /usr/bin/systemctl reboot` in `/etc/sudoers.d/kvm-power`.
+
+To shut the Zero down by hand: `sudo poweroff`, then wait for the green LED to stop blinking before unplugging.
+
+## Flashing the GEEK without a PC toolchain
+
+The published firmware is built **without** `secrets.h` (placeholders from `secrets.example.h`), so no Wi-Fi password or PIN is ever in the downloadable bin. On first boot it opens a setup portal:
+
+1. Join Wi-Fi **`KVM-GEEK-setup`**, open **http://192.168.4.1**.
+2. Enter the Zero's SSID/password, address (default `192.168.4.1`), port `8080`, and the console PIN that `install.sh` printed (`/etc/pi-zero-w-hid-kvm/pin`).
+3. Save; it reboots and connects. Values live in NVS (`Preferences`, namespace `kvm`).
+
+Hold **BOOT** while powering on to reopen the portal anytime. (Builds made locally *with* `secrets.h` use those values as defaults and skip the portal unless BOOT is held.)
+
+### From the web page (Android tablet, any Chrome/Edge)
+Open **https://treatbam.github.io/pi-zero-w-hid-kvm/flash/** in Chrome, plug the GEEK in via USB-C OTG, tap **Install**, pick the port. If no port appears, unplug, hold BOOT, plug in, retry. (GitHub Pages on a private repo needs a paid plan; otherwise make the repo public or grab `kvm-geek.bin` from the workflow's artifact and use https://espressif.github.io/esptool-js/ at offset `0x0`.)
+
+### From Home Assistant (Terminal & SSH add-on) or a NAS
+Plug the GEEK into the HA box/NAS USB port, copy `kvm-geek.bin` over, then:
+
+```sh
+pip install esptool            # HA add-on: apk add py3-pip first if needed
+esptool.py --chip esp32s3 --port /dev/ttyACM0 --baud 460800 write_flash 0x0 kvm-geek.bin
+```
+
+Port may be `/dev/ttyUSB0`; check `ls /dev/tty{ACM,USB}*`. Hold BOOT while plugging in if it won't connect. On HA OS the add-on needs Protection mode off / the device mapped to see the port.
+
+### Building the merged bin yourself
+`tools/merge-geek-bin.sh` (needs `pio`) builds with placeholders and writes `docs/flash/kvm-geek.bin` (bootloader 0x0, partitions 0x8000, boot_app0 0xe000, app 0x10000 merged at 0x0, 8MB DIO).
