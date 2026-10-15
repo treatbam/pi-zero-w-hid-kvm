@@ -1,5 +1,5 @@
 name: GEEK firmware -> Pages
-on:
+"on":
   push:
     branches: [main]
     paths: ["geek/**", "docs/flash/**", "tools/merge-geek-bin.sh", ".github/workflows/geek-pages.yml"]
