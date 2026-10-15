@@ -74,7 +74,7 @@ This is a text console, not video: it shows only what the host writes to the ser
 ```bash
 sudo systemctl enable --now serial-getty@ttyACM0.service
 ```
-Log in from the web terminal's send box. Optional: add `console=ttyACM0` only if your
+Log in from the web terminal's send box **as a normal (non-root) user**: whatever you type passes through the console, so don't use root there. Keep port 8080 on your LAN or Tailscale only; it's plain HTTP, so the PIN and terminal traffic can be sniffed on the network. Optional: add `console=ttyACM0` only if your
 distro supports it this late in boot; kernel boot messages generally won't appear because
 the port only exists once the USB driver has loaded.
 
@@ -103,7 +103,7 @@ while ($true) { $p.WriteLine("$(Get-Date -f HH:mm:ss) CPU $((Get-CimInstance Win
 - Absolute-pointer/touch emulation, auth/TLS, non-US keyboard layouts.
 
 ## Known TODOs / risks
-- **No auth** on the API: anyone on the AP can type into the host. Use a strong AP password.
+- Every control POST needs the console PIN, but the console is plain HTTP, so someone watching your Wi-Fi could see it. Keep port 8080 off the internet (use Tailscale for remote access). `GET /api/status` stays open on purpose: anyone on the network can read HID and USB state, IP, temperature, load, memory and uptime.
 - GEEK LCD pins/backlight polarity and PlatformIO board def are unverified (marked TODO in code).
 - Uses Linux Foundation test VID/PID 1d6b:0104 — fine for hobby use.
 - Services run as root; better: dedicated user + udev rule for /dev/hidg*.
@@ -136,7 +136,7 @@ The published firmware is built **without** `secrets.h` (placeholders from `secr
 2. Enter the Zero's SSID/password, address (default `192.168.4.1`), port `8080`, and the console PIN that `install.sh` printed (`/etc/pi-zero-w-hid-kvm/pin`).
 3. Save; it reboots and connects. Values live in NVS (`Preferences`, namespace `kvm`).
 
-Hold **BOOT** while powering on to reopen the portal anytime. (Builds made locally *with* `secrets.h` use those values as defaults and skip the portal unless BOOT is held.)
+To reopen the portal later, **hold BOOT for 10 seconds while the GEEK is running** (the screen says "keep holding" after 5 s, then reboots into setup). Holding BOOT while plugging in does *not* work: that puts the chip in flashing mode with a blank screen. Builds made locally *with* `secrets.h` use those values as defaults and skip the portal unless you do the 10 s hold.
 
 ### From the web page (Android tablet, any Chrome/Edge)
 Open **https://treatbam.github.io/pi-zero-w-hid-kvm/flash/** in Chrome, plug the GEEK in via USB-C OTG, tap **Install**, pick the port. If no port appears, unplug, hold BOOT, plug in, retry. (GitHub Pages on a private repo needs a paid plan; otherwise make the repo public or grab `kvm-geek.bin` from the workflow's artifact and use https://espressif.github.io/esptool-js/ at offset `0x0`.)

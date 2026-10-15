@@ -82,7 +82,7 @@ static void setupPortal() {
   tft.setCursor(6, 45); tft.print("1. Join Wi-Fi: KVM-GEEK-setup");
   tft.setCursor(6, 62); tft.print("2. Open http://192.168.4.1");
   tft.setCursor(6, 79); tft.print("3. Enter Zero Wi-Fi, host, PIN");
-  tft.setCursor(6, 110); tft.setTextColor(0x8410); tft.print("hold BOOT at power-on to return");
+  tft.setCursor(6, 110); tft.setTextColor(0x8410); tft.print("hold BOOT 10 s (running) to return");
   WiFi.mode(WIFI_AP); WiFi.softAP("KVM-GEEK-setup");
   static WebServer srv(80);
   srv.on("/", HTTP_GET, [] {
@@ -201,7 +201,8 @@ void netTask(void*) {
     if (xQueueReceive(gMacroQ, &m, pdMS_TO_TICKS(50)) == pdTRUE) {
       int code = 0;                                   // 0 = not sent (Wi-Fi down)
       if (WiFi.status() == WL_CONNECTED) {
-        HTTPClient http; http.setTimeout(1500); http.setConnectTimeout(1500); http.begin(BASE + "/api/macro");
+        // 4 s read timeout: a macro is a few HID reports (<1 s); the Zero answers 503 at once if busy.
+        HTTPClient http; http.setTimeout(4000); http.setConnectTimeout(1500); http.begin(BASE + "/api/macro");
         http.addHeader("Content-Type", "application/json"); http.addHeader("X-KVM-PIN", cfg.pin);
         code = http.POST(String("{\"name\":\"") + m + "\"}"); http.end();
       }
@@ -470,7 +471,11 @@ void setup() {
     for (;;) delay(1000);
   }
   loadCfg();
-  bool bootHeld = digitalRead(BTN_BACK) == LOW;            // BOOT held at power-on => setup portal
+  // GPIO0 held across reset is the ROM download strap, so "hold BOOT at power-on" can't
+  // reach this code. Instead a 10 s hold while running sets this flag and reboots (see loop()).
+  bool bootHeld = false;
+  { Preferences p; p.begin("kvmboot", false); bootHeld = p.getBool("portal", false);
+    if (bootHeld) p.putBool("portal", false); p.end(); }
 #ifdef KVM_PLACEHOLDER_SECRETS
   bool unconfigured = !cfgSaved();                          // web-flasher build: no real creds yet
 #else
@@ -484,6 +489,16 @@ void setup() {
 
 void loop() {
   uint32_t now = millis();
+  static uint32_t bootDownSince = 0;                       // 10 s BOOT hold => setup portal
+  if (digitalRead(BTN_BACK) == LOW) {
+    if (!bootDownSince) bootDownSince = now;
+    else if (now - bootDownSince > 5000 && now - bootDownSince < 10000) { digitalWrite(LCD_BL, HIGH); toast = "keep holding: setup"; toastUntil = now + 300; }  // 3 s hold may have turned the backlight off
+    else if (now - bootDownSince >= 10000) {
+      Preferences p; p.begin("kvmboot", false); p.putBool("portal", true); p.end();
+      tft.fillScreen(ST77XX_BLACK); tft.setTextColor(ST77XX_YELLOW); tft.setTextSize(2);
+      tft.setCursor(6, 50); tft.print("Setup portal..."); delay(500); ESP.restart();
+    }
+  } else bootDownSince = 0;
   if (armed >= 0 && now >= armedUntil) { armed = -1; flash("cancelled"); }
   if (gMacroDone) {
     gMacroDone = false; gMacroBusy = false; int c = gLastMacroCode;

@@ -75,6 +75,14 @@ ln -s functions/hid.usb2 configs/c.1/
 ln -s functions/acm.usb0 configs/c.1/
 UDC_NAME=$(ls /sys/class/udc 2>/dev/null | head -n1 || true)
 [ -n "$UDC_NAME" ] || { echo "ERROR: no UDC in /sys/class/udc (is [all] dtoverlay=dwc2 set? rebooted?)" >&2; exit 1; }
-echo "$UDC_NAME" > UDC   # bind to dwc2 UDC (e.g. 20980000.usb)
-[ -n "$(cat UDC)" ] || { echo "ERROR: UDC bind failed" >&2; exit 1; }
+bind() { echo "$UDC_NAME" > UDC 2>/dev/null && [ -n "$(cat UDC)" ]; }
+if ! bind; then
+  # Most likely cause: the serial port's 3 extra endpoints don't fit the Zero W's dwc2
+  # endpoint budget. Keyboard, mouse and power keys matter more, so drop the serial port
+  # from the config (the function dir stays, so a service restart won't loop a rebuild).
+  echo "WARN: bind with serial port failed; retrying without acm.usb0 (host terminal off)" >&2
+  echo "" > UDC 2>/dev/null || true
+  rm -f configs/c.1/acm.usb0
+  bind || { echo "ERROR: UDC bind failed even without the serial port" >&2; exit 1; }
+fi
 finish

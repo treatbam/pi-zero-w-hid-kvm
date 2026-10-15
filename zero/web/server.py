@@ -33,6 +33,7 @@ LOCK = threading.Lock()  # serialize writes so reports don't interleave
 MAX_BODY = 8192
 PIN_FILE = os.environ.get("KVM_PIN_FILE", "/etc/pi-zero-w-hid-kvm/pin")
 FAILS = {}            # ip -> (count, first_fail_time)
+FAILS_LOCK = threading.Lock()  # ThreadingHTTPServer: guard the read-modify-write below
 MAX_FAILS, LOCKOUT_S = 5, 60
 HOST_POWER = ("power", "sleep", "wake")          # soft: System Control keys over USB
 HOST_HARD = ("hard_reset", "hard_power")         # needs optocoupler wiring (not built yet)
@@ -145,6 +146,9 @@ class H(SimpleHTTPRequestHandler):
         return o.split("://", 1)[-1] == self.headers.get("Host", "")
 
     def _pin_ok(self):
+        with FAILS_LOCK: return self._pin_check()
+
+    def _pin_check(self):
         ip = self.client_address[0]; now = time.monotonic()
         n, t0 = FAILS.get(ip, (0, now))
         if n >= MAX_FAILS and now - t0 < LOCKOUT_S: return None      # locked out
@@ -188,13 +192,19 @@ class H(SimpleHTTPRequestHandler):
                 return self._json(501, {"error": "hard power/reset needs the optocoupler wiring (not installed)"})
         if not hid.status()["host_connected"]:
             return self._json(409, {"error": "host not connected"})  # avoid blocking write
+        # GEEK macros must not queue behind a long /api/type: the GEEK would give up and the
+        # macro would still fire later (a retry then sends it twice). Refuse at once instead.
+        if not LOCK.acquire(blocking=self.path != "/api/macro"):
+            return self._json(503, {"error": "busy (another input is still being sent)"})
         try:
-            with LOCK:
+            try:
                 if self.path == "/api/key": hid.key_combo(*args)
                 elif self.path == "/api/type": hid.type_text(*args)
                 elif self.path == "/api/mouse": hid.mouse(*args)
                 elif self.path == "/api/macro": MACROS[args[0]]()
                 elif self.path == "/api/power": hid.system_key(args[1])
+            finally:
+                LOCK.release()
         except hid.HIDTimeout as e:
             return self._json(503, {"error": str(e)})
         except OSError as e:
