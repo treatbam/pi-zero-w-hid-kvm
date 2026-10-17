@@ -1,8 +1,0 @@
-{
-  "name": "Pi Zero W HID KVM - GEEK status panel",
-  "version": "geek-menus",
-  "new_install_prompt_erase": true,
-  "builds": [
-    { "chipFamily": "ESP32-S3", "parts": [ { "path": "kvm-geek.bin", "offset": 0 } ] }
-  ]
-}

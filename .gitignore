@@ -5,3 +5,4 @@ __pycache__/
 .vscode/
 geek/src/secrets.h
 docs/flash/*.bin
+build/

@@ -2,7 +2,7 @@
 # Build the GEEK firmware WITHOUT secrets.h (placeholders + setup portal) and merge into one bin at 0x0.
 # Usage: tools/merge-geek-bin.sh [out.bin]     (needs `pio` on PATH)
 set -euo pipefail
-ROOT=$(cd "$(dirname "$0")/.." && pwd); OUT=${1:-$ROOT/docs/flash/kvm-geek.bin}
+ROOT=$(cd "$(dirname "$0")/.." && pwd); OUT=${1:-$ROOT/build/kvm-geek.bin}
 TMP=$(mktemp -d); cp -r "$ROOT/geek/." "$TMP"; rm -f "$TMP/src/secrets.h" ; rm -rf "$TMP/.pio"
 (cd "$TMP" && pio run -e esp32s3geek)
 B=$TMP/.pio/build/esp32s3geek; PK=${PLATFORMIO_CORE_DIR:-$HOME/.platformio}/packages
