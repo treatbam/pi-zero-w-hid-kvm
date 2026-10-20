@@ -14,7 +14,7 @@ Wi‑Fi note: the Zero W radio cannot cleanly run AP-for-GEEK *and* a heavy netw
 ## Phase 0 — HID cold-boot (current)
 
 - Install / reboot / UDC configured / host HID / web console key + drag
-- Deferred from review: Origin Host pin to `192.168.4.1:8080`, incomplete gadget-dir reuse, KB/type vs mouse queue, udev + non-root, real auth
+- Console PIN is in (`X-KVM-PIN`, lockout). Still deferred: Origin Host pin to `192.168.4.1:8080`, incomplete gadget-dir reuse, KB/type vs mouse queue, udev + non-root
 
 ## Phase 1 — GEEK UI foundation
 
@@ -33,13 +33,14 @@ Wi‑Fi note: the Zero W radio cannot cleanly run AP-for-GEEK *and* a heavy netw
 - Prefer STA mode or USB WiFi stick for scan duty
 - Heavy work stays behind an explicit opt-in flag
 
-## Phase 1b — Host terminal over USB serial (done on `geek-menus`, untested on hardware)
+## Phase 1b — Host terminal, scoreboard, Linux helper (on `main`, untested on hardware)
 
 - CDC ACM function `acm.usb0` added to the gadget (`/dev/ttyGS0` ↔ host `ttyACM0` / `COMx`)
 - `kvm-web` keeps a 200-line ring buffer; `GET/POST /api/term` (PIN), web page `term.html`
-- GEEK **TERMINAL** page (4th page, one-button `short` reaches it), polls only while visible
-- Host must run `serial-getty@ttyACM0` (Linux) or a script (Windows); post-boot only
-- Next: verify on hardware (UDC still `configured`, HID unaffected, Windows COM binding)
+- GEEK cycles three pages on a short press: scoreboard, desktop still, terminal. It polls the terminal and the still only while that page is showing
+- `host/kvm_helper.py` sends PC temp, load, memory, and a 240×135 still. The Zero peels those packets off the serial stream
+- Host must run `serial-getty@ttyACM0` (Linux) or a script (Windows) for the terminal; stop that getty while the helper is writing the same port. Post-boot only
+- Next: verify on hardware (UDC still `configured`, HID unaffected, Windows COM binding, scoreboard layout)
 
 ## Phase 4 — Serial bridge (third device)
 

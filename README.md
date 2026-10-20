@@ -67,14 +67,14 @@ pio run -t upload && pio device monitor
 A short press on BOOT (or any wired button) advances **scoreboard → desktop still → terminal**.
 A long press and a double press do nothing. Hold BOOT while powering on to reopen the setup portal.
 
-The scoreboard’s left block is the status word from `link`. Green **LINKED** means the big figures are the PC and the small print is the Pi. Blue **KEYS** means the cable is in and there is no fresh PC reading, so the big figures are the Pi. Yellow **NO HOST** means the cable is out. If the Zero cannot be reached the word is **ZERO** and the figures are dashes. The desktop page stays on that blue KEYS waiting field until a fresh still arrives, and drops the picture when `/api/frame` is not 200.
+The scoreboard’s left block is the status word from `link`. Green **LINKED** means the big figures are the PC, each with a two-minute sparkline (temperature and load scale themselves, memory is 0–100%), and the small print is the Pi. When the helper goes quiet the rail stays blue **KEYS**, the last PC figures and traces stay up dimmed, and an amber **reconnecting** toast sits in the footer for one minute. After that minute the big figures are the Pi and the footer says **searching**. Yellow **NO HOST** means the cable is out: Pi figures immediately, no toast. If the Zero cannot be reached the word is **ZERO** and the figures are dashes. The desktop page stays on that blue KEYS waiting field until a fresh still arrives, and drops the picture when `/api/frame` is not 200. The phone follows `link` and does not hold the extra minute.
 
 ## Host terminal (USB serial)
 
 The gadget also exposes a CDC ACM serial port (`acm.usb0`): `/dev/ttyGS0` on the Zero,
 `/dev/ttyACM0` on a Linux host, a `COMx` port on Windows. `kvm-web` reads it into a ring
 buffer of the last 200 lines (ANSI colours stripped). View it at `http://<zero>:8080/term.html`
-(send box, Ctrl+C/Ctrl+D) or on the GEEK's **TERMINAL** page (last 14 lines, 39 cols).
+(send box, Ctrl+C/Ctrl+D) or on the GEEK's **TERMINAL** page (last 16 lines, 39 cols).
 This is a text console, not video: it shows only what the host writes to the serial port.
 
 **Linux host** — login shell on the port:
@@ -93,9 +93,10 @@ Do not run that getty at the same time as the helper below. Both write the same 
 (package temperature, 1-minute load, memory percent) and, when `DISPLAY` is set and
 `ffmpeg` can grab X11, a 240×135 RGB565 still. The Zero removes those packets before
 the terminal buffer, and serves them as `link` / `/api/frame`. Three missed intervals
-(6 seconds) drop LINKED back to KEYS and drop the still. Until the helper has sent
-something, the panel stays on KEYS and the desktop page stays blank, including through
-BIOS and the login screen.
+(6 seconds) drop LINKED back to KEYS and drop the still. The scoreboard then shows
+**reconnecting** for one minute before it falls back to the Pi and **searching**.
+Until the helper has sent something, the panel stays on KEYS and the desktop page
+stays blank, including through BIOS and the login screen.
 
 ```bash
 sudo systemctl disable --now serial-getty@ttyACM0.service   # this port only

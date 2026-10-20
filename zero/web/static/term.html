@@ -12,29 +12,44 @@ body{font-family:sans-serif;margin:8px;background:#111;color:#eee}button{margin:
 <p style="font-size:12px;color:#888">Only works once the host OS has booted and runs a getty or script on the serial port (see README). Stop that getty while <code>kvm_helper.py</code> is writing the same port.</p>
 <script>
 let pin = localStorage.getItem('kvmPin') || '';
-const askPin = m => { const p = prompt(m || 'Console PIN'); if (p !== null) { pin = p.trim(); localStorage.setItem('kvmPin', pin); } };
+const askPin = m => {
+  const p = prompt(m || 'Console PIN');
+  if (p !== null) { pin = p.trim(); if (pin) localStorage.setItem('kvmPin', pin); else localStorage.removeItem('kvmPin'); }
+};
 if (!pin) askPin();
 function logout() { pin = ''; localStorage.removeItem('kvmPin'); askPin(); }
 const out = document.getElementById('out'), st = document.getElementById('st'), cmd = document.getElementById('cmd');
 let lastText = '';
 async function poll() {
+  if (!pin) {
+    st.textContent = 'PIN required (click Change PIN)';
+    setTimeout(poll, 700);
+    return;
+  }
+  let delay = 700;
   try {
     const r = await fetch('/api/term?n=200', {headers: {'X-KVM-PIN': pin}});
-    if (r.status === 401) { askPin('Wrong or missing PIN. Console PIN:'); }
-    else if (r.ok) {
+    if (r.status === 401) {
+      pin = ''; localStorage.removeItem('kvmPin');
+      askPin('Wrong or missing PIN. Console PIN:');
+    } else if (r.status === 429) {
+      st.textContent = 'Too many wrong PINs (wait 60 s)';
+      delay = 5000;
+    } else if (r.ok) {
       const j = await r.json(), t = j.lines.concat([j.partial]).join('\n');
       st.textContent = j.open ? '● port open' : '○ ' + (j.error || 'port closed');
       if (t !== lastText) { const atBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 20;
         out.textContent = lastText = t; if (atBottom) out.scrollTop = out.scrollHeight; }
     } else st.textContent = 'HTTP ' + r.status;
   } catch (e) { st.textContent = 'Zero unreachable'; }
-  setTimeout(poll, 700);
+  setTimeout(poll, delay);
 }
 async function post(text, newline) {
+  if (!pin) { askPin('Console PIN:'); if (!pin) return; }
   const r = await fetch('/api/term', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-KVM-PIN': pin},
     body: JSON.stringify({text, newline})});
   if (!r.ok) { const j = await r.json().catch(() => ({})); st.textContent = 'send failed: ' + (j.error || r.status); }
-  if (r.status === 401) askPin('Wrong or missing PIN. Console PIN:');
+  if (r.status === 401) { pin = ''; localStorage.removeItem('kvmPin'); askPin('Wrong or missing PIN. Console PIN:'); }
 }
 function send(nl) { post(cmd.value, nl); cmd.value = ''; cmd.focus(); }
 function ctl(c) { post(c, false); }

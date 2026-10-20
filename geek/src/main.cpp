@@ -2,7 +2,10 @@
 //   scoreboard → desktop still → terminal → scoreboard.
 // A long press and a double press do nothing. There is no menu.
 // The status word (LINKED / KEYS / NO HOST) comes from the Zero's /api/status.
-// The desktop still is GET /api/frame, polled only while that page is showing.
+// While LINKED, each PC figure has a 2-minute sparkline. After the helper goes
+// quiet the last PC figures stay up for a minute under a "reconnecting" toast,
+// then the board shows the Pi and "searching". The desktop still is GET /api/frame,
+// polled only while that page is showing, and still goes stale with the Zero (6 s).
 // Networking runs on core 0 so the UI loop never blocks on HTTP.
 #include <Arduino.h>
 #include <WiFi.h>
@@ -87,10 +90,20 @@ static void setupPortal() {
   });
   srv.on("/save", HTTP_POST, [] {
     Preferences p; p.begin("kvm", false);
-    p.putString("ssid", srv.arg("ssid")); p.putString("host", srv.arg("host"));
+    String ssid = srv.arg("ssid"); ssid.trim();
+    String host = srv.arg("host"); host.trim();
+    p.putString("ssid", ssid.length() ? ssid : cfg.ssid);
+    p.putString("host", host.length() ? host : cfg.host);
     p.putInt("port", srv.arg("port").toInt() > 0 ? srv.arg("port").toInt() : 8080);
-    if (srv.arg("pass").length()) p.putString("pass", srv.arg("pass")); else if (!p.isKey("pass")) p.putString("pass", cfg.pass);
-    if (srv.arg("pin").length())  p.putString("pin", srv.arg("pin"));   else if (!p.isKey("pin"))  p.putString("pin", cfg.pin);
+#ifdef KVM_PLACEHOLDER_SECRETS
+    const char* defPass = "";
+    const char* defPin = "";
+#else
+    const char* defPass = cfg.pass.c_str();
+    const char* defPin = cfg.pin.c_str();
+#endif
+    if (srv.arg("pass").length()) p.putString("pass", srv.arg("pass")); else if (!p.isKey("pass")) p.putString("pass", defPass);
+    if (srv.arg("pin").length())  p.putString("pin", srv.arg("pin"));   else if (!p.isKey("pin"))  p.putString("pin", defPin);
     p.end();
     srv.send(200, "text/html", "<h3>Saved. GEEK is rebooting.</h3>"); delay(800); ESP.restart();
   });
@@ -108,6 +121,30 @@ struct Status {
   uint32_t latencyMs = 0, stampMs = 0, polls = 0, fails = 0;
 };
 Status gStat;
+// One sample per /api/status poll (2 s). Gaps are NAN so a quiet helper breaks the line
+// instead of drawing across the outage. last* is the last live PC reading.
+static const int HIST = 60;
+static const uint32_t RECONNECT_MS = 60000;
+struct PcHist {
+  float temp[HIST], load[HIST], mem[HIST];
+  int n, next;
+  uint32_t lastMs;
+  bool had;
+  float lastT, lastL, lastM;
+};
+PcHist gHist;
+static void pushHist(float t, float l, float m, bool live) {
+  gHist.temp[gHist.next] = t;
+  gHist.load[gHist.next] = l;
+  gHist.mem[gHist.next] = m;
+  gHist.next = (gHist.next + 1) % HIST;
+  if (gHist.n < HIST) gHist.n++;
+  if (live) {
+    gHist.lastMs = millis();
+    gHist.had = true;
+    gHist.lastT = t; gHist.lastL = l; gHist.lastM = m;
+  }
+}
 SemaphoreHandle_t gLock;
 volatile bool gTermOn = false;
 volatile bool gDeskOn = false;
@@ -150,6 +187,10 @@ void pollOnce() {
   xSemaphoreTake(gLock, portMAX_DELAY);
   s.polls = gStat.polls + 1; s.fails = gStat.fails + (s.api ? 0 : 1); s.stampMs = millis();
   gStat = s;
+  bool live = s.api && strcmp(s.link, "LINKED") == 0
+              && !isnan(s.pcTemp) && !isnan(s.pcLoad) && s.pcMem >= 0;
+  if (live) pushHist(s.pcTemp, s.pcLoad, (float)s.pcMem, true);
+  else pushHist(NAN, NAN, NAN, false);
   xSemaphoreGive(gLock);
 }
 
@@ -190,7 +231,7 @@ void pollFrame() {
   gFrameBusy = true;
   xSemaphoreGive(gLock);
   bool ok = false;
-  if (WiFi.status() == WL_CONNECTED) {
+  if (WiFi.status() == WL_CONNECTED && gDeskOn) {
     HTTPClient http; http.setTimeout(4000); http.setConnectTimeout(1500);
     http.begin(BASE + "/api/frame"); http.addHeader("X-KVM-PIN", cfg.pin);
     int code = http.GET();
@@ -199,18 +240,18 @@ void pollFrame() {
       uint8_t* dst = (uint8_t*)gFrame;
       int need = W * H * 2, got = 0;
       uint32_t t0 = millis();
-      while (got < need && millis() - t0 < 4000) {
+      while (got < need && gDeskOn && millis() - t0 < 4000) {
         int n = stream->read(dst + got, need - got);
         if (n > 0) got += n;
         else if (!stream->connected()) break;
         else delay(1);
       }
-      ok = got == need;
+      ok = got == need && gDeskOn;
     }
     http.end();
   }
   xSemaphoreTake(gLock, portMAX_DELAY);
-  gFrameOk = ok;
+  gFrameOk = ok && gDeskOn;
   gFrameBusy = false;
   xSemaphoreGive(gLock);
 }
@@ -256,7 +297,7 @@ struct Btn {
     return EV_NONE;
   }
 };
-Btn bBack{BTN_BACK, false}, bUp{BTN_UP, false}, bDown{BTN_DOWN, false}, bSel{BTN_SELECT, false};
+Btn bBack{BTN_BACK, true}, bUp{BTN_UP, true}, bDown{BTN_DOWN, true}, bSel{BTN_SELECT, true};
 
 uint16_t rgb(uint8_t r, uint8_t g, uint8_t b) { return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3); }
 uint16_t mix(uint16_t a, uint16_t b, int t) {
@@ -273,27 +314,81 @@ void txt(int x, int y, const char* s, uint16_t c, int size = 1) {
   fb.setTextSize(size); fb.setTextColor(c); fb.setCursor(x, y); fb.print(s);
 }
 void vword(int x, int y, int w, int h, const char* word, uint16_t ink) {
-  int n = strlen(word), ch = 16, cw = 12;
-  int y0 = y + max(0, (h - n * ch) / 2);
+  int letters = 0, gaps = 0;
+  for (const char* p = word; *p; p++) { if (*p == ' ') gaps++; else letters++; }
+  int ch = 16, gap = 6, cw = 12;
+  int block = letters * ch + gaps * gap;
+  int yy = y + max(0, (h - block) / 2);
   int x0 = x + max(0, (w - cw) / 2);
   fb.setTextSize(2); fb.setTextColor(ink);
-  for (int i = 0; i < n; i++) {
-    fb.setCursor(x0, y0 + i * ch);
-    char s[2] = {word[i], 0};
+  for (const char* p = word; *p; p++) {
+    if (*p == ' ') { yy += gap; continue; }
+    fb.setCursor(x0, yy);
+    char s[2] = {*p, 0};
     fb.print(s);
+    yy += ch;
   }
 }
+void txtR(int right, int y, const char* s, uint16_t c, int size) {
+  txt(right - (int)strlen(s) * 6 * size, y, s, c, size);
+}
 void fmtTemp(char* b, size_t n, float t) { if (isnan(t)) snprintf(b, n, "--"); else snprintf(b, n, "%.0fc", t); }
-void fmtLoad(char* b, size_t n, float t) { if (isnan(t)) snprintf(b, n, "--"); else snprintf(b, n, t >= 10 ? "%.1f" : "%.2f", t); }
+void fmtLoad(char* b, size_t n, float t) {
+  if (isnan(t)) snprintf(b, n, "--");
+  else if (t >= 100) snprintf(b, n, "%.0f", t);
+  else snprintf(b, n, t >= 10 ? "%.1f" : "%.2f", t);
+}
 void fmtMem(char* b, size_t n, int m) { if (m < 0) snprintf(b, n, "--"); else snprintf(b, n, "%d%%", m); }
+
+// Oldest sample at the left. NAN breaks the stroke. lo/hi are the value scale.
+void spark(int x, int y, int w, int h, const float* series, int n, int next, float lo, float hi, uint16_t col) {
+  if (n <= 0 || !(hi > lo)) return;
+  int start = (n < HIST) ? 0 : next;
+  int prevX = -1, prevY = 0;
+  for (int i = 0; i < n; i++) {
+    float v = series[(start + i) % HIST];
+    if (isnan(v)) { prevX = -1; continue; }
+    float t = (v - lo) / (hi - lo);
+    if (t < 0) t = 0; if (t > 1) t = 1;
+    int px = x + (n == 1 ? w - 1 : i * (w - 1) / (n - 1));
+    int py = y + h - 1 - (int)(t * (h - 1));
+    if (prevX >= 0) fb.drawLine(prevX, prevY, px, py, col);
+    else fb.drawPixel(px, py, col);
+    prevX = px; prevY = py;
+  }
+}
+bool seriesRange(const float* series, int n, int next, float minSpan, float& lo, float& hi) {
+  int start = (n < HIST) ? 0 : next;
+  bool any = false;
+  for (int i = 0; i < n; i++) {
+    float v = series[(start + i) % HIST];
+    if (isnan(v)) continue;
+    if (!any) { lo = hi = v; any = true; }
+    else { if (v < lo) lo = v; if (v > hi) hi = v; }
+  }
+  if (!any) return false;
+  if (hi - lo < minSpan) {
+    float mid = (lo + hi) * 0.5f;
+    lo = mid - minSpan * 0.5f;
+    hi = mid + minSpan * 0.5f;
+  }
+  if (lo < 0) lo = 0;
+  if (hi <= lo) hi = lo + minSpan;
+  return true;
+}
 
 enum Page { P_BOARD, P_DESK, P_TERM, NPAGES };
 int page = P_BOARD;
 
-void drawBoard(const Status& s) {
+void drawBoard(const Status& s, const PcHist& h, uint32_t now) {
   bool nums = !isnan(s.pcTemp) && !isnan(s.pcLoad) && s.pcMem >= 0;
   bool linked = s.api && strcmp(s.link, "LINKED") == 0 && nums;
   bool nohost = s.api && strcmp(s.link, "NO HOST") == 0;
+  // Cable still in, helper quiet: hold the last PC figures. Green stays off; the
+  // reading is not live. Unplugging the cable skips this and shows NO HOST at once.
+  bool reconnecting = s.api && !linked && !nohost && h.had
+                      && (uint32_t)(now - h.lastMs) < RECONNECT_MS;
+  bool showPc = linked || reconnecting;
   uint16_t top, bot, ink, accent;
   const char* word;
   if (!s.api) {
@@ -305,29 +400,59 @@ void drawBoard(const Status& s) {
   } else {
     top = rgb(126, 182, 238); bot = rgb(26, 78, 134); ink = rgb(4, 16, 24); accent = rgb(159, 212, 255); word = "KEYS";
   }
-  vgrad(0, 0, 72, H, top, bot);
-  vword(0, 0, 72, H, word, ink);
-  fb.fillRect(72, 0, W - 72, H, rgb(12, 16, 24));
-  txt(80, 4, !s.api ? "" : linked ? "PC" : "PI", accent, 1);
-  float ft = linked ? s.pcTemp : s.temp;
-  float fl = linked ? s.pcLoad : s.load1;
-  int fm = linked ? s.pcMem : s.mem;
-  char a[16], b[16], c[16], l1[40], l2[40];
-  fmtTemp(a, sizeof a, ft); fmtLoad(b, sizeof b, fl); fmtMem(c, sizeof c, fm);
-  txt(80, 20, a, C_TXT, 2); txt(196, 24, "temp", C_DIM, 1);
-  txt(80, 46, b, C_TXT, 2); txt(196, 50, "load", C_DIM, 1);
-  txt(80, 72, c, C_TXT, 2); txt(196, 76, "mem", C_DIM, 1);
+  // 52px rail (not a third of 240) so a figure, its label, and a trace fit on one row.
+  const int RAIL = 52, NUM_R = 116, LAB_X = 122, SP_X = 152, SP_W = 82, SP_H = 16;
+  const int ROW_Y[3] = {12, 44, 76};
+  vgrad(0, 0, RAIL, H, top, bot);
+  vword(0, 0, RAIL, H, word, ink);
+  fb.fillRect(RAIL, 0, W - RAIL, H, rgb(12, 16, 24));
+  uint16_t tagC = reconnecting ? rgb(255, 186, 80) : accent;
+  txt(RAIL + 6, 1, !s.api ? "" : showPc ? "PC" : "PI", tagC, 1);
+
+  float ft, fl; int fm;
+  uint16_t numC = C_TXT;
+  if (showPc && linked) { ft = s.pcTemp; fl = s.pcLoad; fm = s.pcMem; }
+  else if (showPc) { ft = h.lastT; fl = h.lastL; fm = isnan(h.lastM) ? -1 : (int)(h.lastM + 0.5f); numC = rgb(176, 186, 200); }
+  else { ft = s.temp; fl = s.load1; fm = s.mem; }
+  char fig[3][16];
+  fmtTemp(fig[0], sizeof fig[0], ft); fmtLoad(fig[1], sizeof fig[1], fl); fmtMem(fig[2], sizeof fig[2], fm);
+  const char* lab[3] = {"temp", "load", "mem"};
+  for (int i = 0; i < 3; i++) {
+    txtR(NUM_R, ROW_Y[i], fig[i], numC, 2);
+    txt(LAB_X, ROW_Y[i] + 4, lab[i], C_DIM, 1);
+  }
+  if (showPc) {
+    float lo, hi;
+    uint16_t cT = reconnecting ? rgb(150, 116, 70) : rgb(255, 170, 80);
+    uint16_t cL = reconnecting ? rgb(90, 116, 150) : rgb(110, 190, 255);
+    uint16_t cM = reconnecting ? rgb(120, 108, 150) : rgb(186, 160, 255);
+    if (seriesRange(h.temp, h.n, h.next, 8, lo, hi))
+      spark(SP_X, ROW_Y[0], SP_W, SP_H, h.temp, h.n, h.next, lo, hi, cT);
+    if (seriesRange(h.load, h.n, h.next, 0.5f, lo, hi))
+      spark(SP_X, ROW_Y[1], SP_W, SP_H, h.load, h.n, h.next, lo, hi, cL);
+    spark(SP_X, ROW_Y[2], SP_W, SP_H, h.mem, h.n, h.next, 0, 100, cM);
+  }
+
+  if (reconnecting) {
+    int fx = RAIL + 4, fy = 106, fw = W - fx - 4, fh = 26;
+    fb.fillRoundRect(fx, fy, fw, fh, 4, rgb(72, 44, 8));
+    const char* msg = "reconnecting";
+    uint16_t toastC = ((now / 400) & 1) ? rgb(255, 196, 96) : rgb(168, 120, 48);
+    txt(fx + (fw - (int)strlen(msg) * 12) / 2, fy + 5, msg, toastC, 2);
+    return;
+  }
+  char l1[40], l2[40];
   if (!s.api) snprintf(l1, sizeof l1, "%s", s.wifi ? "no zero" : "wifi down");
   else if (linked) {
     char tc[8], mem[8];
     fmtTemp(tc, sizeof tc, s.temp); fmtMem(mem, sizeof mem, s.mem);
     snprintf(l1, sizeof l1, "pi %s %s %s", tc, mem, s.ip);
   } else if (nohost) snprintf(l1, sizeof l1, "zero %s", s.ip);
-  else snprintf(l1, sizeof l1, "pc waiting");
+  else snprintf(l1, sizeof l1, "searching");
   if (!s.wifi) snprintf(l2, sizeof l2, "geek --");
   else snprintf(l2, sizeof l2, "geek %s %ddBm", s.geekIp, s.rssi);
-  txt(76, 104, l1, rgb(197, 208, 200), 1);
-  txt(76, 118, l2, rgb(197, 208, 200), 1);
+  txt(RAIL + 6, 110, l1, rgb(197, 208, 200), 1);
+  txt(RAIL + 6, 122, l2, rgb(197, 208, 200), 1);
 }
 
 void drawWaiting() {
@@ -368,10 +493,11 @@ void paint() {
     tft.drawRGBBitmap(0, 0, fb.getBuffer(), W, H);
     return;
   }
-  Status s; xSemaphoreTake(gLock, portMAX_DELAY); s = gStat; xSemaphoreGive(gLock);
+  Status s; PcHist h;
+  xSemaphoreTake(gLock, portMAX_DELAY); s = gStat; h = gHist; xSemaphoreGive(gLock);
   fb.fillScreen(rgb(12, 16, 24));
   if (page == P_TERM) drawTerm();
-  else drawBoard(s);
+  else drawBoard(s, h, millis());
   tft.drawRGBBitmap(0, 0, fb.getBuffer(), W, H);
 }
 
@@ -383,9 +509,9 @@ void go(int n) {
   gDeskOn = desk;
   if (!desk) {
     gShown = false;
-    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) == pdTRUE) {
-      gFrameOk = false; xSemaphoreGive(gLock);
-    }
+    xSemaphoreTake(gLock, portMAX_DELAY);
+    gFrameOk = false;
+    xSemaphoreGive(gLock);
   }
 }
 
@@ -409,7 +535,8 @@ void setup() {
 #endif
   if (bootHeld || unconfigured) setupPortal();
   gLock = xSemaphoreCreateMutex();
-  WiFi.mode(WIFI_STA); WiFi.setAutoReconnect(true); WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
+  WiFi.mode(WIFI_STA); WiFi.setAutoReconnect(true);
+  WiFi.begin(cfg.ssid.c_str(), cfg.pass.length() ? cfg.pass.c_str() : nullptr);
   xTaskCreatePinnedToCore(netTask, "net", 12288, nullptr, 1, nullptr, 0);
 }
 

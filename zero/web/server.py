@@ -34,7 +34,8 @@ STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 MACROS = {"ctrl_alt_del": lambda: hid.key_combo(["delete"], ["ctrl", "alt"]),
           "win_l": lambda: hid.key_combo(["l"], ["gui"]),
           "alt_tab": lambda: hid.key_combo(["tab"], ["alt"])}
-LOCK = threading.Lock()  # serialize writes so reports don't interleave
+LOCK = threading.Lock()      # serialize writes so reports don't interleave
+PIN_LOCK = threading.Lock()  # guard per-IP failed-PIN counters
 
 MAX_BODY = 8192
 PIN_FILE = os.environ.get("KVM_PIN_FILE", "/etc/pi-zero-w-hid-kvm/pin")
@@ -125,6 +126,8 @@ def local_ip():
         return "0.0.0.0"
 
 class H(SimpleHTTPRequestHandler):
+    timeout = 5
+
     def __init__(self, *a, **k): super().__init__(*a, directory=STATIC, **k)
 
     def _json(self, code, obj):
@@ -167,12 +170,16 @@ class H(SimpleHTTPRequestHandler):
 
     def _pin_ok(self):
         ip = self.client_address[0]; now = time.monotonic()
-        n, t0 = FAILS.get(ip, (0, now))
-        if n >= MAX_FAILS and now - t0 < LOCKOUT_S: return None      # locked out
-        if now - t0 >= LOCKOUT_S: n, t0 = 0, now
-        if hmac.compare_digest((self.headers.get("X-KVM-PIN") or "").encode(), PIN.encode()):
-            FAILS.pop(ip, None); return True
-        FAILS[ip] = (n + 1, t0 if n else now); return False
+        given = (self.headers.get("X-KVM-PIN") or "").encode()
+        with PIN_LOCK:
+            n, t0 = FAILS.get(ip, (0, now))
+            if n >= MAX_FAILS and now - t0 < LOCKOUT_S: return None      # locked out
+            if now - t0 >= LOCKOUT_S: n, t0 = 0, now
+            if hmac.compare_digest(given, PIN.encode()):
+                FAILS.pop(ip, None); return True
+            for k, (_, ts) in list(FAILS.items()):
+                if now - ts >= LOCKOUT_S: FAILS.pop(k, None)
+            FAILS[ip] = (n + 1, t0 if n else now); return False
 
     def do_POST(self):
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()

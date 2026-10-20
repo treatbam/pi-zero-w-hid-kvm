@@ -63,6 +63,19 @@ class HostView:
         with self._lock:
             self._buf.clear()
 
+    def drop_incomplete(self):
+        """Drop a header whose payload never arrived. A short magic prefix stays, so a pause
+        in the shell does not eat the last few characters. Readings stay until they go stale."""
+        with self._lock:
+            if len(self._buf) < HDR or self._buf.find(MAGIC) != 0:
+                return False
+            typ = self._buf[4]
+            ln = struct.unpack_from("<I", self._buf, 5)[0]
+            if not self._shape_ok(typ, ln) or len(self._buf) >= HDR + ln:
+                return False
+            self._buf.clear()
+            return True
+
     def feed(self, data):
         """Parse data. Return the bytes that belong to the terminal."""
         with self._lock:

@@ -61,15 +61,16 @@ The cycle is:
 
 ### Scoreboard
 
-Landscape, 240×135. The left block is a solid status color with the word written on it: LINKED, KEYS, or NO HOST. The right block is three large figures: temperature, load, and memory. A small label says PC or PI so the figures cannot be misread.
+Landscape, 240×135. The left block is a solid status color with the word written on it: LINKED, KEYS, or NO HOST. The right block is three rows. Each row is a right-aligned figure, a short label (temp, load, mem), and, for the PC, a sparkline. A small label says PC or PI so the figures cannot be misread.
 
-- LINKED. The figures are the target PC. The small print is the Pi: its temperature, memory percent, and address, then the GEEK’s address and signal in dBm.
-- KEYS. The figures are the Pi. The small print says the PC is waiting, and shows the GEEK’s address and signal.
-- NO HOST. The figures are the Pi. The small print shows the Zero’s address and the GEEK’s address and signal.
+- LINKED. The figures are the target PC, each with a trace of about the last two minutes. Temperature and load scale to the samples in that window. Memory is always 0–100%. The small print is the Pi: its temperature, memory percent, and address, then the GEEK’s address and signal in dBm.
+- Helper just went quiet, cable still in. For one minute the word stays KEYS, the last PC figures and traces stay on screen dimmed, and the footer is an amber “reconnecting” toast. Green is off, because the reading is not live.
+- After that minute, KEYS. The figures are the Pi. The small print says searching, and shows the GEEK’s address and signal.
+- NO HOST. The cable is out, so there is no reconnecting toast. The figures are the Pi. The small print shows the Zero’s address and the GEEK’s address and signal.
 
-Green is allowed only when a PC reading has actually arrived. A missing value is a dash on a blue or yellow board, never a green board with blanks.
+Green is allowed only when a PC reading has actually arrived and is still fresh. A missing value is a dash on a blue or yellow board, never a green board with blanks. A frozen PC number during the reconnecting minute is dim and labeled PC, on the blue board.
 
-The Pi’s temperature, load, and memory keep updating whenever the GEEK can reach the Zero. They move to the big figures in KEYS and NO HOST. They move to the small print in LINKED.
+The Pi’s temperature, load, and memory keep updating whenever the GEEK can reach the Zero. They move to the big figures in KEYS (once the reconnecting minute is over) and NO HOST. They move to the small print in LINKED and during the reconnecting minute.
 
 ### Desktop still
 
@@ -91,9 +92,9 @@ The picture, the PC figures, and the terminal text share that serial port. Frame
 
 These were not spelled out by the person. A different choice would not change the product they described.
 
-- The status color block is about a third of the panel width, and the word is set vertically in it.
+- The status color block is 52px wide, narrower than a third of the panel, so each row fits a figure, a label, and a trace. The word is set vertically in it. A space in NO HOST is a short gap, not a full letter row.
 - A new desktop frame is expected about every 2 seconds. Three missed intervals (about 6 seconds) counts as stale, and the desktop page switches to the blue waiting state.
-- The same freshness rule turns the scoreboard from LINKED back to KEYS.
+- The scoreboard does not follow that 6-second rule. After the helper goes quiet it holds the last PC figures for one minute under a reconnecting toast, then shows the Pi and searching. Pulling the cable skips the toast.
 - The waiting state on the desktop page reuses the blue field and the word KEYS, with no fake screenshot behind it.
 - The phone keeps the dark keys from the agreed mock. Only the status words change.
 - Screen-capture and the three PC stats are allowed to be OS-specific inside the helper. The bytes on the serial port are not. One frame format serves every helper.

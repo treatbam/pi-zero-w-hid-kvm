@@ -106,6 +106,20 @@ class HostViewTest(unittest.TestCase):
         self.assertFalse(st["frame_fresh"])
         self.assertIsNone(self.view.frame_bytes(False))
 
+    def test_drop_incomplete_forgets_a_partial_frame(self):
+        frame = packet(2, b"\xab" * FRAME_LEN)
+        self.assertEqual(self.view.feed(frame[:20]), b"")
+        self.assertTrue(self.view.drop_incomplete())
+        stats = packet(1, struct.pack("<fff", 55.0, 0.3, 12.0))
+        self.assertEqual(self.view.feed(stats), b"")
+        self.assertEqual(self.view.status_fields(True)["pc_temp_c"], 55.0)
+        self.assertIsNone(self.view.frame_bytes(True))
+
+    def test_drop_incomplete_keeps_a_short_magic_prefix(self):
+        self.assertEqual(self.view.feed(b"ok\xfe\xfd"), b"ok")
+        self.assertFalse(self.view.drop_incomplete())
+        self.assertEqual(self.view.feed(b"Zrest"), b"\xfe\xfdZrest")
+
     def test_helper_packets_match_the_parser(self):
         import importlib.util
         path = os.path.join(os.path.dirname(__file__), "..", "..", "host", "kvm_helper.py")

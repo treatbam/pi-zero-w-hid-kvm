@@ -19,10 +19,11 @@ finish() {
   echo "gadget up: $(cat "$G/UDC")"; exit 0
 }
 if [ -d "$G" ]; then
-  # Existing gadget dir is only OK if it's actually bound to a UDC.
-  # A gadget from an older install (no hid.usb2 or no acm.usb0) is torn down and rebuilt so
+  # Existing gadget dir is only OK if all function links exist and it's bound to a UDC.
+  # A gadget from an older or interrupted install is torn down and rebuilt so
   # the power keys and serial port exist; the host re-enumerates the device once.
-  if [ ! -d "$G/functions/hid.usb2" ] || [ ! -d "$G/functions/acm.usb0" ]; then
+  if [ ! -L "$G/configs/c.1/hid.usb0" ] || [ ! -L "$G/configs/c.1/hid.usb1" ] || \
+     [ ! -L "$G/configs/c.1/hid.usb2" ] || [ ! -L "$G/configs/c.1/acm.usb0" ]; then
     echo "" > "$G/UDC" 2>/dev/null || true
     rm -f "$G"/configs/c.1/hid.usb* "$G"/configs/c.1/acm.usb* ; rmdir "$G"/configs/c.1/strings/0x409 "$G"/configs/c.1 \
       "$G"/functions/hid.usb* "$G"/functions/acm.usb* "$G"/strings/0x409 2>/dev/null || true; rmdir "$G" || true

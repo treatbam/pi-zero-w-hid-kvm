@@ -3,10 +3,14 @@
 // the shift modifier. Fn holds F-keys, macros, and power off the letter rows.
 // The status word comes from the Zero (link), the same three words as the GEEK.
 let pin = localStorage.getItem('kvmPin') || '';
-const askPin = msg => { const p = prompt(msg || 'Console PIN'); if (p !== null) { pin = p.trim(); localStorage.setItem('kvmPin', pin); } };
+const askPin = msg => {
+  const p = prompt(msg || 'Console PIN');
+  if (p !== null) { pin = p.trim(); if (pin) localStorage.setItem('kvmPin', pin); else localStorage.removeItem('kvmPin'); }
+};
 async function post(u, b) {
+  if (!pin) { askPin(); if (!pin) return new Response('{}', {status: 401}); }
   const r = await fetch(u, {method: 'POST', headers: {'Content-Type': 'application/json', 'X-KVM-PIN': pin}, body: JSON.stringify(b)});
-  if (r.status === 401) { askPin('Wrong or missing PIN. Console PIN:'); }
+  if (r.status === 401) { pin = ''; localStorage.removeItem('kvmPin'); askPin('Wrong or missing PIN. Console PIN:'); }
   else if (r.status === 429) { alert('Too many wrong PINs. Wait a minute.'); }
   return r;
 }
@@ -23,8 +27,11 @@ async function power(target, action, label) {
 
 let held = 0;
 let q = Promise.resolve();
-const m = o => { const b = Object.assign({dx: 0, dy: 0, wheel: 0, buttons: held}, o);
-  q = q.then(() => post('/api/mouse', b)).catch(() => {}); return q; };
+const m = o => {
+  if (!pin) return q;
+  const b = Object.assign({dx: 0, dy: 0, wheel: 0, buttons: held}, o);
+  q = q.then(() => post('/api/mouse', b)).catch(() => {}); return q;
+};
 
 const SYM = {
   '`': '~', '1': '!', '2': '@', '3': '#', '4': '$', '5': '%', '6': '^', '7': '&', '8': '*',
@@ -36,20 +43,20 @@ const dig = '1234567890'.split('').map(d => key(d, d));
 const letters = s => s.split('').map(ch => key(ch, ch));
 
 const BASE = [
-  [key('esc', 'esc', 2, {cls: 'mod'}), ...dig, key('-', '-'), key('=', '='), key('⌫', 'backspace', 2, {cls: 'mod', aria: 'backspace'})],
+  [key('esc', 'esc', 1, {cls: 'mod'}), key('`', '`'), ...dig, key('-', '-'), key('=', '='), key('\u232b', 'backspace', 2, {cls: 'mod', aria: 'backspace'})],
   [key('tab', 'tab', 2, {cls: 'mod'}), ...letters('qwertyuiop'), key('[', '['), key(']', ']'), key('\\', '\\', 2)],
-  [{label: 'Fn', span: 2, kind: 'fn', cls: 'fn'}, ...letters('asdfghjkl'), key(';', ';'), key("'", "'"), key('⏎', 'enter', 3, {cls: 'go', aria: 'enter'})],
-  [{label: '⇧', span: 2, kind: 'shift', cls: 'mod', aria: 'shift'}, ...letters('zxcvbnm'), key(',', ','), key('.', '.'), key('/', '/'), {label: '⇧', span: 4, kind: 'shift', cls: 'mod', aria: 'shift'}],
+  [{label: 'Fn', span: 2, kind: 'fn', cls: 'fn'}, ...letters('asdfghjkl'), key(';', ';'), key("'", "'"), key('\u23ce', 'enter', 3, {cls: 'go', aria: 'enter'})],
+  [{label: '\u21e7', span: 2, kind: 'shift', cls: 'mod', aria: 'shift'}, ...letters('zxcvbnm'), key(',', ','), key('.', '.'), key('/', '/'), {label: '\u21e7', span: 4, kind: 'shift', cls: 'mod', aria: 'shift'}],
 ];
 const BOTTOM = [
   {label: 'ctrl', span: 2, kind: 'ctrl', cls: 'mod'},
   {label: 'alt', span: 2, kind: 'alt', cls: 'mod'},
   {label: 'win', span: 2, kind: 'win', cls: 'mod'},
   key('space', 'space', 6, {cls: 'sp'}),
-  key('←', 'left', 1, {cls: 'mod', aria: 'left'}),
-  key('↑', 'up', 1, {cls: 'mod', aria: 'up'}),
-  key('↓', 'down', 1, {cls: 'mod', aria: 'down'}),
-  key('→', 'right', 1, {cls: 'mod', aria: 'right'}),
+  key('\u2190', 'left', 1, {cls: 'mod', aria: 'left'}),
+  key('\u2191', 'up', 1, {cls: 'mod', aria: 'up'}),
+  key('\u2193', 'down', 1, {cls: 'mod', aria: 'down'}),
+  key('\u2192', 'right', 1, {cls: 'mod', aria: 'right'}),
 ];
 const fkey = i => key('f' + i, 'f' + i, 1, {cls: 'mod'});
 const FN = [
@@ -59,9 +66,10 @@ const FN = [
     key('PgU', 'pageup', 1, {cls: 'mod', aria: 'page up'}),
     key('PgD', 'pagedown', 1, {cls: 'mod', aria: 'page down'})],
   [
-    {label: 'C-A-Del', span: 6, kind: 'macro', key: 'ctrl_alt_del', cls: 'mod', aria: 'Ctrl+Alt+Del'},
-    {label: 'Lock', span: 5, kind: 'macro', key: 'win_l', cls: 'mod', aria: 'Win+L'},
-    {label: 'A-Tab', span: 5, kind: 'macro', key: 'alt_tab', cls: 'mod', aria: 'Alt+Tab'},
+    key('Del', 'delete', 3, {cls: 'mod', aria: 'delete'}),
+    {label: 'C-A-Del', span: 5, kind: 'macro', key: 'ctrl_alt_del', cls: 'mod', aria: 'Ctrl+Alt+Del'},
+    {label: 'Lock', span: 4, kind: 'macro', key: 'win_l', cls: 'mod', aria: 'Win+L'},
+    {label: 'A-Tab', span: 4, kind: 'macro', key: 'alt_tab', cls: 'mod', aria: 'Alt+Tab'},
   ],
   [
     {label: 'Fn', span: 2, kind: 'fn', cls: 'fn'},
@@ -169,7 +177,7 @@ async function poll() {
   const pill = document.getElementById('pill'), ip = document.getElementById('ip');
   try {
     const s = await (await fetch('/api/status')).json();
-    pill.textContent = s.link || '…';
+    pill.textContent = s.link || '\u2026';
     pill.className = 'pill ' + (s.link === 'LINKED' ? 'linked' : s.link === 'KEYS' ? 'keys' : s.link === 'NO HOST' ? 'nohost' : '');
     ip.textContent = s.ip || '';
   } catch (e) {

@@ -8,7 +8,7 @@ bounce the host getty's output straight back to it and loop.
 The same port also carries helper packets (PC stats and a desktop still). Those are
 removed before the ring buffer, so the terminal page does not print them.
 """
-import collections, os, re, termios, threading, time
+import codecs, collections, os, re, termios, threading, time
 import hostview
 
 DEV = os.environ.get("KVM_TERM_DEV", "/dev/ttyGS0")
@@ -16,6 +16,7 @@ MAX_LINES, MAX_LINE = 200, 400
 ANSI = re.compile(r"\x1b(\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[@-Z\\-_])")
 
 _lock = threading.Lock()
+_wlock = threading.Lock()
 _lines = collections.deque(maxlen=MAX_LINES)
 _partial = ""
 _seq = 0            # total completed lines ever (lets clients spot new output)
@@ -53,23 +54,40 @@ def _feed(text):
 def _reader():
     global _fd, _wfd, _err
     while True:
+        fd = wfd = None
         try:
             fd = os.open(DEV, os.O_RDWR | os.O_NOCTTY)
-            _raw(fd); _wfd = os.open(DEV, os.O_WRONLY | os.O_NOCTTY | os.O_NONBLOCK)
-            _fd, _err = fd, None
+            _raw(fd); wfd = os.open(DEV, os.O_WRONLY | os.O_NOCTTY | os.O_NONBLOCK)
+            with _wlock:
+                _fd, _wfd, _err = fd, wfd, None
+            dec = codecs.getincrementaldecoder("utf-8")("replace")
+            last_data = time.monotonic()
             while True:
                 b = os.read(fd, 4096)
-                if not b: time.sleep(0.2); continue    # host closed the port
+                now = time.monotonic()
+                # A helper that dies mid-frame leaves a header waiting for 64800 bytes.
+                # The next open blocks, so the gap shows up on the following read.
+                # An empty read is the host closing the port. Either way, drop the
+                # half packet before the next stats record is swallowed as pixels.
+                if not b or now - last_data > 1.0:
+                    hostview.shared.drop_incomplete()
+                    dec.reset()
+                if not b:
+                    time.sleep(0.2); continue
+                last_data = now
                 text = hostview.shared.feed(b)
-                if text: _feed(text.decode("utf-8", "replace"))
+                if text:
+                    s = dec.decode(text)
+                    if s: _feed(s)
         except OSError as e:
             hostview.shared.reset()
             _err = f"{DEV}: {e.strerror or e}"
-            for f in (_fd, _wfd):
-                if f is not None:
-                    try: os.close(f)
-                    except OSError: pass
-            _fd = _wfd = None
+            with _wlock:
+                for f in (fd, wfd, _fd, _wfd):
+                    if f is not None:
+                        try: os.close(f)
+                        except OSError: pass
+                _fd = _wfd = None
             time.sleep(2)
 
 def start():
@@ -83,15 +101,16 @@ def snapshot(n=MAX_LINES):
 
 def send(text, newline=True):
     """Write keystrokes to the host terminal. Returns False if the port isn't open."""
-    fd = _wfd
-    if fd is None: return False
     data = (text + ("\r" if newline else "")).encode()
-    # If the host isn't reading, the port buffer fills; give up after 1 s.
-    end = time.monotonic() + 1.0
-    while data:
-        try:
-            n = os.write(fd, data); data = data[n:]
-        except BlockingIOError:
-            if time.monotonic() > end: raise TimeoutError("host not reading the serial port")
-            time.sleep(0.02)
-    return True
+    with _wlock:
+        fd = _wfd
+        if fd is None: return False
+        # If the host isn't reading, the port buffer fills; give up after 1 s.
+        end = time.monotonic() + 1.0
+        while data:
+            try:
+                n = os.write(fd, data); data = data[n:]
+            except BlockingIOError:
+                if time.monotonic() > end: raise TimeoutError("host not reading the serial port")
+                time.sleep(0.02)
+        return True
