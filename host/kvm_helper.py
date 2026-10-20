@@ -57,15 +57,22 @@ def pack_mode(mode):
 
 
 class CtlParser:
-    """Split Zero->host input into (data bytes, [modes]). A partial prefix is held
-    back; a prefix followed by garbage is released as data."""
+    """Split Zero->host input into an ordered list of segments:
+    ("data", bytes) or ("mode", b"shell"|b"helper"). A partial prefix is held
+    back until the next feed; a prefix followed by garbage is released as data."""
 
     def __init__(self):
         self.buf = bytearray()
 
     def feed(self, data):
         self.buf.extend(data)
-        out, modes = bytearray(), []
+        segs, out = [], bytearray()
+
+        def flush():
+            if out:
+                segs.append(("data", bytes(out)))
+                out.clear()
+
         while True:
             i = self.buf.find(CTL)
             if i < 0:
@@ -87,11 +94,13 @@ class CtlParser:
                 break
             mode = bytes(self.buf[len(CTL):nl])
             if mode in MODES:
-                modes.append(mode)
+                flush()
+                segs.append(("mode", mode))
                 del self.buf[:nl + 1]
             else:
                 out.append(self.buf[0]); del self.buf[:1]
-        return bytes(out), modes
+        flush()
+        return segs
 
 
 def pack_stats(temp, load, mem):
@@ -200,6 +209,9 @@ def open_port(path):
 
 
 def write_all(fd, data):
+    """Blocking write with a 1 s stall limit. The loop is single-threaded, so a
+    host-side reader that stops draining (or a full pty) pauses everything for up to
+    1 s before TimeoutError makes main() reopen the port."""
     end = time.monotonic() + 1.0
     view = memoryview(data)
     while view:
@@ -239,6 +251,23 @@ class Shell:
         if done:
             self.pid = None
         return self.pid is not None
+
+    def drain(self, port_fd, quiet=0.3, limit=1.5):
+        """Forward pty output to the port until it is quiet for `quiet` s (max `limit` s)."""
+        end, last = time.monotonic() + limit, time.monotonic()
+        while time.monotonic() < end and time.monotonic() - last < quiet:
+            r, _, _ = select.select([self.master], [], [], 0.05)
+            if not r:
+                continue
+            try:
+                out = os.read(self.master, 4096)
+            except BlockingIOError:
+                continue
+            except OSError:
+                return
+            if not out:
+                return
+            write_all(port_fd, out); last = time.monotonic()
 
     def close(self):
         if self.pid is not None:
@@ -307,30 +336,27 @@ def run(fd, display):
                     data = None
                 if data == b"":
                     raise OSError("serial port closed")
-                if data:
-                    text, modes = parser.feed(data)
-                    for mode in modes:
-                        if mode == b"shell" and shell is None:
-                            text = b""        # bytes before the packet were helper-mode noise
-                            try:
-                                shell = Shell()
-                                print("shell mode: bash -l pid", shell.pid, flush=True)
-                                write_all(fd, pack_mode(b"shell"))
-                            except (PermissionError, OSError) as exc:
-                                print("shell refused:", exc, flush=True)
-                                write_all(fd, pack_mode(b"helper"))
-                        elif mode == b"helper" and shell is not None:
-                            if text:
-                                write_all(shell.master, text)
-                                text = b""
-                            shell.close(); shell = None
-                            print("helper mode (requested)", flush=True)
-                            write_all(fd, pack_mode(b"helper")); next_tick = 0.0
-                            requested_back = True
-                        else:
-                            write_all(fd, pack_mode(b"shell" if shell else b"helper"))
-                    if shell and text:
-                        write_all(shell.master, text)
+                for kind, val in parser.feed(data or b""):
+                    if kind == "data":
+                        if shell:
+                            write_all(shell.master, val)
+                        # helper mode: stray input from the Zero is dropped
+                    elif val == b"shell" and shell is None:
+                        try:
+                            shell = Shell()
+                            print("shell mode: bash -l pid", shell.pid, flush=True)
+                            write_all(fd, pack_mode(b"shell"))
+                        except (PermissionError, OSError) as exc:
+                            print("shell refused:", exc, flush=True)
+                            write_all(fd, pack_mode(b"helper"))
+                    elif val == b"helper" and shell is not None:
+                        shell.drain(fd)          # let bash act on bytes sent just before
+                        shell.close(); shell = None
+                        print("helper mode (requested)", flush=True)
+                        write_all(fd, pack_mode(b"helper")); next_tick = 0.0
+                        requested_back = True
+                    else:
+                        write_all(fd, pack_mode(b"shell" if shell else b"helper"))
             if shell and shell.master in ready:
                 try:
                     out = os.read(shell.master, 4096)

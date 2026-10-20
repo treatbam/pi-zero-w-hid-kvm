@@ -58,7 +58,7 @@ cmd.addEventListener('keydown', e => { if (e.key === 'Enter') send(true); });
 let serialMode = null;
 async function modePoll() {
   try {
-    const s = await (await fetch('/api/status')).json(), b = document.getElementById('mode');
+    const s = await (await fetch('/api/status', {headers: pin ? {'X-KVM-PIN': pin} : {}})).json(), b = document.getElementById('mode');
     serialMode = s.serial_mode;
     const pend = s.serial_mode_requested && s.serial_mode_requested !== s.serial_mode;
     b.textContent = 'serial: ' + (serialMode || 'no helper') + (pend ? ' \u2192 ' + s.serial_mode_requested + '\u2026' : '');

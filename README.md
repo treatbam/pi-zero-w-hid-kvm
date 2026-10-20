@@ -121,11 +121,14 @@ between two modes. The **serial:** button on the console (and on `term.html`) fl
 The Zero never runs commands on the host; it only sends a control packet the helper
 chooses to act on. Wire format:
 
-- Zero → host: `1E 1F "KVMCTL:" shell|helper 0A`. `/api/term` refuses text containing `1E 1F`,
-  so typed input can't forge it.
+- Zero → host: `1E 1F "KVMCTL:" shell|helper 0A`. `/api/term` refuses any text containing a `1E` or
+  `1F` byte (even alone, so a prefix can't be split across requests), so typed input can't forge it.
 - Host → Zero (ack): the usual envelope `FE FD 4B 56`, type `3`, length `1`, payload `0` helper /
   `1` shell. Sent on every change and every 2 s in helper mode. `/api/status` shows it as
   `serial_mode` (null = no helper answered), plus `serial_mode_requested` and `serial_mode_age_s`.
+  These three fields are only included when the request carries a valid `X-KVM-PIN`.
+- Latency: in helper mode a switch waits for the current still grab, so allow up to ~1.5 s
+  (plus the 2 s status poll) before the button updates.
 
 Run it as a systemd **user** service on the host (workbenchpc), never as root. The helper
 refuses shell mode when its euid is 0:
@@ -142,9 +145,10 @@ in the `dialout` group. Don't run a getty on the same port.
 Security: shell mode means **the console PIN = a shell as that user**. Keep the PIN private,
 keep port 8080 on your LAN or Tailscale (never port-forward it), and don't run the helper as
 an account you wouldn't hand to someone holding the PIN. The console is plain HTTP, so the PIN
-and terminal text are unencrypted on the LAN (Tailscale encrypts them). Anyone who can send a
-type-3 envelope from the host (e.g. `printf` inside the shell) can change the *displayed*
-mode only; it can't start a shell.
+and terminal text are unencrypted on the LAN (Tailscale encrypts them). Anything that writes to the port
+from the host, including output printed inside the shell (e.g. `printf`), can forge
+envelopes: fake PC stats, a fake desktop still, or a fake mode ack. That only changes what
+the console *displays*; it can't start a shell or send keys.
 
 **Windows host** — no getty; find the port in Device Manager → Ports (COM & LPT)
 ("USB Serial Device", driver `usbser.sys` is automatic on Windows 10/11), then stream a

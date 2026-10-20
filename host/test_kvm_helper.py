@@ -12,15 +12,25 @@ CTL = kvm_helper.CTL
 class Parser(unittest.TestCase):
     def test_split_and_partial(self):
         p = kvm_helper.CtlParser()
-        self.assertEqual(p.feed(b"ls\r" + CTL[:4]), (b"ls\r", []))
-        self.assertEqual(p.feed(CTL[4:] + b"helper\nok"), (b"ok", [b"helper"]))
+        self.assertEqual(p.feed(b"ls\r" + CTL[:4]), [("data", b"ls\r")])
+        self.assertEqual(p.feed(CTL[4:] + b"helper\nok"), [("mode", b"helper"), ("data", b"ok")])
+
+    def test_prefix_split_byte_by_byte(self):
+        p = kvm_helper.CtlParser(); segs = []
+        for ch in CTL + b"shell\n":
+            segs += p.feed(bytes([ch]))
+        self.assertEqual(segs, [("mode", b"shell")])
+
+    def test_order_around_packets(self):
+        p = kvm_helper.CtlParser()
+        self.assertEqual(p.feed(b"a" + CTL + b"shell\nb" + CTL + b"helper\nc"),
+                         [("data", b"a"), ("mode", b"shell"), ("data", b"b"), ("mode", b"helper"), ("data", b"c")])
 
     def test_garbage_released(self):
         p = kvm_helper.CtlParser()
-        out, modes = p.feed(CTL + b"rootme\nx")
-        self.assertEqual((out, modes), (CTL + b"rootme\nx", []))
-        out, modes = p.feed(CTL + b"waytoolongmodename")
-        self.assertEqual(modes, []); self.assertTrue(out.startswith(CTL))
+        self.assertEqual(p.feed(CTL + b"rootme\nx"), [("data", CTL + b"rootme\nx")])
+        segs = p.feed(CTL + b"waytoolongmodename")
+        self.assertTrue(all(k == "data" for k, _ in segs)); self.assertTrue(segs[0][1].startswith(CTL))
 
 
 class Loopback(unittest.TestCase):
@@ -69,6 +79,23 @@ class Loopback(unittest.TestCase):
         self.assertFalse(os.path.exists(f"/proc/{pid}") and "Z" not in open(f"/proc/{pid}/stat").read().split()[2],
                          "bash still running")
         self.assertFalse(CTL in self.text)
+
+    def test_trailing_bytes_route_on_both_switches(self):
+        self.assertTrue(self.pump(lambda: self.mode() == "helper"))
+        # helper -> shell: bytes before the packet are dropped, bytes after go to bash
+        os.write(self.m, b"echo DROP$((1+1))\r" + CTL + b"shell\necho KEEP$((1+1))\r")
+        self.assertTrue(self.pump(lambda: b"KEEP2" in self.text), self.text[-300:])
+        self.assertNotIn(b"DROP2", self.text)
+        # shell -> helper: bytes before go to bash, bytes after are dropped
+        f = "/tmp/kvm_test_route"
+        for x in (f, f + "2"):
+            if os.path.exists(x): os.remove(x)
+        os.write(self.m, f"echo x > {f}\r".encode() + CTL + b"helper\n" + f"echo y > {f}2\r".encode())
+        self.assertTrue(self.pump(lambda: self.mode() == "helper"))
+        time.sleep(0.5)
+        self.assertTrue(os.path.exists(f), "bytes before helper packet did not reach bash")
+        self.assertFalse(os.path.exists(f + "2"), "bytes after helper packet reached a shell")
+        os.remove(f)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ API:
                                       "link","pc_temp_c","pc_load1","pc_mem_pct",
                                       "pc_age_s","frame_fresh",
                                       "serial_mode","serial_mode_age_s","serial_mode_requested"}
+                                    serial_* only with a valid X-KVM-PIN header.
                                     serial_mode is the helper's last ack ("helper"/"shell")
                                     or null when no helper has answered yet.
                                     link is "LINKED", "KEYS", or "NO HOST".
@@ -94,7 +95,7 @@ def validate(path, body):
     if path == "/api/term":
         t = body.get("text", "")
         if not isinstance(t, str) or len(t) > 1000: raise ValueError("text must be a string (max 1000)")
-        if "\x1e\x1f" in t: raise ValueError("text may not contain the mode-control prefix")
+        if "\x1e" in t or "\x1f" in t: raise ValueError("text may not contain \\x1e or \\x1f (mode-control bytes)")
         nl = body.get("newline", True)
         if not isinstance(nl, bool): raise ValueError("newline must be a bool")
         return (t, nl)
@@ -150,8 +151,10 @@ class H(SimpleHTTPRequestHandler):
         if self.path == "/api/status":
             st = hid.status()
             pc = hostview.shared.status_fields(st["host_connected"])
-            mode, age = hostview.shared.mode()
-            sm = {"serial_mode": mode, "serial_mode_age_s": age, "serial_mode_requested": MODE_REQ["mode"]}
+            sm = {}
+            if self.headers.get("X-KVM-PIN") and self._pin_ok():   # serial fields need the PIN
+                mode, age = hostview.shared.mode()
+                sm = {"serial_mode": mode, "serial_mode_age_s": age, "serial_mode_requested": MODE_REQ["mode"]}
             return self._json(200, {**st, "ip": local_ip(), **sysstats(), **pc, **sm})
         u = urlsplit(self.path)
         if u.path == "/api/frame":

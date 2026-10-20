@@ -194,7 +194,7 @@ document.addEventListener('contextmenu', e => { if (e.target.closest('#pad, #kb,
 async function poll() {
   const pill = document.getElementById('pill'), ip = document.getElementById('ip');
   try {
-    const s = await (await fetch('/api/status')).json();
+    const s = await (await fetch('/api/status', {headers: pin ? {'X-KVM-PIN': pin} : {}})).json();
     pill.textContent = s.link || '\u2026';
     pill.className = 'pill ' + (s.link === 'LINKED' ? 'linked' : s.link === 'KEYS' ? 'keys' : s.link === 'NO HOST' ? 'nohost' : '');
     ip.textContent = s.ip || '';
