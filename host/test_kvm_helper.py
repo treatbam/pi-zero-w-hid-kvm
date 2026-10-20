@@ -32,6 +32,21 @@ class Parser(unittest.TestCase):
         segs = p.feed(CTL + b"waytoolongmodename")
         self.assertTrue(all(k == "data" for k, _ in segs)); self.assertTrue(segs[0][1].startswith(CTL))
 
+    def test_ctl_commands_and_clipboard(self):
+        import base64
+        p = kvm_helper.CtlParser()
+        b64 = base64.b64encode("clip-test-✓".encode("utf-8"))
+        stream = CTL + b"frame\n" + CTL + b"loupe\n" + CTL + b"cget\n" + CTL + b"cset:" + b64 + b"\n"
+        self.assertEqual(p.feed(stream), [
+            ("ctl", b"frame"),
+            ("ctl", b"loupe"),
+            ("ctl", b"cget"),
+            ("ctl", b"cset:" + b64),
+        ])
+        # Invalid base64 in cset is released as data
+        bad = CTL + b"cset:not valid b64!\n"
+        self.assertEqual(p.feed(bad), [("data", bad)])
+
 
 class Loopback(unittest.TestCase):
     def setUp(self):
@@ -45,7 +60,11 @@ class Loopback(unittest.TestCase):
         self.hv = hostview.HostView(); self.text = b""
 
     def tearDown(self):
-        self.p.kill(); self.p.wait(); print(self.p.stdout.read().decode(), file=sys.stderr)
+        self.p.kill(); self.p.wait()
+        try:
+            print(self.p.stdout.read().decode(), file=sys.stderr)
+        finally:
+            self.p.stdout.close()
         os.close(self.m); os.close(self.s)
 
     def pump(self, until, timeout=8):
@@ -60,10 +79,21 @@ class Loopback(unittest.TestCase):
 
     def test_shell_echo_exit_and_helper_packet(self):
         self.assertTrue(self.pump(lambda: self.mode() == "helper"), "no helper ack")
+        # Verify clipboard push + pull (cset -> cget) round-trip in helper mode
+        import base64
+        b64 = base64.b64encode(b"bench-clip-123")
+        os.write(self.m, CTL + b"cset:" + b64 + b"\n")
+        self.assertTrue(self.pump(lambda: self.hv.clipboard()[0] == "bench-clip-123"), "no clip cset ack")
+        seq_after_set = self.hv.clipboard()[2]
+        os.write(self.m, CTL + b"cget\n")
+        self.assertTrue(self.pump(lambda: self.hv.clipboard()[2] > seq_after_set), "no clip cget ack")
+        self.assertEqual(self.hv.clipboard()[0], "bench-clip-123")
         os.write(self.m, CTL + b"shell\n")
         self.assertTrue(self.pump(lambda: self.mode() == "shell"), "no shell ack")
-        os.write(self.m, b"echo hi$((40+2))\r")
+        # Control packets arriving during shell mode must be stripped and ignored without leaking into bash
+        os.write(self.m, CTL + b"frame\n" + CTL + b"loupe\n" + CTL + b"cget\n" + b"echo hi$((40+2))\r")
         self.assertTrue(self.pump(lambda: b"hi42" in self.text), self.text[-300:])
+        self.assertNotIn(b"KVMCTL", self.text)
         os.write(self.m, b"exit\r")
         self.assertTrue(self.pump(lambda: self.mode() == "helper"), "no return after exit")
         # second round: leave shell with a helper packet instead
@@ -71,13 +101,24 @@ class Loopback(unittest.TestCase):
         os.write(self.m, CTL + b"shell\n")
         self.assertTrue(self.pump(lambda: self.mode() == "shell"))
         os.write(self.m, b"echo $$ > /tmp/kvm_test_pid\r")
-        self.assertTrue(self.pump(lambda: os.path.exists("/tmp/kvm_test_pid") and open("/tmp/kvm_test_pid").read().strip()))
-        pid = int(open("/tmp/kvm_test_pid").read()); os.remove("/tmp/kvm_test_pid")
+        def _has_pid():
+            if not os.path.exists("/tmp/kvm_test_pid"):
+                return False
+            with open("/tmp/kvm_test_pid") as pf:
+                return bool(pf.read().strip())
+        self.assertTrue(self.pump(_has_pid))
+        with open("/tmp/kvm_test_pid") as pf:
+            pid = int(pf.read())
+        os.remove("/tmp/kvm_test_pid")
         os.write(self.m, CTL + b"helper\n")
         self.assertTrue(self.pump(lambda: self.mode() == "helper"), "no return after helper packet")
         time.sleep(0.3)
-        self.assertFalse(os.path.exists(f"/proc/{pid}") and "Z" not in open(f"/proc/{pid}/stat").read().split()[2],
-                         "bash still running")
+        def _proc_running(p):
+            if not os.path.exists(f"/proc/{p}"):
+                return False
+            with open(f"/proc/{p}/stat") as sf:
+                return "Z" not in sf.read().split()[2]
+        self.assertFalse(_proc_running(pid), "bash still running")
         self.assertFalse(CTL in self.text)
 
     def test_trailing_bytes_route_on_both_switches(self):

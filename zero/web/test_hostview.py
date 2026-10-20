@@ -131,8 +131,146 @@ class HostViewTest(unittest.TestCase):
         self.assertEqual(self.view.status_fields(True)["pc_temp_c"], 48.2)
         self.assertEqual(self.view.status_fields(True)["pc_mem_pct"], 33)
         frame = bytes(FRAME_LEN)
+        self.assertEqual(self.view.frame_seq(), 0)
         self.assertEqual(self.view.feed(mod.pack_frame(frame)), b"")
         self.assertEqual(self.view.frame_bytes(True), frame)
+        self.assertEqual(self.view.frame_seq(), 1)
+        rates, prev = mod.step_net(None, ("eth0", 1000, 400, 8), now=10)
+        self.assertIsNone(rates)
+        rates, prev = mod.step_net(prev, ("eth0", 5000, 1400, 8), now=12)
+        self.assertEqual(rates, (2000.0, 500.0, 8))
+        self.assertIsNone(mod.step_net(prev, ("eth0", 10, 10, 8), now=14)[0])
+        cores, cprev = mod.step_cores(None, {"cpu0": (100, 200), "cpu1": (50, 200)})
+        self.assertEqual(cores, [])
+        cores, cprev = mod.step_cores(cprev, {"cpu0": (120, 300), "cpu1": (130, 300)})
+        self.assertEqual(cores, [80, 20])
+        self.assertEqual(self.view.feed(mod.pack_net(rates[0], rates[1], rates[2], cores)), b"")
+        (top_proc, top_cpu), pprev = mod.step_top_proc(None, {1: ("systemd", 5), 10: ("python3", 100)}, now=10, clk_tck=100)
+        # Tie-breaker when dticks == 0 picks higher cumulative ticks (python3 over systemd)
+        (idle_proc, idle_cpu), _ = mod.step_top_proc(pprev, {1: ("systemd", 5), 10: ("python3", 100)}, now=11, clk_tck=100)
+        self.assertEqual(idle_proc, "python3")
+        self.assertEqual(idle_cpu, 0.0)
+        (top_proc, top_cpu), pprev = mod.step_top_proc(pprev, {1: ("systemd", 5), 10: ("python3", 150), 20: ("idle", 10)}, now=12, clk_tck=100)
+        self.assertEqual(top_proc, "python3")
+        self.assertAlmostEqual(top_cpu, 25.0)
+        self.assertEqual(self.view.feed(mod.pack_triage(42.4, top_cpu, "192.168.1.50", top_proc)), b"")
+        st = self.view.status_fields(True)
+        self.assertEqual(st["pc_rx_bps"], 2000.0)
+        self.assertEqual(st["pc_tx_bps"], 500.0)
+        self.assertEqual(st["pc_ncpu"], 8)
+        self.assertEqual(st["pc_cores"], [80, 20])
+        self.assertEqual(st["pc_disk_pct"], 42)
+        self.assertEqual(st["pc_ip"], "192.168.1.50")
+        self.assertEqual(st["pc_top_proc"], "python3")
+        self.assertEqual(st["pc_top_cpu_pct"], 25.0)
+        self.assertEqual(self.view.feed(mod.pack_clip("hello Ω")), b"")
+        self.assertEqual(self.view.clipboard(), ("hello Ω", 0.0, 1))
+
+    def test_net_and_triage_alone_do_not_link(self):
+        self.assertEqual(self.view.feed(hostview.pack_net(1000, 20, 4, [50, 10])), b"")
+        self.assertEqual(self.view.feed(hostview.pack_triage(55.0, 12.0, "10.0.0.2", "gcc")), b"")
+        st = self.view.status_fields(True)
+        self.assertEqual(st["link"], "KEYS")
+        self.assertIsNone(st["pc_rx_bps"])
+        self.assertIsNone(st["pc_cores"])
+        self.assertIsNone(st["pc_ip"])
+
+    def test_cores_without_net_rates_still_populate(self):
+        self.view.feed(hostview.pack_stats(45.0, 0.8, 30.0))
+        self.view.feed(hostview.pack_net(-1.0, -1.0, 4, [90, 60, 30, 10]))
+        st = self.view.status_fields(True)
+        self.assertIsNone(st["pc_rx_bps"])
+        self.assertEqual(st["pc_ncpu"], 4)
+        self.assertEqual(st["pc_cores"], [90, 60, 30, 10])
+
+    def test_non_finite_net_and_triage_are_ignored(self):
+        self.view.feed(packet(4, struct.pack("<fff", float("nan"), 1.0, 4.0)))
+        self.view.feed(packet(5, struct.pack("<ff16s16s", float("nan"), 1.0, b"1.2.3.4", b"sh")))
+        self.view.feed(packet(1, struct.pack("<fff", 40.0, 0.2, 10.0)))
+        st = self.view.status_fields(True)
+        self.assertIsNone(st["pc_rx_bps"])
+        self.assertIsNone(st["pc_disk_pct"])
+        self.assertEqual(st["link"], "LINKED")
+
+    def test_decorate_frame_reticle_and_delta_brackets(self):
+        import importlib.util
+        path = os.path.join(os.path.dirname(__file__), "..", "..", "host", "kvm_helper.py")
+        spec = importlib.util.spec_from_file_location("kvm_helper", os.path.abspath(path))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        prev = bytes(FRAME_LEN)
+        cur = bytearray(FRAME_LEN)
+        # Change a box from (20, 30) to (40, 50)
+        for y in (30, 50):
+            for x in (20, 40):
+                idx = (y * 240 + x) * 2
+                cur[idx] = 0x12; cur[idx + 1] = 0x34
+        out = mod.decorate_frame(bytes(cur), prev_raw=prev, cursor_xy=(100, 60))
+        self.assertEqual(len(out), FRAME_LEN)
+        def px(x, y):
+            i = (y * 240 + x) * 2
+            return out[i] | (out[i + 1] << 8)
+        # Reticle center and arms are white (0xFFFF), outline is black (0x0000)
+        self.assertEqual(px(100, 60), 0xFFFF)
+        self.assertEqual(px(102, 60), 0xFFFF)
+        self.assertEqual(px(100, 58), 0xFFFF)
+        self.assertEqual(px(103, 60), 0x0000)
+        self.assertEqual(px(101, 61), 0x0000)
+        # Delta corner brackets at (20, 30) and (40, 50) are cyan (0x06FF)
+        self.assertEqual(px(20, 30), 0x06FF)
+        self.assertEqual(px(23, 30), 0x06FF)
+        self.assertEqual(px(20, 33), 0x06FF)
+        self.assertEqual(px(40, 50), 0x06FF)
+        self.assertEqual(px(37, 50), 0x06FF)
+
+    def test_hid_leds_and_ping_host(self):
+        import hid, threading
+        m, s = os.openpty()
+        orig_kbd = hid.KBD_DEV
+        orig_kc = hid.key_combo
+        try:
+            hid.KBD_DEV = os.ttyname(s)
+            import tty
+            tty.setraw(m); tty.setraw(s)
+            # Simulate host sending NumLock + CapsLock LED report (0x03)
+            os.write(m, b"\x03")
+            leds = hid.read_leds()
+            self.assertEqual(leds, {"num": True, "caps": True, "scroll": False})
+            # Simulate responsive host echoing LED reports when CapsLock is tapped
+            def responder():
+                r, _, _ = select.select([m], [], [], 0.5)
+                if r:
+                    os.read(m, 64)
+                    os.write(m, b"\x01")  # CapsLock off
+                r, _, _ = select.select([m], [], [], 0.5)
+                if r:
+                    os.read(m, 64)
+                    os.write(m, b"\x03")  # CapsLock restored
+            import select
+            t = threading.Thread(target=responder, daemon=True)
+            t.start()
+            res = hid.ping_host(timeout=0.3)
+            t.join(timeout=1.0)
+            self.assertTrue(res["alive"])
+            self.assertIsNotNone(res["latency_ms"])
+            self.assertEqual(res["leds"], {"num": True, "caps": True, "scroll": False})
+            # Drain any leftover keyboard reports on m, then test frozen host (no LED echo)
+            while select.select([m], [], [], 0)[0]:
+                os.read(m, 64)
+            res_dead = hid.ping_host(timeout=0.08)
+            self.assertFalse(res_dead["alive"])
+            self.assertIsNone(res_dead["latency_ms"])
+            # Test USB IN write timeout (HIDTimeout) returns alive=False instead of raising
+            def raise_timeout(*a, **k):
+                raise hid.HIDTimeout("simulated frozen USB IN endpoint")
+            hid.key_combo = raise_timeout
+            res_to = hid.ping_host(timeout=0.05)
+            self.assertFalse(res_to["alive"])
+            self.assertIsNone(res_to["latency_ms"])
+        finally:
+            hid.key_combo = orig_kc
+            hid.KBD_DEV = orig_kbd
+            os.close(m); os.close(s)
 
 
 if __name__ == "__main__":

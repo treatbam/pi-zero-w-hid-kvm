@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Tiny stdlib HTTP server: static console + JSON API. Binds 0.0.0.0 (default port 8080).
 API:
-  GET  /api/status              -> {"hid_ready","host_connected","udc_state","ip",
+  GET  /api/status              -> {"hid_ready","host_connected","udc_state","leds","ip",
                                       "temp_c","load1","mem_pct","uptime_s",
                                       "link","pc_temp_c","pc_load1","pc_mem_pct",
+                                      "pc_rx_bps","pc_tx_bps","pc_ncpu","pc_cores",
+                                      "pc_ip","pc_disk_pct","pc_top_proc","pc_top_cpu_pct",
                                       "pc_age_s","frame_fresh",
                                       "serial_mode","serial_mode_age_s","serial_mode_requested"}
                                     serial_* only with a valid X-KVM-PIN header.
@@ -11,8 +13,11 @@ API:
                                     or null when no helper has answered yet.
                                     link is "LINKED", "KEYS", or "NO HOST".
                                     PC fields are null unless link is LINKED.
-  GET  /api/frame                -> 240x135 RGB565-LE still, or 204 if it is stale
-                                    (PIN required; the GEEK polls this on the desktop page)
+  GET  /api/frame[?crop=full|loupe] -> 240x135 RGB565-LE still, or 204 if it is stale
+                                    (PIN required; requests on-demand capture from helper)
+  GET  /api/clipboard            -> {"ok":true,"text":"...","age_s":0.1} (PIN required)
+  POST /api/clipboard {"text":"..."} -> push UTF-8 text to host clipboard via serial helper
+  POST /api/ping   {}            -> bounce CapsLock twice & measure host LED echo latency_ms
   POST /api/key    {"keys":["a"],"mods":["ctrl"]}
   POST /api/type   {"text":"hello"}
   POST /api/mouse  {"dx":0,"dy":0,"wheel":0,"buttons":0}
@@ -50,6 +55,7 @@ MAX_FAILS, LOCKOUT_S = 5, 60
 HOST_POWER = ("power", "sleep", "wake")          # soft: System Control keys over USB
 HOST_HARD = ("hard_reset", "hard_power")         # needs optocoupler wiring (not built yet)
 MODE_REQ = {"mode": None}   # last mode asked for via /api/mode
+FRAME_REQ = {"crop": "frame", "at": 0.0, "loupe_until": 0.0}
 ZERO_POWER = {"shutdown": "poweroff", "reboot": "reboot"}
 
 def load_pin():
@@ -86,6 +92,12 @@ def validate(path, body):
         t = body.get("text", "")
         if not isinstance(t, str): raise ValueError("text must be a string")
         return (t[:1000],)
+    if path == "/api/clipboard":
+        t = body.get("text", "")
+        if not isinstance(t, str) or len(t) > 1000: raise ValueError("text must be a string (max 1000)")
+        return (t,)
+    if path == "/api/ping":
+        return ()
     if path == "/api/mouse":
         m = hid.MAX_MOVE
         return (_int(body, "dx", -m, m), _int(body, "dy", -m, m),
@@ -161,7 +173,34 @@ class H(SimpleHTTPRequestHandler):
             ok = self._pin_ok()
             if ok is None: return self._json(429, {"error": "too many wrong PINs, wait a minute"})
             if not ok: return self._json(401, {"error": "wrong or missing PIN"})
-            blob = hostview.shared.frame_bytes(hid.status()["host_connected"])
+            now = time.monotonic()
+            qcrop = parse_qs(u.query).get("crop", [None])[0]
+            if qcrop == "loupe":
+                FRAME_REQ["loupe_until"] = now + 4.0
+                cmd = "loupe"
+            elif qcrop == "full":
+                FRAME_REQ["loupe_until"] = 0.0
+                cmd = "frame"
+            else:
+                cmd = "loupe" if now < FRAME_REQ["loupe_until"] else "frame"
+            host_conn = hid.status()["host_connected"]
+            hmode = hostview.shared.mode()[0]
+            helper_active = (hmode == "helper") or (hmode != "shell" and hostview.shared.status_fields(True)["link"] == "LINKED")
+            crop_changed = cmd != FRAME_REQ["crop"]
+            fseq0 = hostview.shared.frame_seq()
+            sent = False
+            if helper_active and (crop_changed or now - FRAME_REQ["at"] >= 1.2):
+                FRAME_REQ["crop"] = cmd
+                FRAME_REQ["at"] = now
+                try: sent = bool(term.send_ctl(cmd))
+                except (TimeoutError, OSError): sent = False
+            if sent and (crop_changed or hostview.shared.frame_bytes(host_conn) is None):
+                deadline = time.monotonic() + 0.45
+                while time.monotonic() < deadline:
+                    if hostview.shared.frame_seq() != fseq0:
+                        break
+                    time.sleep(0.02)
+            blob = hostview.shared.frame_bytes(host_conn)
             if not blob:
                 self.send_response(204); self.send_header("Content-Length", "0")
                 self.end_headers(); return
@@ -170,6 +209,23 @@ class H(SimpleHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(blob)))
             self.end_headers(); self.wfile.write(blob); return
+        if u.path == "/api/clipboard":
+            ok = self._pin_ok()
+            if ok is None: return self._json(429, {"error": "too many wrong PINs, wait a minute"})
+            if not ok: return self._json(401, {"error": "wrong or missing PIN"})
+            _, _, seq0 = hostview.shared.clipboard()
+            try:
+                sent = term.send_ctl("cget")
+            except (TimeoutError, OSError):
+                sent = False
+            if sent:
+                deadline = time.monotonic() + 0.35
+                while time.monotonic() < deadline:
+                    if hostview.shared.clipboard()[2] != seq0:
+                        break
+                    time.sleep(0.02)
+            text, age, _ = hostview.shared.clipboard()
+            return self._json(200, {"ok": True, "text": text or "", "age_s": age})
         if u.path == "/api/term":
             ok = self._pin_ok()
             if ok is None: return self._json(429, {"error": "too many wrong PINs, wait a minute"})
@@ -223,6 +279,12 @@ class H(SimpleHTTPRequestHandler):
             except (TimeoutError, OSError) as e:
                 return self._json(503, {"error": str(e)})
             return self._json(200, {"ok": True})
+        if self.path == "/api/clipboard":
+            try:
+                if not term.send_clipboard(args[0]): return self._json(409, {"error": "serial port not open"})
+            except (TimeoutError, OSError) as e:
+                return self._json(503, {"error": str(e)})
+            return self._json(200, {"ok": True, "bytes": len(args[0].encode("utf-8")[:1024])})
         if self.path == "/api/mode":
             try:
                 if not term.send_mode(args[0]): return self._json(409, {"error": "serial port not open"})
@@ -241,6 +303,9 @@ class H(SimpleHTTPRequestHandler):
             return self._json(409, {"error": "host not connected"})  # avoid blocking write
         try:
             with LOCK:
+                if self.path == "/api/ping":
+                    res = hid.ping_host()
+                    return self._json(200, {"ok": True, **res})
                 if self.path == "/api/key": hid.key_combo(*args)
                 elif self.path == "/api/type": hid.type_text(*args)
                 elif self.path == "/api/mouse": hid.mouse(*args)

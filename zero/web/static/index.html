@@ -73,6 +73,7 @@ button.hw { opacity: .55; }
 }
 .pad-main { flex: 1; display: flex; min-block-size: 0; }
 #surface {
+  position: relative;
   flex: 1;
   min-inline-size: 0;
   display: grid;
@@ -81,7 +82,43 @@ button.hw { opacity: .55; }
   color: #667;
   letter-spacing: .08em;
   font-size: 12px;
+  overflow: hidden;
+  border-top-left-radius: 13px;
 }
+#view {
+  position: absolute;
+  inset: 0;
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+  pointer-events: none;
+  opacity: .88;
+}
+#loupe {
+  position: absolute;
+  inset-block-start: 6px;
+  inset-inline-end: 6px;
+  z-index: 2;
+  padding: 4px 8px;
+  font-size: 11px;
+  background: rgba(20, 24, 34, .82);
+  color: #9cf;
+  border: 1px solid #3a465e;
+  border-radius: 6px;
+}
+#loupe.active { background: #145266; color: #dff8ff; border-color: #4ad8ff; }
+.leds { display: inline-flex; gap: 3px; align-items: center; }
+.led {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: #22242a;
+  color: #556;
+  border: 1px solid #333640;
+}
+.led.on { background: #165e3a; color: #9effc8; border-color: #38d880; }
 .scrolls { display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 8px; }
 .scrolls button { background: rgba(255, 255, 255, .08); color: #ccc; padding-inline: 12px; }
 .pad-btns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; padding: 8px; }
@@ -90,17 +127,33 @@ button.hw { opacity: .55; }
 #pwr { font-size: 13px; color: #bbb; min-block-size: 1em; }
 </style></head><body>
 <header>
-  <div id="st"><span id="pill" class="pill">…</span><span id="ip" class="ip"></span></div>
+  <div id="st">
+    <span id="pill" class="pill">…</span>
+    <span id="leds" class="leds" title="Host Keyboard LEDs (Num / Caps / Scroll)">
+      <span id="led-num" class="led">N</span><span id="led-caps" class="led">C</span><span id="led-scroll" class="led">S</span>
+    </span>
+    <span id="ip" class="ip"></span>
+  </div>
+  <button type="button" id="ping" title="Bounce CapsLock twice to verify host OS is responsive">Ping</button>
   <button type="button" id="mode" title="Switch the host serial port between helper (stats + still) and a login shell">serial: …</button>
   <a href="term.html">term</a>
   <button type="button" id="pin">PIN</button>
 </header>
-<div id="type"><input id="txt" placeholder="type text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"><button type="button" id="send">Send</button></div>
+<div id="type">
+  <input id="txt" placeholder="type text or sync clipboard" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+  <button type="button" id="send" title="Type as US HID keystrokes">Send</button>
+  <button type="button" id="clip-push" title="Push UTF-8 text to host clipboard">Clip ↑</button>
+  <button type="button" id="clip-pull" title="Pull UTF-8 text from host clipboard">Clip ↓</button>
+</div>
 <div id="kb"></div>
 <div id="pwr"></div>
 <div id="pad">
   <div class="pad-main">
-    <div id="surface">TRACKPAD</div>
+    <div id="surface">
+      <canvas id="view" width="240" height="135" hidden></canvas>
+      <span id="pad-label">TRACKPAD</span>
+      <button type="button" id="loupe" title="Toggle live desktop preview / 1:1 cursor loupe on trackpad">view: off</button>
+    </div>
     <div class="scrolls">
       <button type="button" id="su" aria-label="Scroll up">↑</button>
       <button type="button" id="sd" aria-label="Scroll down">↓</button>

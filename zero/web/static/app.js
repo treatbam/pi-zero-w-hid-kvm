@@ -164,17 +164,121 @@ function typeTxt() {
 document.getElementById('send').onclick = typeTxt;
 document.getElementById('txt').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); typeTxt(); } });
 
+document.getElementById('clip-push').onclick = async () => {
+  const t = document.getElementById('txt');
+  if (!t.value) { document.getElementById('pwr').textContent = 'Clipboard push: enter text first'; return; }
+  const r = await post('/api/clipboard', {text: t.value});
+  const j = await r.json().catch(() => ({}));
+  document.getElementById('pwr').textContent = r.ok ? `Clipboard pushed (${j.bytes} B)` : `Clipboard push: ${j.error || r.status}`;
+};
+
+document.getElementById('clip-pull').onclick = async () => {
+  if (!pin) { askPin(); if (!pin) return; }
+  const r = await fetch('/api/clipboard', {headers: {'X-KVM-PIN': pin}});
+  if (r.status === 401) { pin = ''; localStorage.removeItem('kvmPin'); askPin('Wrong or missing PIN. Console PIN:'); return; }
+  const j = await r.json().catch(() => ({}));
+  if (r.ok) {
+    document.getElementById('txt').value = j.text || '';
+    if (j.text && navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(j.text).catch(() => {});
+    document.getElementById('pwr').textContent = j.text ? `Clipboard pulled (${j.text.length} chars)` : 'Host clipboard empty / unavailable';
+  } else {
+    document.getElementById('pwr').textContent = `Clipboard pull: ${j.error || r.status}`;
+  }
+};
+
+function showLeds(leds) {
+  const l = leds || {};
+  document.getElementById('led-num').className = 'led' + (l.num ? ' on' : '');
+  document.getElementById('led-caps').className = 'led' + (l.caps ? ' on' : '');
+  document.getElementById('led-scroll').className = 'led' + (l.scroll ? ' on' : '');
+}
+
+document.getElementById('ping').onclick = async () => {
+  document.getElementById('pwr').textContent = 'Pinging host via CapsLock LED…';
+  const r = await post('/api/ping', {});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    document.getElementById('pwr').textContent = `Ping: ${j.error || r.status}`;
+    return;
+  }
+  if (j.leds) showLeds(j.leds);
+  document.getElementById('pwr').textContent = j.alive
+    ? `Host alive: LED echo in ${j.latency_ms} ms`
+    : 'Host frozen / unresponsive (no LED echo)';
+};
+
 document.querySelectorAll('[data-b]').forEach(b => {
   b.onpointerdown = e => { e.preventDefault(); flush(); held |= +b.dataset.b; m({}); };
   b.onpointerup = b.onpointercancel = () => { if (held & +b.dataset.b) { flush(); held &= ~+b.dataset.b; m({}); } };
 });
 
 const pad = document.getElementById('surface');
+const viewCanvas = document.getElementById('view');
+const padLabel = document.getElementById('pad-label');
+const loupeBtn = document.getElementById('loupe');
+const viewCtx = viewCanvas.getContext('2d');
+const viewImg = viewCtx ? viewCtx.createImageData(240, 135) : null;
+let viewMode = 'off'; // 'off' | 'full' | 'loupe'
+let viewBusy = false;
+
+loupeBtn.onpointerdown = e => e.stopPropagation();
+loupeBtn.onclick = e => {
+  e.stopPropagation();
+  viewMode = viewMode === 'off' ? 'full' : viewMode === 'full' ? 'loupe' : 'off';
+  loupeBtn.textContent = viewMode === 'off' ? 'view: off' : viewMode === 'full' ? 'view: full' : 'view: loupe 1:1';
+  loupeBtn.className = viewMode === 'off' ? '' : 'active';
+  if (viewMode === 'off') {
+    viewCanvas.hidden = true;
+    padLabel.textContent = 'TRACKPAD';
+    padLabel.hidden = false;
+  } else {
+    pollFrame();
+  }
+};
+
+async function pollFrame() {
+  if (viewMode === 'off' || viewBusy || !pin || !viewCtx || !viewImg) return;
+  viewBusy = true;
+  try {
+    const r = await fetch(`/api/frame?crop=${viewMode}`, {headers: {'X-KVM-PIN': pin}});
+    if (r.status === 200) {
+      const buf = await r.arrayBuffer();
+      if (buf.byteLength === 240 * 135 * 2 && viewMode !== 'off') {
+        const src = new DataView(buf);
+        const dst = viewImg.data;
+        for (let i = 0, p = 0; i < buf.byteLength; i += 2, p += 4) {
+          const w = src.getUint16(i, true);
+          dst[p]     = ((w >> 11) & 31) * 255 / 31;
+          dst[p + 1] = ((w >> 5) & 63) * 255 / 63;
+          dst[p + 2] = (w & 31) * 255 / 31;
+          dst[p + 3] = 255;
+        }
+        viewCtx.putImageData(viewImg, 0, 0);
+        viewCanvas.hidden = false;
+        padLabel.hidden = true;
+      }
+    } else if (viewMode !== 'off') {
+      viewCanvas.hidden = true;
+      padLabel.textContent = 'WAITING FOR STILL…';
+      padLabel.hidden = false;
+    }
+  } catch (e) {
+    if (viewMode !== 'off') {
+      viewCanvas.hidden = true;
+      padLabel.textContent = 'TRACKPAD';
+      padLabel.hidden = false;
+    }
+  } finally {
+    viewBusy = false;
+  }
+}
+setInterval(pollFrame, 1500);
+
 let last = null, acc = {dx: 0, dy: 0}, moved = false;
-pad.onpointerdown = e => { last = [e.clientX, e.clientY]; moved = false; pad.setPointerCapture(e.pointerId); };
+pad.onpointerdown = e => { if (e.target === loupeBtn) return; last = [e.clientX, e.clientY]; moved = false; pad.setPointerCapture(e.pointerId); };
 pad.onpointermove = e => { if (!last) return; acc.dx += e.clientX - last[0]; acc.dy += e.clientY - last[1];
   if (Math.abs(acc.dx) + Math.abs(acc.dy) > 2) moved = true; last = [e.clientX, e.clientY]; };
-pad.onpointerup = () => { flush(); if (!moved) { m({buttons: held | 1}); m({}); } last = null; };
+pad.onpointerup = () => { if (!last) return; flush(); if (!moved) { m({buttons: held | 1}); m({}); } last = null; };
 pad.onwheel = e => { e.preventDefault(); m({wheel: e.deltaY < 0 ? 1 : -1}); };
 const clampMove = v => Math.max(-4096, Math.min(4096, Math.round(v)));
 function flush() { if (acc.dx || acc.dy) { const d = {dx: clampMove(acc.dx), dy: clampMove(acc.dy)}; acc = {dx: 0, dy: 0}; m(d); } }
@@ -191,13 +295,28 @@ bindWheel('su', 1);
 bindWheel('sd', -1);
 document.addEventListener('contextmenu', e => { if (e.target.closest('#pad, #kb, header')) e.preventDefault(); });
 
+const fmtRate = bps => {
+  if (bps == null || !Number.isFinite(bps) || bps < 0) return '--';
+  if (bps < 999.5) return Math.round(bps) + 'B';
+  if (bps < 999500) return (bps / 1000).toFixed(bps < 9950 ? 1 : 0) + 'K';
+  if (bps < 999500000) return (bps / 1e6).toFixed(bps < 9950000 ? 1 : 0) + 'M';
+  return (bps / 1e9).toFixed(1) + 'G';
+};
+
 async function poll() {
   const pill = document.getElementById('pill'), ip = document.getElementById('ip');
   try {
     const s = await (await fetch('/api/status', {headers: pin ? {'X-KVM-PIN': pin} : {}})).json();
     pill.textContent = s.link || '\u2026';
     pill.className = 'pill ' + (s.link === 'LINKED' ? 'linked' : s.link === 'KEYS' ? 'keys' : s.link === 'NO HOST' ? 'nohost' : '');
-    ip.textContent = s.ip || '';
+    showLeds(s.leds);
+    const parts = [s.pc_ip || s.ip || ''];
+    if (s.link === 'LINKED') {
+      if (s.pc_rx_bps != null) parts.push(`dn ${fmtRate(s.pc_rx_bps)} up ${fmtRate(s.pc_tx_bps)}`);
+      if (s.pc_disk_pct != null) parts.push(`/:${s.pc_disk_pct}%`);
+      if (s.pc_top_proc) parts.push(`${s.pc_top_proc}${s.pc_top_cpu_pct != null ? ' ' + Math.round(s.pc_top_cpu_pct) + '%' : ''}`);
+    }
+    ip.textContent = parts.filter(Boolean).join('  ');
     showMode(s);
   } catch (e) {
     pill.textContent = 'offline'; pill.className = 'pill'; ip.textContent = '';

@@ -27,5 +27,20 @@ try:
     time.sleep(0.3); print("wire", os.read(m, 100))
     os.write(m, hostview.MAGIC + bytes([3]) + (1).to_bytes(4, "little") + b"\x01"); time.sleep(0.5)
     st = req("/api/status")[1]; print("after ack", {k: st[k] for k in st if k.startswith("serial")})
+    assert st["serial_mode"] == "shell"
+    assert "leds" in st and set(st["leds"].keys()) == {"num", "caps", "scroll"}
+    # Feed stats + net/cores + triage + clip envelopes from helper side
+    os.write(m, hostview.pack_stats(52.0, 1.25, 48.0))
+    os.write(m, hostview.pack_net(12500.0, 3400.0, 8, [91, 64, 30, 12]))
+    os.write(m, hostview.pack_triage(63.2, 18.4, "192.168.1.77", "ffmpeg"))
+    os.write(m, hostview.pack_clip("clip-from-host"))
+    time.sleep(0.3)
+    code, cbody = req("/api/clipboard")
+    assert code == 200 and cbody["text"] == "clip-from-host", cbody
+    code, pbody = req("/api/clipboard", {"text": "push-to-host"})
+    assert code == 200 and pbody["ok"] is True, pbody
+    time.sleep(0.2)
+    wire_clip = os.read(m, 256)
+    assert b"\x1e\x1fKVMCTL:cset:" in wire_clip, wire_clip
 finally:
     p.terminate(); p.wait()

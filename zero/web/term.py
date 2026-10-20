@@ -99,12 +99,25 @@ def snapshot(n=MAX_LINES):
         return {"seq": _seq, "lines": list(_lines)[-n:], "partial": _partial,
                 "open": _fd is not None, "error": _err}
 
+import base64
+
 CTL = b"\x1e\x1fKVMCTL:"     # mode-control prefix the host helper watches for
 
 def send_mode(mode):
     """Ask the host helper to switch: 1E 1F "KVMCTL:" <helper|shell> LF."""
     if mode not in ("helper", "shell"): raise ValueError("bad mode")
     return _write(CTL + mode.encode() + b"\n")
+
+def send_ctl(cmd):
+    """Send a short control command ('frame', 'loupe', 'cget') to kvm_helper."""
+    if cmd not in ("frame", "loupe", "cget"): raise ValueError("bad ctl")
+    return _write(CTL + cmd.encode() + b"\n")
+
+def send_clipboard(text):
+    """Push UTF-8 clipboard text to the host helper as base64."""
+    raw = (text.encode("utf-8") if isinstance(text, str) else bytes(text))[:1024]
+    b64 = base64.b64encode(raw)
+    return _write(CTL + b"cset:" + b64 + b"\n")
 
 def send(text, newline=True):
     """Write keystrokes to the host terminal. Returns False if the port isn't open."""

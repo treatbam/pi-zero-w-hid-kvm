@@ -44,8 +44,11 @@ Then browse to `http://192.168.4.1:8080`. Manual run: `sudo bash zero/gadget/hid
 ### API (port 8080, bound to 0.0.0.0)
 | Method | Path | Body |
 |---|---|---|
-| GET | /api/status | → `hid_ready`, `host_connected`, `udc_state`, `ip`, `temp_c`, `load1`, `mem_pct`, `link` (`LINKED` / `KEYS` / `NO HOST`), `pc_temp_c`, `pc_load1`, `pc_mem_pct`, `pc_age_s`, `frame_fresh`. PC fields are null unless `link` is `LINKED`. |
-| GET | /api/frame | 240×135 RGB565 little-endian still, or 204 when it is stale. Needs `X-KVM-PIN`. |
+| GET | /api/status | → `hid_ready`, `host_connected`, `udc_state`, `leds` (`{num,caps,scroll}`), `ip`, `temp_c`, `load1`, `mem_pct`, `link` (`LINKED` / `KEYS` / `NO HOST`), `pc_temp_c`, `pc_load1`, `pc_mem_pct`, `pc_rx_bps`, `pc_tx_bps`, `pc_ncpu`, `pc_cores` (top 8 core busy % sorted hottest-to-coolest), `pc_ip`, `pc_disk_pct`, `pc_top_proc`, `pc_top_cpu_pct`, `pc_age_s`, `frame_fresh`. PC fields are null unless `link` is `LINKED`. |
+| GET | /api/frame[?crop=full\|loupe] | 240×135 RGB565 little-endian still (`full` downscale or `loupe` 1:1 cursor-centered crop), or 204 when stale. Requests on-demand capture from `kvm_helper.py`. Needs `X-KVM-PIN`. |
+| GET | /api/clipboard | → `{"ok":true,"text":"...","age_s":...}` pulls UTF-8 clipboard from host helper (needs `X-KVM-PIN`). |
+| POST | /api/clipboard | `{"text":"..."}` pushes layout-agnostic UTF-8 text to host clipboard (`wl-copy`/`xclip`/`xsel`). |
+| POST | /api/ping | `{}` bounces `CapsLock` twice and measures host USB HID LED output report echo `latency_ms` (`alive` bool). |
 | POST | /api/key | `{"keys":["a"],"mods":["ctrl"]}` |
 | POST | /api/type | `{"text":"hello"}` (US layout) |
 | POST | /api/mouse | `{"dx":0,"dy":0,"wheel":0,"buttons":0}` |
@@ -55,7 +58,7 @@ Then browse to `http://192.168.4.1:8080`. Manual run: `sudo bash zero/gadget/hid
 | POST | /api/term | `{"text":"ls","newline":true}` → keystrokes to the host serial console |
 
 `host_connected` = `/sys/class/udc/*/state == configured` (host enumerated the gadget). Approximate:
-it does not mean the host has focus/is unlocked. POSTs return 409 when not configured,
+it does not mean the host has focus/is unlocked; use **Ping** (`POST /api/ping`) to verify the host OS is responsive via USB HID LED readback. POSTs return 409 when not configured,
 400 on bad JSON/types, 415 without `Content-Type: application/json`, 403 on cross-origin `Origin`,
 and 503 if the host stops reading HID reports for >0.5 s (write timeout; lock is released).
 
@@ -68,7 +71,7 @@ pio run -t upload && pio device monitor
 A short press on BOOT (or any wired button) advances **scoreboard → desktop still → terminal**.
 A long press and a double press do nothing. Hold BOOT while powering on to reopen the setup portal.
 
-The scoreboard’s left block is the status word from `link`. Green **LINKED** means the big figures are the PC, each with a two-minute sparkline (temperature and load scale themselves, memory is 0–100%), and the small print is the Pi. When the helper goes quiet the rail stays blue **KEYS**, the last PC figures and traces stay up dimmed, and an amber **reconnecting** toast sits in the footer for one minute. After that minute the big figures are the Pi and the footer says **searching**. Yellow **NO HOST** means the cable is out: Pi figures immediately, no toast. If the Zero cannot be reached the word is **ZERO** and the figures are dashes. The desktop page stays on that blue KEYS waiting field until a fresh still arrives, and drops the picture when `/api/frame` is not 200. The phone follows `link` and does not hold the extra minute.
+The scoreboard’s left block is the status word from `link`, with `N C S` keyboard lock LED indicators along the bottom edge when a host is attached. Green **LINKED** means the big figures are the PC, each with a dual-layer `82×22 px` readout (7px horizontal plasma gradient bar with warning notch and 60s peak-hold pip on top, 13px shaded Tufte horizon 60-sample sparkline with warning ember tint below), a 30s trend delta badge under each `temp`/`load`/`mem` label, an 8-core micro-chiclet utilization heatmap under `load`, headless bench triage (`pc_ip`, `/:disk%`, `top_proc:cpu%`) across the top header, and a mirrored duplex network waterfall (`dn` emerald upward / `up` amber downward) in the footer. When the helper goes quiet the rail stays blue **KEYS**, the last PC figures and traces stay up dimmed, and an amber **reconnecting** toast sits in the footer for one minute. After that minute the big figures are the Pi and the footer says **searching**. Yellow **NO HOST** means the cable is out: Pi figures immediately, no toast. If the Zero cannot be reached the word is **ZERO** and the figures are dashes. The desktop page stays on that blue KEYS waiting field until a fresh still arrives, and drops the picture when `/api/frame` is not 200. The phone follows `link` and does not hold the extra minute.
 
 ## Host terminal (USB serial)
 
@@ -90,10 +93,8 @@ Do not run that getty at the same time as the helper below. Both write the same 
 
 ### PC stats and desktop still (Linux helper)
 
-`host/kvm_helper.py` runs on the target PC. Every 2 seconds it writes three figures
-(package temperature, 1-minute load, memory percent) and, when `DISPLAY` is set and
-`ffmpeg` can grab X11, a 240×135 RGB565 still. The Zero removes those packets before
-the terminal buffer, and serves them as `link` / `/api/frame`. Three missed intervals
+`host/kvm_helper.py` runs on the target PC. Every 2 seconds it writes package temperature, 1-minute load, and memory percent (type 1), default-route RX/TX rates and top-8 per-core busy % (type 4), and LAN IP, `/` disk usage %, and top CPU process (type 5). When `DISPLAY` is set and a client is viewing the desktop still (`P_DESK` or the phone trackpad preview/loupe), it grabs X11 via `ffmpeg` (`full` downscale or `loupe` 1:1 cursor-centered 240×135 crop), stamps a high-contrast 5×5 cursor reticle and 4px cyan delta brackets around screen changes, and sends the 240×135 RGB565 still (type 2). The Zero removes those packets before
+the terminal buffer, and serves them as `/api/status` and `/api/frame`. Three missed intervals
 (6 seconds) drop LINKED back to KEYS and drop the still. The scoreboard then shows
 **reconnecting** for one minute before it falls back to the Pi and **searching**.
 Until the helper has sent something, the panel stays on KEYS and the desktop page
@@ -105,28 +106,26 @@ python3 host/kvm_helper.py                                  # KVM_HOST_DEV=/dev/
 ```
 
 `ffmpeg` and `xrandr` are needed for the picture. Without them, or with `KVM_DISPLAY`
-empty, the helper still sends the three figures. The keyboard and mouse do not need it.
+empty, the helper still sends the stats packets. The keyboard and mouse do not need it.
 
 ### Serial mode toggle (helper ⇄ login shell)
 
 Only one program can own the host's serial port, so the helper owns it and switches
 between two modes. The **serial:** button on the console (and on `term.html`) flips it:
 
-- **helper** (default): stats + still, as above.
+- **helper** (default): stats + on-demand still + clipboard sync, as above.
 - **shell**: stats and the still pause (the panel drops to KEYS), and the helper starts
   `bash -l` on a pty **as the user running the helper** and bridges it to the port.
   Use it from `term.html`. `exit`, or pressing the button again, kills and reaps bash and
   goes back to helper mode.
 
-The Zero never runs commands on the host; it only sends a control packet the helper
+The Zero never runs arbitrary commands on the host; it only sends control packets the helper
 chooses to act on. Wire format:
 
-- Zero → host: `1E 1F "KVMCTL:" shell|helper 0A`. `/api/term` refuses any text containing a `1E` or
+- Zero → host: `1E 1F "KVMCTL:" <cmd> 0A` (`shell`, `helper`, `frame`, `loupe`, `cget`, `cset:<base64>`). `/api/term` refuses any text containing a `1E` or
   `1F` byte (even alone, so a prefix can't be split across requests), so typed input can't forge it.
-- Host → Zero (ack): the usual envelope `FE FD 4B 56`, type `3`, length `1`, payload `0` helper /
-  `1` shell. Sent on every change and every 2 s in helper mode. `/api/status` shows it as
-  `serial_mode` (null = no helper answered), plus `serial_mode_requested` and `serial_mode_age_s`.
-  These three fields are only included when the request carries a valid `X-KVM-PIN`.
+- Host → Zero: envelope `FE FD 4B 56` with type `1` (stats, 12B), `2` (frame, 64800B), `3` (mode ack, 1B: `0` helper / `1` shell), `4` (net + top-8 cores, 20B), `5` (triage, 40B), or `6` (clipboard UTF-8, ≤1024B). `/api/status` shows the mode ack as
+  `serial_mode` (null = no helper answered), plus `serial_mode_requested` and `serial_mode_age_s` when the request carries a valid `X-KVM-PIN`.
 - Latency: in helper mode a switch waits for the current still grab, so allow up to ~1.5 s
   (plus the 2 s status poll) before the button updates.
 

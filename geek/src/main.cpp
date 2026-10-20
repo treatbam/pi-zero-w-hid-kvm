@@ -113,10 +113,14 @@ static void setupPortal() {
 
 struct Status {
   bool wifi = false, api = false, hid = false, host = false;
+  bool ledNum = false, ledCaps = false, ledScroll = false;
   int httpCode = 0, rssi = 0;
   char udc[16] = "?", ip[16] = "--", geekIp[16] = "--", link[12] = "";
+  char pcIp[16] = "", pcTopProc[16] = "";
   float temp = NAN, load1 = NAN, pcTemp = NAN, pcLoad = NAN;
-  int mem = -1, pcMem = -1;
+  float pcRx = NAN, pcTx = NAN, pcNcpu = NAN, pcTopCpu = NAN;
+  int mem = -1, pcMem = -1, pcDisk = -1, pcCoreCount = 0;
+  uint8_t pcCores[8] = {0};
   long upS = -1;
   uint32_t latencyMs = 0, stampMs = 0, polls = 0, fails = 0;
 };
@@ -126,23 +130,49 @@ Status gStat;
 static const int HIST = 60;
 static const uint32_t RECONNECT_MS = 60000;
 struct PcHist {
-  float temp[HIST], load[HIST], mem[HIST];
-  int n, next;
-  uint32_t lastMs;
-  bool had;
-  float lastT, lastL, lastM;
+  float temp[HIST], load[HIST], mem[HIST], rx[HIST], tx[HIST];
+  int n = 0, next = 0;
+  uint32_t lastMs = 0;
+  bool had = false;
+  float lastT = NAN, lastL = NAN, lastM = NAN, lastRx = NAN, lastTx = NAN, lastNcpu = NAN, lastTopCpu = NAN;
+  int lastDisk = -1, lastCoreCount = 0;
+  uint8_t lastCores[8] = {0};
+  char lastPcIp[16] = "", lastTopProc[16] = "";
 };
 PcHist gHist;
-static void pushHist(float t, float l, float m, bool live) {
+static void copyStr(char* dst, size_t n, const char* src) {
+  if (!src) src = "";
+  strlcpy(dst, src, n);
+}
+static void pushHist(const Status& s, bool live) {
+  float t = live ? s.pcTemp : NAN;
+  float l = live ? s.pcLoad : NAN;
+  float m = live ? (float)s.pcMem : NAN;
+  float rx = live ? s.pcRx : NAN;
+  float tx = live ? s.pcTx : NAN;
   gHist.temp[gHist.next] = t;
   gHist.load[gHist.next] = l;
   gHist.mem[gHist.next] = m;
+  gHist.rx[gHist.next] = rx;
+  gHist.tx[gHist.next] = tx;
   gHist.next = (gHist.next + 1) % HIST;
   if (gHist.n < HIST) gHist.n++;
   if (live) {
     gHist.lastMs = millis();
     gHist.had = true;
     gHist.lastT = t; gHist.lastL = l; gHist.lastM = m;
+    gHist.lastRx = s.pcRx; gHist.lastTx = s.pcTx;
+    if (!isnan(s.pcNcpu) && s.pcNcpu >= 1) gHist.lastNcpu = s.pcNcpu;
+    if (s.pcCoreCount > 0) {
+      gHist.lastCoreCount = s.pcCoreCount;
+      memcpy(gHist.lastCores, s.pcCores, sizeof s.pcCores);
+    }
+    if (s.pcDisk >= 0) gHist.lastDisk = s.pcDisk;
+    if (s.pcIp[0]) copyStr(gHist.lastPcIp, sizeof gHist.lastPcIp, s.pcIp);
+    if (s.pcTopProc[0]) {
+      copyStr(gHist.lastTopProc, sizeof gHist.lastTopProc, s.pcTopProc);
+      gHist.lastTopCpu = s.pcTopCpu;
+    }
   }
 }
 SemaphoreHandle_t gLock;
@@ -153,11 +183,6 @@ volatile bool gFramePull = false;
 static const int TCOLS = 39, TROWS = 16;
 struct Term { char row[TROWS][TCOLS + 1]; int n = 0, code = 0; bool open = false; uint32_t seq = 0, stampMs = 0; };
 Term gTerm;
-
-static void copyStr(char* dst, size_t n, const char* src) {
-  if (!src) src = "";
-  strlcpy(dst, src, n);
-}
 
 void pollOnce() {
   Status s; s.wifi = WiFi.status() == WL_CONNECTED; s.rssi = s.wifi ? WiFi.RSSI() : 0;
@@ -170,6 +195,11 @@ void pollOnce() {
       JsonDocument d;
       if (!deserializeJson(d, http.getString())) {
         s.api = true; s.hid = d["hid_ready"] | false; s.host = d["host_connected"] | false;
+        if (d["leds"].is<JsonObject>()) {
+          s.ledNum = d["leds"]["num"] | false;
+          s.ledCaps = d["leds"]["caps"] | false;
+          s.ledScroll = d["leds"]["scroll"] | false;
+        }
         copyStr(s.udc, sizeof s.udc, d["udc_state"] | "?");
         copyStr(s.ip, sizeof s.ip, d["ip"] | "--");
         copyStr(s.link, sizeof s.link, d["link"] | "");
@@ -180,6 +210,22 @@ void pollOnce() {
         if (!d["pc_temp_c"].isNull()) s.pcTemp = d["pc_temp_c"].as<float>();
         if (!d["pc_load1"].isNull()) s.pcLoad = d["pc_load1"].as<float>();
         if (!d["pc_mem_pct"].isNull()) s.pcMem = d["pc_mem_pct"].as<int>();
+        if (!d["pc_rx_bps"].isNull()) s.pcRx = d["pc_rx_bps"].as<float>();
+        if (!d["pc_tx_bps"].isNull()) s.pcTx = d["pc_tx_bps"].as<float>();
+        if (!d["pc_ncpu"].isNull()) s.pcNcpu = d["pc_ncpu"].as<float>();
+        if (d["pc_cores"].is<JsonArray>()) {
+          int ci = 0;
+          for (JsonVariant v : d["pc_cores"].as<JsonArray>()) {
+            if (ci >= 8) break;
+            int cv = v | -1;
+            if (cv >= 0 && cv <= 100) s.pcCores[ci++] = (uint8_t)cv;
+          }
+          s.pcCoreCount = ci;
+        }
+        if (!d["pc_ip"].isNull()) copyStr(s.pcIp, sizeof s.pcIp, d["pc_ip"] | "");
+        if (!d["pc_disk_pct"].isNull()) s.pcDisk = d["pc_disk_pct"].as<int>();
+        if (!d["pc_top_proc"].isNull()) copyStr(s.pcTopProc, sizeof s.pcTopProc, d["pc_top_proc"] | "");
+        if (!d["pc_top_cpu_pct"].isNull()) s.pcTopCpu = d["pc_top_cpu_pct"].as<float>();
       }
     }
     http.end();
@@ -189,8 +235,7 @@ void pollOnce() {
   gStat = s;
   bool live = s.api && strcmp(s.link, "LINKED") == 0
               && !isnan(s.pcTemp) && !isnan(s.pcLoad) && s.pcMem >= 0;
-  if (live) pushHist(s.pcTemp, s.pcLoad, (float)s.pcMem, true);
-  else pushHist(NAN, NAN, NAN, false);
+  pushHist(s, live);
   xSemaphoreGive(gLock);
 }
 
@@ -301,10 +346,12 @@ Btn bBack{BTN_BACK, true}, bUp{BTN_UP, true}, bDown{BTN_DOWN, true}, bSel{BTN_SE
 
 uint16_t rgb(uint8_t r, uint8_t g, uint8_t b) { return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3); }
 uint16_t mix(uint16_t a, uint16_t b, int t) {
+  if (t <= 0) return a;
+  if (t >= 255) return b;
   int ar = a >> 11, ag = (a >> 5) & 63, ab = a & 31, br = b >> 11, bg = (b >> 5) & 63, bb = b & 31;
   return ((ar + (br - ar) * t / 255) << 11) | ((ag + (bg - ag) * t / 255) << 5) | (ab + (bb - ab) * t / 255);
 }
-const uint16_t C_TXT = 0xFFFF, C_DIM = rgb(130, 140, 165),
+const uint16_t C_BG = rgb(12, 16, 24), C_TXT = 0xFFFF, C_DIM = rgb(130, 140, 165),
                C_OK = rgb(60, 220, 120), C_WARN = rgb(255, 170, 40), C_BAD = rgb(255, 70, 70);
 
 void vgrad(int x, int y, int w, int h, uint16_t top, uint16_t bot) {
@@ -339,24 +386,115 @@ void fmtLoad(char* b, size_t n, float t) {
   else snprintf(b, n, t >= 10 ? "%.1f" : "%.2f", t);
 }
 void fmtMem(char* b, size_t n, int m) { if (m < 0) snprintf(b, n, "--"); else snprintf(b, n, "%d%%", m); }
+void fmtRate(char* b, size_t n, float bps) {
+  if (isnan(bps) || bps < 0) { snprintf(b, n, "--"); return; }
+  if (bps < 999.5f) snprintf(b, n, "%.0fB", bps);
+  else if (bps < 9950.f) snprintf(b, n, "%.1fK", bps / 1000.f);
+  else if (bps < 999500.f) snprintf(b, n, "%.0fK", bps / 1000.f);
+  else if (bps < 9950000.f) snprintf(b, n, "%.1fM", bps / 1000000.f);
+  else if (bps < 999500000.f) snprintf(b, n, "%.0fM", bps / 1000000.f);
+  else snprintf(b, n, "%.1fG", bps / 1000000000.f);
+}
+float logRate(float bps) {
+  if (isnan(bps) || bps <= 500.f) return 0.f;
+  float t = log10f(bps / 500.f) / 5.3f;
+  if (t < 0.f) return 0.f;
+  if (t > 1.f) return 1.f;
+  return t;
+}
 
-// Oldest sample at the left. NAN breaks the stroke. lo/hi are the value scale.
-void spark(int x, int y, int w, int h, const float* series, int n, int next, float lo, float hi, uint16_t col) {
+// Peak value across the last `window` samples (e.g. 30 samples = 60 s).
+float recentPeak(const float* series, int n, int next, int window) {
+  if (n <= 0) return NAN;
+  int start = (n < HIST) ? 0 : next;
+  int first = max(0, n - window);
+  float pk = NAN;
+  for (int i = first; i < n; i++) {
+    float v = series[(start + i) % HIST];
+    if (!isnan(v) && (isnan(pk) || v > pk)) pk = v;
+  }
+  return pk;
+}
+
+// 7px horizontal plasma gradient capsule with warn threshold notch and 60s peak-hold pip.
+void drawPlasmaCapsule(int x, int y, int w, int h, float level, float peakLevel,
+                       float warnAt, uint16_t cLow, uint16_t cWarm, uint16_t cHot, bool dim) {
+  if (isnan(level) || level < 0.f) level = 0.f;
+  float shown = level > 1.f ? 1.f : level;
+  fb.fillRoundRect(x, y, w, h, h / 2, rgb(22, 30, 44));
+  int inner = w - 2;
+  int fw = (int)(shown * inner + 0.5f);
+  float wSplit = (warnAt > 0.05f && warnAt < 0.95f) ? warnAt : 0.75f;
+  for (int dx = 0; dx < fw; dx++) {
+    float p = inner > 1 ? (float)dx / (float)(inner - 1) : 0.f;
+    uint16_t col;
+    if (p < wSplit) col = mix(cLow, cWarm, (int)(p / wSplit * 255.f));
+    else col = mix(cWarm, cHot, (int)((p - wSplit) / (1.f - wSplit) * 255.f));
+    if (dim) col = mix(rgb(28, 36, 52), col, 110);
+    int topPad = (dx == 0 || dx == inner - 1) ? 2 : 1;
+    int colH = h - topPad * 2;
+    if (colH > 0) fb.drawFastVLine(x + 1 + dx, y + topPad, colH, col);
+  }
+  if (warnAt > 0.05f && warnAt < 0.95f) {
+    int nx = x + 1 + (int)(warnAt * inner);
+    fb.drawFastVLine(nx, y + 1, h - 2, rgb(8, 10, 16));
+  }
+  if (!isnan(peakLevel) && peakLevel > 0.02f) {
+    float pk = peakLevel > 1.f ? 1.f : peakLevel;
+    int px = x + 1 + (int)(pk * (inner - 1));
+    uint16_t pipC = dim ? rgb(140, 132, 100) : (pk >= warnAt ? rgb(255, 120, 80) : rgb(255, 245, 190));
+    fb.drawFastVLine(px, y + 1, h - 2, pipC);
+    if (px > x + 1) fb.drawFastVLine(px - 1, y + 1, h - 2, pipC);
+  }
+}
+
+// 13px shaded Tufte horizon 60-sample sparkline with warning-threshold ember tint.
+void drawHorizonSpark(int x, int y, int w, int h, const float* series, int n, int next,
+                      float lo, float hi, float warnVal, uint16_t col, bool dim) {
+  fb.drawFastHLine(x, y + h - 1, w, rgb(24, 32, 48));
   if (n <= 0 || !(hi > lo)) return;
   int start = (n < HIST) ? 0 : next;
+  uint16_t baseCol = dim ? mix(C_BG, col, 120) : col;
+  uint16_t emberCol = dim ? rgb(150, 80, 60) : rgb(255, 92, 52);
   int prevX = -1, prevY = 0;
+  float prevV = NAN;
+  int lastX = -1, lastY = -1;
+  uint16_t lastC = baseCol;
   for (int i = 0; i < n; i++) {
     float v = series[(start + i) % HIST];
     if (isnan(v)) { prevX = -1; continue; }
     float t = (v - lo) / (hi - lo);
-    if (t < 0) t = 0; if (t > 1) t = 1;
+    if (t < 0.f) t = 0.f;
+    if (t > 1.f) t = 1.f;
     int px = x + (n == 1 ? w - 1 : i * (w - 1) / (n - 1));
-    int py = y + h - 1 - (int)(t * (h - 1));
-    if (prevX >= 0) fb.drawLine(prevX, prevY, px, py, col);
-    else fb.drawPixel(px, py, col);
-    prevX = px; prevY = py;
+    int py = y + h - 1 - (int)(t * (h - 2) + 0.5f);
+    uint16_t ptCol = (!isnan(warnVal) && v >= warnVal) ? emberCol : baseCol;
+    if (prevX >= 0 && px >= prevX) {
+      int span = max(1, px - prevX);
+      for (int cx = prevX; cx <= px; cx++) {
+        int k = cx - prevX;
+        int cy = prevY + (py - prevY) * k / span;
+        float cv = prevV + (v - prevV) * (float)k / (float)span;
+        uint16_t cLine = (!isnan(warnVal) && cv >= warnVal) ? emberCol : baseCol;
+        uint16_t cTop = mix(C_BG, cLine, dim ? 65 : 115);
+        uint16_t cBot = mix(C_BG, cLine, dim ? 25 : 45);
+        for (int sy = cy + 1; sy < y + h - 1; sy++) {
+          int st = (sy - cy) * 255 / max(1, (y + h - 1 - cy));
+          fb.drawPixel(cx, sy, mix(cTop, cBot, st));
+        }
+      }
+      fb.drawLine(prevX, prevY, px, py, ptCol);
+    } else {
+      fb.drawPixel(px, py, ptCol);
+    }
+    prevX = px; prevY = py; prevV = v;
+    lastX = px; lastY = py; lastC = ptCol;
+  }
+  if (lastX >= 0 && !dim) {
+    fb.fillRect(max(x, lastX - 1), max(y, lastY - 1), 2, 2, lastC);
   }
 }
+
 bool seriesRange(const float* series, int n, int next, float minSpan, float& lo, float& hi) {
   int start = (n < HIST) ? 0 : next;
   bool any = false;
@@ -375,6 +513,113 @@ bool seriesRange(const float* series, int n, int next, float minSpan, float& lo,
   if (lo < 0) lo = 0;
   if (hi <= lo) hi = lo + minSpan;
   return true;
+}
+
+// 30s (15-sample) trend delta badge under the row label.
+void drawDeltaBadge(int x, int y, const float* series, int n, int next, int rowIdx, bool dim) {
+  if (n < 2) return;
+  int start = (n < HIST) ? 0 : next;
+  float cur = series[(start + n - 1) % HIST];
+  if (isnan(cur)) return;
+  int back = min(n - 1, 15);
+  float ref = NAN;
+  for (int k = back; k >= 1; k--) {
+    float v = series[(start + n - 1 - k) % HIST];
+    if (!isnan(v)) { ref = v; break; }
+  }
+  if (isnan(ref)) return;
+  float d = cur - ref;
+  char buf[10];
+  uint16_t col = rgb(100, 112, 136);
+  if (rowIdx == 0) {
+    int di = (int)roundf(d);
+    snprintf(buf, sizeof buf, di > 0 ? "+%dc" : di < 0 ? "%dc" : "=0c", di);
+    if (di >= 2) col = rgb(255, 176, 64);
+    else if (di <= -2) col = rgb(80, 210, 160);
+  } else if (rowIdx == 1) {
+    int tenths = (int)roundf(fabsf(d) * 10.f);
+    if (tenths == 0) snprintf(buf, sizeof buf, "=0.0");
+    else if (tenths < 10) snprintf(buf, sizeof buf, "%s.%d", d > 0 ? "+" : "-", tenths);
+    else if (fabsf(d) < 9.95f) snprintf(buf, sizeof buf, "%+.1f", d);
+    else snprintf(buf, sizeof buf, "%+d", (int)roundf(d));
+    if (d >= 0.25f) col = rgb(255, 176, 64);
+    else if (d <= -0.25f) col = rgb(80, 210, 160);
+  } else {
+    int di = (int)roundf(d);
+    snprintf(buf, sizeof buf, di > 0 ? "+%d%%" : di < 0 ? "%d%%" : "=0%%", di);
+    if (di >= 2) col = rgb(255, 176, 64);
+    else if (di <= -2) col = rgb(80, 210, 160);
+  }
+  if (dim) col = mix(C_BG, col, 120);
+  txt(x, y, buf, col, 1);
+}
+
+// 8 micro-LED chiclets under the load label, colored slate -> cyan -> amber -> red.
+void drawCoreChiclets(int x, int y, const uint8_t* cores, int count, bool dim) {
+  for (int i = 0; i < 8; i++) {
+    uint16_t col = rgb(24, 30, 44);
+    if (i < count) {
+      int u = cores[i];
+      if (u < 20) col = mix(rgb(52, 68, 92), rgb(60, 140, 190), u * 255 / 20);
+      else if (u < 60) col = mix(rgb(60, 180, 240), rgb(80, 230, 255), (u - 20) * 255 / 40);
+      else if (u < 85) col = mix(rgb(255, 196, 56), rgb(255, 140, 32), (u - 60) * 255 / 25);
+      else col = rgb(255, 60, 60);
+      if (dim) col = mix(C_BG, col, 110);
+    }
+    fb.fillRect(x + i * 4, y, 3, 3, col);
+  }
+}
+
+// Mirrored bi-directional network waterfall: RX bars grow up in emerald, TX bars down in amber.
+void drawDuplexWaterfall(int x, int y, int w, int h, const float* rxS, const float* txS,
+                         int n, int next, bool dim) {
+  int cy = y + h / 2;
+  int maxBar = h / 2;
+  fb.drawFastHLine(x, cy, w, rgb(34, 46, 66));
+  if (n <= 0) return;
+  int start = (n < HIST) ? 0 : next;
+  uint16_t cRx = dim ? rgb(40, 120, 75) : rgb(48, 224, 136);
+  uint16_t cRxTip = dim ? rgb(60, 150, 95) : rgb(130, 255, 190);
+  uint16_t cTx = dim ? rgb(135, 95, 35) : rgb(245, 165, 45);
+  uint16_t cTxTip = dim ? rgb(165, 120, 50) : rgb(255, 220, 120);
+  int cols = min(n, 41);
+  int first = n - cols;
+  for (int i = 0; i < cols; i++) {
+    int idx = (start + first + i) % HIST;
+    int bx = x + w - (cols - i) * 2;
+    if (bx < x) continue;
+    float r = logRate(rxS[idx]);
+    float t = logRate(txS[idx]);
+    int rh = (int)(r * maxBar + (r > 0.f ? 0.8f : 0.f));
+    int th = (int)(t * maxBar + (t > 0.f ? 0.8f : 0.f));
+    if (rh > maxBar) rh = maxBar;
+    if (th > maxBar) th = maxBar;
+    if (rh > 0) {
+      fb.drawFastVLine(bx, cy - rh, rh, cRx);
+      fb.drawPixel(bx, cy - rh, cRxTip);
+    }
+    if (th > 0) {
+      fb.drawFastVLine(bx, cy + 1, th, cTx);
+      fb.drawPixel(bx, cy + th, cTxTip);
+    }
+  }
+}
+
+// Num / Caps / Scroll lock indicators on the bottom of the 52px status rail.
+void drawRailLeds(int railW, const Status& s, uint16_t ink) {
+  if (!s.host) return;
+  const char labels[3] = {'N', 'C', 'S'};
+  const bool on[3] = {s.ledNum, s.ledCaps, s.ledScroll};
+  int y = H - 11;
+  for (int i = 0; i < 3; i++) {
+    int bx = 5 + i * 15;
+    if (on[i]) {
+      fb.fillRoundRect(bx, y, 13, 9, 2, rgb(8, 24, 16));
+      txt(bx + 4, y + 1, (char[2]){labels[i], 0}, rgb(120, 255, 180), 1);
+    } else {
+      txt(bx + 4, y + 1, (char[2]){labels[i], 0}, ink, 1);
+    }
+  }
 }
 
 enum Page { P_BOARD, P_DESK, P_TERM, NPAGES };
@@ -400,14 +645,41 @@ void drawBoard(const Status& s, const PcHist& h, uint32_t now) {
   } else {
     top = rgb(126, 182, 238); bot = rgb(26, 78, 134); ink = rgb(4, 16, 24); accent = rgb(159, 212, 255); word = "KEYS";
   }
-  // 52px rail (not a third of 240) so a figure, its label, and a trace fit on one row.
-  const int RAIL = 52, NUM_R = 116, LAB_X = 122, SP_X = 152, SP_W = 82, SP_H = 16;
-  const int ROW_Y[3] = {12, 44, 76};
+  // 52px rail so a figure, its label + badges, and an 82x22 dual-layer readout fit on one row.
+  const int RAIL = 52, NUM_R = 114, LAB_X = 118, SP_X = 152, SP_W = 82;
+  const int ROW_Y[3] = {11, 42, 73};
   vgrad(0, 0, RAIL, H, top, bot);
-  vword(0, 0, RAIL, H, word, ink);
-  fb.fillRect(RAIL, 0, W - RAIL, H, rgb(12, 16, 24));
+  vword(0, 0, RAIL, s.host ? H - 12 : H, word, ink);
+  drawRailLeds(RAIL, s, ink);
+  fb.fillRect(RAIL, 0, W - RAIL, H, C_BG);
   uint16_t tagC = reconnecting ? rgb(255, 186, 80) : accent;
-  txt(RAIL + 6, 1, !s.api ? "" : showPc ? "PC" : "PI", tagC, 1);
+  txt(RAIL + 4, 1, !s.api ? "" : showPc ? "PC" : "PI", tagC, 1);
+
+  if (showPc) {
+    const char* pIp = linked ? s.pcIp : h.lastPcIp;
+    int pDisk = linked ? s.pcDisk : h.lastDisk;
+    const char* pProc = linked ? s.pcTopProc : h.lastTopProc;
+    float pCpu = linked ? s.pcTopCpu : h.lastTopCpu;
+    char hdr[29] = "";
+    size_t pos = 0;
+    auto app = [&](const char* fmt, ...) {
+      if (pos >= sizeof(hdr) - 1) return;
+      va_list ap; va_start(ap, fmt);
+      int w = vsnprintf(hdr + pos, sizeof(hdr) - pos, fmt, ap);
+      va_end(ap);
+      if (w > 0) pos = min(sizeof(hdr) - 1, pos + (size_t)w);
+    };
+    if (pIp && pIp[0]) app("%s ", pIp);
+    if (pDisk >= 0) app("/:%d%% ", pDisk);
+    if (pProc && pProc[0]) {
+      if (!isnan(pCpu) && pCpu >= 1.f) app("%.7s:%.0f%%", pProc, pCpu);
+      else app("%.10s", pProc);
+    }
+    if (hdr[0]) {
+      uint16_t hCol = (pDisk >= 90) ? C_WARN : rgb(140, 156, 180);
+      txt(RAIL + 20, 1, hdr, reconnecting ? mix(C_BG, hCol, 130) : hCol, 1);
+    }
+  }
 
   float ft, fl; int fm;
   uint16_t numC = C_TXT;
@@ -417,20 +689,38 @@ void drawBoard(const Status& s, const PcHist& h, uint32_t now) {
   char fig[3][16];
   fmtTemp(fig[0], sizeof fig[0], ft); fmtLoad(fig[1], sizeof fig[1], fl); fmtMem(fig[2], sizeof fig[2], fm);
   const char* lab[3] = {"temp", "load", "mem"};
+  float ncpu = showPc ? (linked ? s.pcNcpu : h.lastNcpu) : 1.f;
+  if (!(ncpu >= 1.f)) ncpu = showPc ? 4.f : 1.f;
+  float level[3] = {(ft - 35.f) / 60.f, fl / ncpu, fm < 0 ? NAN : (float)fm / 100.f};
+  float warnAt[3] = {(80.f - 35.f) / 60.f, 0.75f, 0.85f};
+  float pkT = showPc ? (recentPeak(h.temp, h.n, h.next, 30) - 35.f) / 60.f : NAN;
+  float pkL = showPc ? recentPeak(h.load, h.n, h.next, 30) / ncpu : NAN;
+  float pkM = showPc ? recentPeak(h.mem, h.n, h.next, 30) / 100.f : NAN;
+  float peaks[3] = {pkT, pkL, pkM};
+  uint16_t cLow[3]  = {rgb(255, 136, 40), rgb(48, 176, 255), rgb(150, 110, 255)};
+  uint16_t cWarm[3] = {rgb(255, 196, 48), rgb(255, 186, 48), rgb(245, 160, 70)};
+  uint16_t cHot[3]  = {rgb(255, 56, 56),  rgb(255, 60, 60),  rgb(255, 60, 60)};
+
   for (int i = 0; i < 3; i++) {
-    txtR(NUM_R, ROW_Y[i], fig[i], numC, 2);
-    txt(LAB_X, ROW_Y[i] + 4, lab[i], C_DIM, 1);
+    txtR(NUM_R, ROW_Y[i] + 2, fig[i], numC, 2);
+    txt(LAB_X, ROW_Y[i], lab[i], C_DIM, 1);
+    drawPlasmaCapsule(SP_X, ROW_Y[i], SP_W, 7, level[i], peaks[i], warnAt[i],
+                      cLow[i], cWarm[i], cHot[i], reconnecting);
   }
   if (showPc) {
-    float lo, hi;
-    uint16_t cT = reconnecting ? rgb(150, 116, 70) : rgb(255, 170, 80);
-    uint16_t cL = reconnecting ? rgb(90, 116, 150) : rgb(110, 190, 255);
-    uint16_t cM = reconnecting ? rgb(120, 108, 150) : rgb(186, 160, 255);
-    if (seriesRange(h.temp, h.n, h.next, 8, lo, hi))
-      spark(SP_X, ROW_Y[0], SP_W, SP_H, h.temp, h.n, h.next, lo, hi, cT);
-    if (seriesRange(h.load, h.n, h.next, 0.5f, lo, hi))
-      spark(SP_X, ROW_Y[1], SP_W, SP_H, h.load, h.n, h.next, lo, hi, cL);
-    spark(SP_X, ROW_Y[2], SP_W, SP_H, h.mem, h.n, h.next, 0, 100, cM);
+    drawDeltaBadge(LAB_X, ROW_Y[0] + 9, h.temp, h.n, h.next, 0, reconnecting);
+    drawDeltaBadge(LAB_X, ROW_Y[1] + 9, h.load, h.n, h.next, 1, reconnecting);
+    drawDeltaBadge(LAB_X, ROW_Y[2] + 9, h.mem,  h.n, h.next, 2, reconnecting);
+    const uint8_t* cores = linked ? s.pcCores : h.lastCores;
+    int ccnt = linked ? s.pcCoreCount : h.lastCoreCount;
+    drawCoreChiclets(LAB_X, ROW_Y[1] + 18, cores, ccnt, reconnecting);
+
+    float lo = 0.f, hi = 0.f;
+    if (!seriesRange(h.temp, h.n, h.next, 8.f, lo, hi)) { lo = 0.f; hi = 0.f; }
+    drawHorizonSpark(SP_X, ROW_Y[0] + 9, SP_W, 13, h.temp, h.n, h.next, lo, hi, 80.f, rgb(255, 170, 80), reconnecting);
+    if (!seriesRange(h.load, h.n, h.next, 0.5f, lo, hi)) { lo = 0.f; hi = 0.f; }
+    drawHorizonSpark(SP_X, ROW_Y[1] + 9, SP_W, 13, h.load, h.n, h.next, lo, hi, 0.75f * ncpu, rgb(110, 190, 255), reconnecting);
+    drawHorizonSpark(SP_X, ROW_Y[2] + 9, SP_W, 13, h.mem, h.n, h.next, 0.f, 100.f, 85.f, rgb(186, 160, 255), reconnecting);
   }
 
   if (reconnecting) {
@@ -449,10 +739,22 @@ void drawBoard(const Status& s, const PcHist& h, uint32_t now) {
     snprintf(l1, sizeof l1, "pi %s %s %s", tc, mem, s.ip);
   } else if (nohost) snprintf(l1, sizeof l1, "zero %s", s.ip);
   else snprintf(l1, sizeof l1, "searching");
+  txt(RAIL + 6, 107, l1, rgb(197, 208, 200), 1);
+
+  if (linked) {
+    char dn[8], up[8];
+    fmtRate(dn, sizeof dn, s.pcRx); fmtRate(up, sizeof up, s.pcTx);
+    int x = RAIL + 6;
+    txt(x, 121, "dn", rgb(60, 220, 140), 1);
+    txtR(x + 42, 121, dn, C_TXT, 1);
+    txt(x + 46, 121, "up", rgb(255, 176, 64), 1);
+    txtR(x + 88, 121, up, C_TXT, 1);
+    drawDuplexWaterfall(SP_X, 118, SP_W, 15, h.rx, h.tx, h.n, h.next, false);
+    return;
+  }
   if (!s.wifi) snprintf(l2, sizeof l2, "geek --");
   else snprintf(l2, sizeof l2, "geek %s %ddBm", s.geekIp, s.rssi);
-  txt(RAIL + 6, 110, l1, rgb(197, 208, 200), 1);
-  txt(RAIL + 6, 122, l2, rgb(197, 208, 200), 1);
+  txt(RAIL + 6, 121, l2, rgb(197, 208, 200), 1);
 }
 
 void drawWaiting() {
