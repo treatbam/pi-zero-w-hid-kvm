@@ -9,6 +9,7 @@ Envelope, little-endian:
 
 Type 1 payload is three floats: temp C, load1, mem percent. Exactly 12 bytes.
 Type 2 payload is 240*135 RGB565 little-endian pixels, top row first. Exactly 64800 bytes.
+Type 3 payload is the helper's serial mode ack: 1 byte, 0 = helper, 1 = shell.
 
 Anything else is terminal text. A header that does not match those two shapes is
 terminal text too: the first byte is released and parsing resumes, so a stray
@@ -23,6 +24,8 @@ MAGIC = b"\xfe\xfdKV"
 HDR = 9
 TYPE_STATS = 1
 TYPE_FRAME = 2
+TYPE_MODE = 3
+MODE_NAMES = {0: "helper", 1: "shell"}
 STATS_LEN = 12
 FRAME_LEN = 240 * 135 * 2
 FRESH_S = 6.0
@@ -57,6 +60,8 @@ class HostView:
         self._stats_at = None
         self._frame = None
         self._frame_at = None
+        self._mode = None           # last mode the helper acked ("helper"/"shell")
+        self._mode_at = None
 
     def reset(self):
         """Drop a half-read envelope after the serial port closes. Readings stay until they go stale."""
@@ -152,6 +157,8 @@ class HostView:
             return ln == STATS_LEN
         if typ == TYPE_FRAME:
             return ln == FRAME_LEN
+        if typ == TYPE_MODE:
+            return ln == 1
         return False
 
     def _accept(self, typ, payload):
@@ -165,6 +172,16 @@ class HostView:
         elif typ == TYPE_FRAME:
             self._frame = payload
             self._frame_at = now
+        elif typ == TYPE_MODE and payload[0] in MODE_NAMES:
+            self._mode = MODE_NAMES[payload[0]]
+            self._mode_at = now
+
+    def mode(self):
+        """(acked mode or None, seconds since the ack or None)."""
+        with self._lock:
+            if self._mode_at is None:
+                return None, None
+            return self._mode, round(self._now() - self._mode_at, 1)
 
 
 shared = HostView()

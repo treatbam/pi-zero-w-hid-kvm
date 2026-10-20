@@ -25,6 +25,24 @@ async function power(target, action, label) {
   document.getElementById('pwr').textContent = r.ok ? `${label}: sent` : `${label}: ${j.error || r.status}`;
 }
 
+// Serial mode toggle: helper (stats + still) <-> login shell on the host (term.html).
+let serialMode = null;
+function showMode(s) {
+  const b = document.getElementById('mode');
+  serialMode = s.serial_mode;
+  const pend = s.serial_mode_requested && s.serial_mode_requested !== s.serial_mode;
+  b.textContent = 'serial: ' + (serialMode || 'no helper') + (pend ? ' \u2192 ' + s.serial_mode_requested + '\u2026' : '');
+  b.className = serialMode === 'shell' ? 'shell' : '';
+}
+document.getElementById('mode').onclick = async () => {
+  const want = serialMode === 'shell' ? 'helper' : 'shell';
+  if (want === 'shell' && !confirm('Start a login shell on the host serial port? Stats and the still pause.')) return;
+  const r = await post('/api/mode', {mode: want});
+  const j = await r.json().catch(() => ({}));
+  document.getElementById('pwr').textContent = r.ok ? `serial \u2192 ${want}: asked` : `serial mode: ${j.error || r.status}`;
+  poll();
+};
+
 let held = 0;
 let q = Promise.resolve();
 const m = o => {
@@ -180,6 +198,7 @@ async function poll() {
     pill.textContent = s.link || '\u2026';
     pill.className = 'pill ' + (s.link === 'LINKED' ? 'linked' : s.link === 'KEYS' ? 'keys' : s.link === 'NO HOST' ? 'nohost' : '');
     ip.textContent = s.ip || '';
+    showMode(s);
   } catch (e) {
     pill.textContent = 'offline'; pill.className = 'pill'; ip.textContent = '';
   }

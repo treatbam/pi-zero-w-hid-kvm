@@ -4,7 +4,10 @@ API:
   GET  /api/status              -> {"hid_ready","host_connected","udc_state","ip",
                                       "temp_c","load1","mem_pct","uptime_s",
                                       "link","pc_temp_c","pc_load1","pc_mem_pct",
-                                      "pc_age_s","frame_fresh"}
+                                      "pc_age_s","frame_fresh",
+                                      "serial_mode","serial_mode_age_s","serial_mode_requested"}
+                                    serial_mode is the helper's last ack ("helper"/"shell")
+                                    or null when no helper has answered yet.
                                     link is "LINKED", "KEYS", or "NO HOST".
                                     PC fields are null unless link is LINKED.
   GET  /api/frame                -> 240x135 RGB565-LE still, or 204 if it is stale
@@ -16,6 +19,8 @@ API:
   POST /api/auth   {}                          -> 200 if the PIN header is right (UI login check)
   GET  /api/term?n=40            -> {"seq","lines":[..],"partial","open","error"}  (PIN required)
   POST /api/term   {"text":"ls","newline":true}  -> keystrokes to the host's serial console
+  POST /api/mode   {"mode":"shell"|"helper"}   -> asks the host helper to switch the serial port
+                   (202; the helper's ack shows up as serial_mode in /api/status)
   POST /api/power  {"target":"host","action":"power|sleep|wake|hard_reset|hard_power","confirm":true}
                    {"target":"zero","action":"shutdown|reboot","confirm":true}
 Every POST needs Content-Type: application/json, a same-origin Origin (if sent), and the PIN
@@ -43,6 +48,7 @@ FAILS = {}            # ip -> (count, first_fail_time)
 MAX_FAILS, LOCKOUT_S = 5, 60
 HOST_POWER = ("power", "sleep", "wake")          # soft: System Control keys over USB
 HOST_HARD = ("hard_reset", "hard_power")         # needs optocoupler wiring (not built yet)
+MODE_REQ = {"mode": None}   # last mode asked for via /api/mode
 ZERO_POWER = {"shutdown": "poweroff", "reboot": "reboot"}
 
 def load_pin():
@@ -88,9 +94,14 @@ def validate(path, body):
     if path == "/api/term":
         t = body.get("text", "")
         if not isinstance(t, str) or len(t) > 1000: raise ValueError("text must be a string (max 1000)")
+        if "\x1e\x1f" in t: raise ValueError("text may not contain the mode-control prefix")
         nl = body.get("newline", True)
         if not isinstance(nl, bool): raise ValueError("newline must be a bool")
         return (t, nl)
+    if path == "/api/mode":
+        m = body.get("mode")
+        if m not in ("shell", "helper"): raise ValueError('mode must be "shell" or "helper"')
+        return (m,)
     if path == "/api/power":
         if body.get("confirm") is not True: raise ValueError("confirm must be true")
         t, a = body.get("target"), body.get("action")
@@ -139,7 +150,9 @@ class H(SimpleHTTPRequestHandler):
         if self.path == "/api/status":
             st = hid.status()
             pc = hostview.shared.status_fields(st["host_connected"])
-            return self._json(200, {**st, "ip": local_ip(), **sysstats(), **pc})
+            mode, age = hostview.shared.mode()
+            sm = {"serial_mode": mode, "serial_mode_age_s": age, "serial_mode_requested": MODE_REQ["mode"]}
+            return self._json(200, {**st, "ip": local_ip(), **sysstats(), **pc, **sm})
         u = urlsplit(self.path)
         if u.path == "/api/frame":
             ok = self._pin_ok()
@@ -207,6 +220,13 @@ class H(SimpleHTTPRequestHandler):
             except (TimeoutError, OSError) as e:
                 return self._json(503, {"error": str(e)})
             return self._json(200, {"ok": True})
+        if self.path == "/api/mode":
+            try:
+                if not term.send_mode(args[0]): return self._json(409, {"error": "serial port not open"})
+            except (TimeoutError, OSError) as e:
+                return self._json(503, {"error": str(e)})
+            MODE_REQ["mode"] = args[0]
+            return self._json(202, {"ok": True, "requested": args[0], "note": "watch serial_mode in /api/status"})
         if self.path == "/api/power":
             target, action = args
             if target == "zero":

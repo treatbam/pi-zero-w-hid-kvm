@@ -51,6 +51,7 @@ Then browse to `http://192.168.4.1:8080`. Manual run: `sudo bash zero/gadget/hid
 | POST | /api/mouse | `{"dx":0,"dy":0,"wheel":0,"buttons":0}` |
 | POST | /api/macro | `{"name":"ctrl_alt_del"|"alt_tab"|"win_l"}` |
 | GET | /api/term?n=40 | → `{"seq","lines":[...],"partial","open","error"}` (needs `X-KVM-PIN`) |
+| POST | /api/mode | `{"mode":"shell"\|"helper"}` → switch the host serial port (see Serial mode toggle) |
 | POST | /api/term | `{"text":"ls","newline":true}` → keystrokes to the host serial console |
 
 `host_connected` = `/sys/class/udc/*/state == configured` (host enumerated the gadget). Approximate:
@@ -85,7 +86,7 @@ Log in from the web terminal's send box. Optional: add `console=ttyACM0` only if
 distro supports it this late in boot; kernel boot messages generally won't appear because
 the port only exists once the USB driver has loaded.
 
-Do not run that getty at the same time as the helper below. Both write the same port.
+Do not run that getty at the same time as the helper below. Both write the same port. The helper has its own shell mode instead (see Serial mode toggle).
 
 ### PC stats and desktop still (Linux helper)
 
@@ -105,6 +106,45 @@ python3 host/kvm_helper.py                                  # KVM_HOST_DEV=/dev/
 
 `ffmpeg` and `xrandr` are needed for the picture. Without them, or with `KVM_DISPLAY`
 empty, the helper still sends the three figures. The keyboard and mouse do not need it.
+
+### Serial mode toggle (helper ⇄ login shell)
+
+Only one program can own the host's serial port, so the helper owns it and switches
+between two modes. The **serial:** button on the console (and on `term.html`) flips it:
+
+- **helper** (default): stats + still, as above.
+- **shell**: stats and the still pause (the panel drops to KEYS), and the helper starts
+  `bash -l` on a pty **as the user running the helper** and bridges it to the port.
+  Use it from `term.html`. `exit`, or pressing the button again, kills and reaps bash and
+  goes back to helper mode.
+
+The Zero never runs commands on the host; it only sends a control packet the helper
+chooses to act on. Wire format:
+
+- Zero → host: `1E 1F "KVMCTL:" shell|helper 0A`. `/api/term` refuses text containing `1E 1F`,
+  so typed input can't forge it.
+- Host → Zero (ack): the usual envelope `FE FD 4B 56`, type `3`, length `1`, payload `0` helper /
+  `1` shell. Sent on every change and every 2 s in helper mode. `/api/status` shows it as
+  `serial_mode` (null = no helper answered), plus `serial_mode_requested` and `serial_mode_age_s`.
+
+Run it as a systemd **user** service on the host (workbenchpc), never as root. The helper
+refuses shell mode when its euid is 0:
+
+```bash
+mkdir -p ~/.config/systemd/user && cp host/kvm-helper.service ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now kvm-helper
+loginctl enable-linger $USER
+```
+
+The unit uses `/dev/serial/by-id/usb-DIY_PiZeroW_HID_KVM_0001-if03`; your user needs to be
+in the `dialout` group. Don't run a getty on the same port.
+
+Security: shell mode means **the console PIN = a shell as that user**. Keep the PIN private,
+keep port 8080 on your LAN or Tailscale (never port-forward it), and don't run the helper as
+an account you wouldn't hand to someone holding the PIN. The console is plain HTTP, so the PIN
+and terminal text are unencrypted on the LAN (Tailscale encrypts them). Anyone who can send a
+type-3 envelope from the host (e.g. `printf` inside the shell) can change the *displayed*
+mode only; it can't start a shell.
 
 **Windows host** — no getty; find the port in Device Manager → Ports (COM & LPT)
 ("USB Serial Device", driver `usbser.sys` is automatic on Windows 10/11), then stream a

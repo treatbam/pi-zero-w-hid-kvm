@@ -86,10 +86,12 @@ button.hw { opacity: .55; }
 .scrolls button { background: rgba(255, 255, 255, .08); color: #ccc; padding-inline: 12px; }
 .pad-btns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; padding: 8px; }
 .pad-btns button { background: rgba(255, 255, 255, .08); color: #ccc; border-radius: 8px; }
+#mode.shell { background: #6a2c7a; color: #f3e0ff; }
 #pwr { font-size: 13px; color: #bbb; min-block-size: 1em; }
 </style></head><body>
 <header>
   <div id="st"><span id="pill" class="pill">…</span><span id="ip" class="ip"></span></div>
+  <button type="button" id="mode" title="Switch the host serial port between helper (stats + still) and a login shell">serial: …</button>
   <a href="term.html">term</a>
   <button type="button" id="pin">PIN</button>
 </header>

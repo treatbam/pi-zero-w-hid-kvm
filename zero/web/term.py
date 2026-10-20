@@ -99,9 +99,18 @@ def snapshot(n=MAX_LINES):
         return {"seq": _seq, "lines": list(_lines)[-n:], "partial": _partial,
                 "open": _fd is not None, "error": _err}
 
+CTL = b"\x1e\x1fKVMCTL:"     # mode-control prefix the host helper watches for
+
+def send_mode(mode):
+    """Ask the host helper to switch: 1E 1F "KVMCTL:" <helper|shell> LF."""
+    if mode not in ("helper", "shell"): raise ValueError("bad mode")
+    return _write(CTL + mode.encode() + b"\n")
+
 def send(text, newline=True):
     """Write keystrokes to the host terminal. Returns False if the port isn't open."""
-    data = (text + ("\r" if newline else "")).encode()
+    return _write((text + ("\r" if newline else "")).encode())
+
+def _write(data):
     with _wlock:
         fd = _wfd
         if fd is None: return False

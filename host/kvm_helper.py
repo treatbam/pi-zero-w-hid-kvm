@@ -5,8 +5,21 @@ Sends this PC's temperature, load, and memory, plus a 240x135 desktop still,
 to the Zero over the USB serial port the gadget already exposes. The Zero
 peels those packets off before the terminal page sees them.
 
-Write-only. Stop any getty on this port first, or the login prompt and these
-packets write over each other:
+Two modes, switched from the web console (POST /api/mode on the Zero):
+
+  helper  (default) stats + stills, as before. Input from the Zero is ignored
+          except for mode-control packets.
+  shell   stats/stills pause; a `bash -l` runs on a pty as the user running this
+          helper (never root: shell mode is refused when euid is 0) and is bridged
+          both ways to the serial port. A "helper" packet or the shell exiting
+          kills/reaps bash and resumes helper mode.
+
+Control packet, Zero -> host (never valid UTF-8 text a person types):
+    1E 1F "KVMCTL:" <mode> 0A        mode = b"shell" | b"helper"
+Ack, host -> Zero: the normal envelope, type 3, 1-byte payload (0 helper, 1 shell).
+Sent on every mode change and every 2 s in helper mode.
+
+This program owns the port. Stop any getty on this port first:
 
     sudo systemctl disable --now serial-getty@ttyACM0.service
     python3 kvm_helper.py
@@ -22,7 +35,10 @@ Env:
 import glob
 import math
 import os
+import pty
 import re
+import select
+import signal
 import struct
 import subprocess
 import termios
@@ -31,6 +47,51 @@ import time
 MAGIC = b"\xfe\xfdKV"
 FRAME_LEN = 240 * 135 * 2
 INTERVAL = 2.0
+CTL = b"\x1e\x1fKVMCTL:"
+CTL_MAX = len(CTL) + 8          # longest valid packet body before the newline
+MODES = {b"helper": 0, b"shell": 1}
+
+
+def pack_mode(mode):
+    return MAGIC + bytes([3]) + struct.pack("<I", 1) + bytes([MODES[mode]])
+
+
+class CtlParser:
+    """Split Zero->host input into (data bytes, [modes]). A partial prefix is held
+    back; a prefix followed by garbage is released as data."""
+
+    def __init__(self):
+        self.buf = bytearray()
+
+    def feed(self, data):
+        self.buf.extend(data)
+        out, modes = bytearray(), []
+        while True:
+            i = self.buf.find(CTL)
+            if i < 0:
+                hold = 0
+                for k in range(min(len(CTL) - 1, len(self.buf)), 0, -1):
+                    if CTL.startswith(self.buf[-k:]):
+                        hold = k
+                        break
+                out.extend(self.buf[:len(self.buf) - hold])
+                del self.buf[:len(self.buf) - hold]
+                break
+            out.extend(self.buf[:i])
+            del self.buf[:i]
+            nl = self.buf.find(b"\n", len(CTL))
+            if nl < 0:
+                if len(self.buf) > CTL_MAX:
+                    out.append(self.buf[0]); del self.buf[:1]
+                    continue
+                break
+            mode = bytes(self.buf[len(CTL):nl])
+            if mode in MODES:
+                modes.append(mode)
+                del self.buf[:nl + 1]
+            else:
+                out.append(self.buf[0]); del self.buf[:1]
+        return bytes(out), modes
 
 
 def pack_stats(temp, load, mem):
@@ -123,13 +184,15 @@ def capture(display):
 
 
 def open_port(path):
-    fd = os.open(path, os.O_WRONLY | os.O_NOCTTY | os.O_NONBLOCK)
+    fd = os.open(path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
     try:
         attr = termios.tcgetattr(fd)
         attr[0] = 0
         attr[1] = 0
         attr[2] = (attr[2] & ~termios.CSIZE) | termios.CS8 | termios.CREAD | termios.CLOCAL
         attr[3] = 0
+        attr[6][termios.VMIN] = 1
+        attr[6][termios.VTIME] = 0
         termios.tcsetattr(fd, termios.TCSANOW, attr)
     except termios.error:
         pass
@@ -149,40 +212,173 @@ def write_all(fd, data):
             time.sleep(0.02)
 
 
+class Shell:
+    """bash -l on a pty, as the current (non-root) user."""
+
+    def __init__(self):
+        if os.geteuid() == 0:
+            raise PermissionError("refusing to start a shell as root; run the helper as a normal user")
+        pid, master = pty.fork()
+        if pid == 0:
+            try:
+                os.chdir(os.path.expanduser("~"))
+            except OSError:
+                pass
+            env = dict(os.environ, TERM="dumb")
+            os.execvpe("bash", ["bash", "-l"], env)
+        self.pid, self.master = pid, master
+        os.set_blocking(master, False)
+
+    def alive(self):
+        if self.pid is None:
+            return False
+        try:
+            done, _ = os.waitpid(self.pid, os.WNOHANG)
+        except ChildProcessError:
+            done = self.pid
+        if done:
+            self.pid = None
+        return self.pid is not None
+
+    def close(self):
+        if self.pid is not None:
+            for sig, wait in ((signal.SIGHUP, 1.0), (signal.SIGKILL, 2.0)):
+                try:
+                    os.killpg(self.pid, sig)
+                except (ProcessLookupError, PermissionError):
+                    try:
+                        os.kill(self.pid, sig)
+                    except ProcessLookupError:
+                        pass
+                end = time.monotonic() + wait
+                while time.monotonic() < end and self.alive():
+                    time.sleep(0.02)
+                if self.pid is None:
+                    break
+            if self.pid is not None:
+                try:
+                    os.waitpid(self.pid, 0)
+                except ChildProcessError:
+                    pass
+                self.pid = None
+        try:
+            os.close(self.master)
+        except OSError:
+            pass
+
+
+def send_helper_packets(fd, display, announced):
+    blob = b""
+    stats = read_stats()
+    if stats:
+        blob += pack_stats(*stats)
+    frame = capture(display)
+    if frame:
+        blob += pack_frame(frame)
+    blob += pack_mode(b"helper")
+    write_all(fd, blob)
+    state = ("stats" if stats else "no-stats") + ("+frame" if frame else "")
+    if state != announced:
+        print(state, flush=True)
+    return state
+
+
+def run(fd, display):
+    """Serve one open port until an OSError. Returns on error (caller reopens)."""
+    parser = CtlParser()
+    shell = None
+    announced = None
+    next_tick = 0.0
+    was_shell = requested_back = False
+    try:
+        write_all(fd, pack_mode(b"helper"))
+        while True:
+            now = time.monotonic()
+            if shell is None and now >= next_tick:
+                announced = send_helper_packets(fd, display, announced)
+                next_tick = time.monotonic() + INTERVAL
+            rlist = [fd] + ([shell.master] if shell else [])
+            timeout = 0.5 if shell else max(0.0, next_tick - time.monotonic())
+            ready, _, _ = select.select(rlist, [], [], timeout)
+            if fd in ready:
+                try:
+                    data = os.read(fd, 4096)
+                except BlockingIOError:
+                    data = None
+                if data == b"":
+                    raise OSError("serial port closed")
+                if data:
+                    text, modes = parser.feed(data)
+                    for mode in modes:
+                        if mode == b"shell" and shell is None:
+                            text = b""        # bytes before the packet were helper-mode noise
+                            try:
+                                shell = Shell()
+                                print("shell mode: bash -l pid", shell.pid, flush=True)
+                                write_all(fd, pack_mode(b"shell"))
+                            except (PermissionError, OSError) as exc:
+                                print("shell refused:", exc, flush=True)
+                                write_all(fd, pack_mode(b"helper"))
+                        elif mode == b"helper" and shell is not None:
+                            if text:
+                                write_all(shell.master, text)
+                                text = b""
+                            shell.close(); shell = None
+                            print("helper mode (requested)", flush=True)
+                            write_all(fd, pack_mode(b"helper")); next_tick = 0.0
+                            requested_back = True
+                        else:
+                            write_all(fd, pack_mode(b"shell" if shell else b"helper"))
+                    if shell and text:
+                        write_all(shell.master, text)
+            if shell and shell.master in ready:
+                try:
+                    out = os.read(shell.master, 4096)
+                except BlockingIOError:
+                    out = None
+                except OSError:          # EIO: bash exited, slave closed
+                    out = b""
+                if out:
+                    write_all(fd, out)
+                elif out == b"":
+                    shell.close(); shell = None
+            if shell and not shell.alive():
+                try:                     # flush what bash printed last
+                    while True:
+                        out = os.read(shell.master, 4096)
+                        if not out:
+                            break
+                        write_all(fd, out)
+                except OSError:
+                    pass
+                shell.close(); shell = None
+            if shell is None and was_shell and not requested_back:
+                print("helper mode (shell exited)", flush=True)
+                write_all(fd, pack_mode(b"helper")); next_tick = 0.0
+            was_shell, requested_back = shell is not None, False
+    finally:
+        if shell:
+            shell.close()
+
+
 def main():
     dev = os.environ.get("KVM_HOST_DEV", "/dev/ttyACM0")
     display = os.environ.get("KVM_DISPLAY", os.environ.get("DISPLAY", "")).strip()
-    fd = None
-    announced = None
     while True:
-        started = time.monotonic()
+        fd = None
         try:
-            if fd is None:
-                fd = open_port(dev)
-                print(f"helper writing {dev}", flush=True)
-            blob = b""
-            stats = read_stats()
-            if stats:
-                blob += pack_stats(*stats)
-            frame = capture(display)
-            if frame:
-                blob += pack_frame(frame)
-            if blob:
-                write_all(fd, blob)
-            state = ("stats" if stats else "no-stats") + ("+frame" if frame else "")
-            if state != announced:
-                print(state, flush=True)
-                announced = state
+            fd = open_port(dev)
+            print(f"helper on {dev}", flush=True)
+            run(fd, display)
         except (OSError, TimeoutError) as exc:
             print(f"{dev}: {exc}", flush=True)
+        finally:
             if fd is not None:
                 try:
                     os.close(fd)
                 except OSError:
                     pass
-                fd = None
-            announced = None
-        time.sleep(max(0.0, INTERVAL - (time.monotonic() - started)))
+        time.sleep(2)
 
 
 if __name__ == "__main__":
