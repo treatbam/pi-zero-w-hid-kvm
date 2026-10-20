@@ -13,12 +13,17 @@ import hostview
 
 DEV = os.environ.get("KVM_TERM_DEV", "/dev/ttyGS0")
 MAX_LINES, MAX_LINE = 200, 400
-ANSI = re.compile(r"\x1b(\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[@-Z\\-_])")
+MAX_ESC = 64          # longest escape sequence we will wait for across two reads
+# CSI, OSC, charset / keypad / save-cursor style escapes (ESC ( B, ESC =, ESC 7, ...) and the
+# original two-character forms. ESC [ and ESC ] are only taken as CSI / OSC starts.
+ANSI = re.compile(r"\x1b(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[ -/]+[0-~]|[0-Z\\-~])")
 
 _lock = threading.Lock()
 _wlock = threading.Lock()
 _lines = collections.deque(maxlen=MAX_LINES)
 _partial = ""
+_pend = ""           # an escape sequence cut off by the end of a read
+_cr = False          # a carriage return is waiting to overwrite the line
 _seq = 0            # total completed lines ever (lets clients spot new output)
 _fd = None
 _wfd = None         # separate O_NONBLOCK fd so a stalled host can't hang a web request
@@ -33,16 +38,35 @@ def _raw(fd):
     a[6][termios.VMIN] = 1; a[6][termios.VTIME] = 0
     termios.tcsetattr(fd, termios.TCSANOW, a)
 
-def _feed(text):
-    global _partial, _seq
-    text = ANSI.sub("", text).replace("\r\n", "\n")
+def _split_pending(text):
+    """Hold back an escape sequence that the read ended in the middle of."""
+    i = text.rfind("\x1b")
+    if i < 0 or ANSI.match(text, i) or len(text) - i > MAX_ESC:
+        return text, ""
+    return text[:i], text[i:]
+
+def reset_pending():
+    """Forget a half-received escape and a pending carriage return (port closed / long gap)."""
+    global _pend, _cr
     with _lock:
+        _pend = ""; _cr = False
+
+def _feed(text):
+    global _partial, _seq, _pend, _cr
+    with _lock:
+        text, new_pend = _split_pending(_pend + text)
+        _pend = new_pend
+        text = ANSI.sub("", text)
         for ch in text:
             if ch == "\n":
-                _lines.append(_partial); _partial = ""; _seq += 1
-            elif ch == "\r":
-                _partial = ""                      # carriage return: overwrite line
-            elif ch in "\b\x7f":
+                _lines.append(_partial); _partial = ""; _seq += 1; _cr = False
+                continue
+            if ch == "\r":
+                _cr = True                         # overwrite the line on the next character
+                continue
+            if _cr and (ch >= " " or ch in "\b\x7f\t"):
+                _partial = ""; _cr = False
+            if ch in "\b\x7f":
                 _partial = _partial[:-1]
             elif ch == "\t":
                 _partial += " " * (8 - len(_partial) % 8)
@@ -72,6 +96,7 @@ def _reader():
                 if not b or now - last_data > 1.0:
                     hostview.shared.drop_incomplete()
                     dec.reset()
+                    reset_pending()
                 if not b:
                     time.sleep(0.2); continue
                 last_data = now
@@ -81,9 +106,12 @@ def _reader():
                     if s: _feed(s)
         except OSError as e:
             hostview.shared.reset()
+            reset_pending()
             _err = f"{DEV}: {e.strerror or e}"
             with _wlock:
-                for f in (fd, wfd, _fd, _wfd):
+                # fd/_fd and wfd/_wfd are the same descriptors: close each once, or a
+                # second close could hit a number the kernel has already handed out again.
+                for f in {fd, wfd, _fd, _wfd}:
                     if f is not None:
                         try: os.close(f)
                         except OSError: pass

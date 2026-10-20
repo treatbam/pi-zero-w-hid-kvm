@@ -61,29 +61,40 @@ def read_leds():
             except OSError: pass
         return _leds_dict(_leds_byte)
 
+def _write_fd(fd, dev, data):
+    deadline = time.monotonic() + WRITE_TIMEOUT
+    while data:
+        left = deadline - time.monotonic()
+        if left <= 0: raise HIDTimeout(f"{dev}: host not reading")
+        _, w, _ = select.select([], [fd], [], left)
+        if not w: continue
+        try:
+            n = os.write(fd, data); data = data[n:]
+        except OSError as e:
+            if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK): raise
+
 def _write(dev, data):
     fd = os.open(dev, os.O_WRONLY | os.O_NONBLOCK)
     try:
-        deadline = time.monotonic() + WRITE_TIMEOUT
-        while data:
-            left = deadline - time.monotonic()
-            if left <= 0: raise HIDTimeout(f"{dev}: host not reading")
-            _, w, _ = select.select([], [fd], [], left)
-            if not w: continue
-            try:
-                n = os.write(fd, data); data = data[n:]
-            except OSError as e:
-                if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK): raise
+        _write_fd(fd, dev, data)
     finally:
         os.close(fd)
 
-def key_combo(keys, mods=()):
-    """Press keys (<=6) with modifiers, then release all."""
+def _report(keys, mods=()):
     m = 0
     for x in mods: m |= MOD[x]
     codes = [KEYS[k] for k in keys][:6]
-    _write(KBD_DEV, bytes([m, 0] + codes + [0] * (6 - len(codes))))
-    _write(KBD_DEV, bytes(8))
+    return bytes([m, 0] + codes + [0] * (6 - len(codes)))
+
+def key_combo(keys, mods=()):
+    """Press keys (<=6) with modifiers, then release all."""
+    press = _report(keys, mods)
+    fd = os.open(KBD_DEV, os.O_WRONLY | os.O_NONBLOCK)
+    try:
+        _write_fd(fd, KBD_DEV, press)
+        _write_fd(fd, KBD_DEV, bytes(8))
+    finally:
+        os.close(fd)
 
 def ping_host(timeout=0.45):
     """Bounce CapsLock twice and measure the host's USB HID LED output report echo latency."""
@@ -131,15 +142,29 @@ def ping_host(timeout=0.45):
             try: os.close(rfd)
             except OSError: pass
 
+def _char_combo(ch):
+    """(keys, mods) for one US-layout character, or None if it has no key."""
+    if ch == " ": return (["space"], ())
+    if ch == "\n": return (["enter"], ())
+    if ch == "\t": return (["tab"], ())
+    if ch in SHIFTED: return ([SHIFTED[ch]], ["shift"])
+    if ch.isupper() and ch.lower() in KEYS: return ([ch.lower()], ["shift"])
+    if ch in KEYS: return ([ch], ())
+    return None    # silently skipped (TODO: report back)
+
 def type_text(text):
-    for ch in text:
-        if ch == " ": key_combo(["space"])
-        elif ch == "\n": key_combo(["enter"])
-        elif ch in SHIFTED: key_combo([SHIFTED[ch]], ["shift"])
-        elif ch.isupper(): key_combo([ch.lower()], ["shift"])
-        elif ch in KEYS: key_combo([ch])
-        # else: silently skip unsupported chars (TODO: report back)
-        time.sleep(0.005)
+    """Type US-layout text. The device is opened once for the whole string, not twice per
+    character, and a key press is released before the next character starts."""
+    fd = os.open(KBD_DEV, os.O_WRONLY | os.O_NONBLOCK)
+    try:
+        for ch in text:
+            combo = _char_combo(ch)
+            if combo:
+                _write_fd(fd, KBD_DEV, _report(*combo))
+                _write_fd(fd, KBD_DEV, bytes(8))
+            time.sleep(0.005)
+    finally:
+        os.close(fd)
 
 def _clamp(v): return max(-127, min(127, int(v)))
 

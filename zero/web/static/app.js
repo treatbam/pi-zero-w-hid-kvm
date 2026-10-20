@@ -208,8 +208,8 @@ document.getElementById('ping').onclick = async () => {
 };
 
 document.querySelectorAll('[data-b]').forEach(b => {
-  b.onpointerdown = e => { e.preventDefault(); flush(); held |= +b.dataset.b; m({}); };
-  b.onpointerup = b.onpointercancel = () => { if (held & +b.dataset.b) { flush(); held &= ~+b.dataset.b; m({}); } };
+  b.onpointerdown = e => { e.preventDefault(); flush(true); held |= +b.dataset.b; m({}); };
+  b.onpointerup = b.onpointercancel = () => { if (held & +b.dataset.b) { flush(true); held &= ~+b.dataset.b; m({}); } };
 });
 
 const pad = document.getElementById('surface');
@@ -274,15 +274,30 @@ async function pollFrame() {
 }
 setInterval(pollFrame, 1500);
 
-let last = null, acc = {dx: 0, dy: 0}, moved = false;
-pad.onpointerdown = e => { if (e.target === loupeBtn) return; last = [e.clientX, e.clientY]; moved = false; pad.setPointerCapture(e.pointerId); };
-pad.onpointermove = e => { if (!last) return; acc.dx += e.clientX - last[0]; acc.dy += e.clientY - last[1];
-  if (Math.abs(acc.dx) + Math.abs(acc.dy) > 2) moved = true; last = [e.clientX, e.clientY]; };
-pad.onpointerup = () => { if (!last) return; flush(); if (!moved) { m({buttons: held | 1}); m({}); } last = null; };
+let last = null, acc = {dx: 0, dy: 0}, moved = false, dist = 0;
+// A tap is a gesture that never travelled: measure the whole gesture, not what is still
+// waiting in acc (flush() empties acc every 30 ms, which hid slow drags from this check).
+pad.onpointerdown = e => { if (e.target === loupeBtn) return; last = [e.clientX, e.clientY]; moved = false; dist = 0; pad.setPointerCapture(e.pointerId); };
+pad.onpointermove = e => { if (!last) return;
+  const ddx = e.clientX - last[0], ddy = e.clientY - last[1];
+  acc.dx += ddx; acc.dy += ddy; dist += Math.abs(ddx) + Math.abs(ddy);
+  if (dist > 3) moved = true; last = [e.clientX, e.clientY]; };
+pad.onpointerup = () => { if (!last) return; flush(true); if (!moved) { m({buttons: held | 1}); m({}); } last = null; };
 pad.onwheel = e => { e.preventDefault(); m({wheel: e.deltaY < 0 ? 1 : -1}); };
 const clampMove = v => Math.max(-4096, Math.min(4096, Math.round(v)));
-function flush() { if (acc.dx || acc.dy) { const d = {dx: clampMove(acc.dx), dy: clampMove(acc.dy)}; acc = {dx: 0, dy: 0}; m(d); } }
-setInterval(flush, 30);
+// Only one motion POST is in flight at a time. Movement that happens meanwhile keeps adding
+// up in acc and goes out as one bigger step when the reply returns, so the cursor stops when
+// the finger stops instead of replaying a backlog. force=true (button edges, release) sends
+// anyway, queued behind the in-flight one so the order stays right.
+let inflight = 0;
+function flush(force) {
+  if ((inflight && !force) || !(acc.dx || acc.dy)) return;
+  const d = {dx: clampMove(acc.dx), dy: clampMove(acc.dy)};
+  acc = {dx: 0, dy: 0};
+  inflight++;
+  m(d).finally(() => { inflight--; if (!inflight) flush(); });
+}
+setInterval(() => flush(), 30);
 
 function bindWheel(id, dir) {
   const btn = document.getElementById(id);

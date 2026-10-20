@@ -48,6 +48,56 @@ class Parser(unittest.TestCase):
         self.assertEqual(p.feed(bad), [("data", bad)])
 
 
+class Sensors(unittest.TestCase):
+    """read_temp(): a CPU sensor wins; hwmon-only hosts still report a temperature."""
+
+    def _temp(self, zones, hwmon):
+        import unittest.mock as mock
+        reads = dict(zones)   # thermal zone dir -> (type, millidegrees)
+
+        def fake_glob(pattern):
+            return sorted(reads) if "thermal_zone" in pattern else []
+
+        real_open = open
+
+        def fake_open(path, *a, **k):
+            for zone, (kind, milli) in reads.items():
+                if path == os.path.join(zone, "type"):
+                    return mock.mock_open(read_data=kind + "\n")()
+                if path == os.path.join(zone, "temp"):
+                    return mock.mock_open(read_data=str(milli))()
+            return real_open(path, *a, **k)
+
+        with mock.patch.object(kvm_helper.glob, "glob", fake_glob), \
+             mock.patch("builtins.open", fake_open), \
+             mock.patch.object(kvm_helper, "_hwmon_temps", lambda: hwmon):
+            return kvm_helper.read_temp()
+
+    def test_hwmon_only_host_has_a_temperature(self):
+        self.assertEqual(self._temp({}, [("k10temp", 57.5), ("nvme", 41.0)]), 57.5)
+
+    def test_cpu_sensor_beats_a_hotter_board_sensor(self):
+        zones = {"/z0": ("acpitz", 90000)}
+        self.assertEqual(self._temp(zones, [("k10temp", 60.0)]), 60.0)
+
+    def test_falls_back_to_hottest_other_sensor(self):
+        self.assertEqual(self._temp({}, [("nvme", 41.0), ("acpitz", 47.0)]), 47.0)
+
+    def test_no_sensor_at_all(self):
+        self.assertIsNone(self._temp({}, []))
+
+    def test_net_packet_always_carries_the_cpu_count(self):
+        import unittest.mock as mock
+        sent = []
+        with mock.patch.object(kvm_helper, "write_all", lambda fd, blob: sent.append(blob)), \
+             mock.patch.object(kvm_helper, "read_net_counters", lambda: None):
+            kvm_helper.send_helper_packets(-1, "", None, want_frame=False)
+        view = hostview.HostView()
+        view.feed(sent[0])
+        self.assertIsNotNone(view._ncpu)
+        self.assertGreaterEqual(view._ncpu, 1)
+
+
 class Loopback(unittest.TestCase):
     def setUp(self):
         self.m, s = os.openpty()

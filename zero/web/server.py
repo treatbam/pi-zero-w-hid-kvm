@@ -159,6 +159,13 @@ class H(SimpleHTTPRequestHandler):
         self.send_response(code); self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
 
+    def _my_ip(self):
+        """The address this request arrived on. Works as a standalone AP with no default
+        route, where local_ip()'s routing trick has nothing to route through."""
+        try: ip = self.connection.getsockname()[0]
+        except OSError: ip = ""
+        return ip if ip and not ip.startswith("127.") and ip != "0.0.0.0" else local_ip()
+
     def do_GET(self):
         if self.path == "/api/status":
             st = hid.status()
@@ -167,7 +174,7 @@ class H(SimpleHTTPRequestHandler):
             if self.headers.get("X-KVM-PIN") and self._pin_ok():   # serial fields need the PIN
                 mode, age = hostview.shared.mode()
                 sm = {"serial_mode": mode, "serial_mode_age_s": age, "serial_mode_requested": MODE_REQ["mode"]}
-            return self._json(200, {**st, "ip": local_ip(), **sysstats(), **pc, **sm})
+            return self._json(200, {**st, "ip": self._my_ip(), **sysstats(), **pc, **sm})
         u = urlsplit(self.path)
         if u.path == "/api/frame":
             ok = self._pin_ok()

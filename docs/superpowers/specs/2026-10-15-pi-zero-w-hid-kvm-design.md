@@ -50,7 +50,7 @@ Both screens read that state from the Zero. They must not invent it separately.
 
 ### GEEK pages
 
-One hardware button. A short press advances. A long press and a double press do nothing. There is no options list.
+One hardware button. A short press advances, instantly; two quick presses advance twice. A long press does nothing. There is no options list.
 
 The cycle is:
 

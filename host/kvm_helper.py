@@ -348,9 +348,41 @@ def step_top_proc(prev, sample, now, clk_tck=None):
     return (best_comm, pct), new
 
 
+PREFERRED_TEMP = frozenset((
+    "x86_pkg_temp", "cpu-thermal", "soc_thermal",       # thermal zone types
+    "coretemp", "k10temp", "zenpower", "cpu_thermal",   # hwmon chip names
+))
+
+
+def _hwmon_temps():
+    """[(chip_name, celsius)] from /sys/class/hwmon/*/temp*_input.
+
+    Many desktop boards (k10temp, coretemp) and some VMs expose a CPU sensor only here,
+    with no /sys/class/thermal zone at all."""
+    out = []
+    for hw in sorted(glob.glob("/sys/class/hwmon/hwmon*")):
+        try:
+            with open(os.path.join(hw, "name")) as f:
+                name = f.read().strip()
+        except OSError:
+            name = ""
+        for path in sorted(glob.glob(os.path.join(hw, "temp*_input"))):
+            try:
+                with open(path) as f:
+                    temp = int(f.read()) / 1000.0
+            except (OSError, ValueError):
+                continue
+            if math.isfinite(temp) and -50.0 < temp < 150.0:
+                out.append((name, temp))
+    return out
+
+
 def read_temp():
-    """Package temperature in C, or None when the kernel exposes no zone."""
-    preferred = None
+    """Package temperature in C, or None when the kernel exposes no sensor.
+
+    A CPU sensor (thermal zone or hwmon chip) wins over any other reading; failing that, the
+    hottest reading of whatever else is there."""
+    preferred = []
     rest = []
     for zone in sorted(glob.glob("/sys/class/thermal/thermal_zone*")):
         try:
@@ -362,12 +394,11 @@ def read_temp():
             continue
         if not math.isfinite(temp):
             continue
-        if kind in ("x86_pkg_temp", "cpu-thermal", "soc_thermal"):
-            preferred = temp if preferred is None else max(preferred, temp)
-        else:
-            rest.append(temp)
-    if preferred is not None:
-        return preferred
+        (preferred if kind in PREFERRED_TEMP else rest).append(temp)
+    for name, temp in _hwmon_temps():
+        (preferred if name in PREFERRED_TEMP else rest).append(temp)
+    if preferred:
+        return max(preferred)
     return max(rest) if rest else None
 
 
@@ -732,9 +763,11 @@ def send_helper_packets(fd, display, announced, state=None, want_frame=True):
     net, state.net_prev = step_net(state.net_prev, read_net_counters(), now)
     cores, state.cores_prev = step_cores(state.cores_prev, read_cpu_times())
     ncpu = float(os.cpu_count() or 1)
+    # Always send the CPU count: it must not depend on a default route or on a second
+    # counter sample. Rates of -1 mean "no rates this round".
     if net:
         blob += pack_net(net[0], net[1], net[2], cores)
-    elif cores:
+    else:
         blob += pack_net(-1.0, -1.0, ncpu, cores)
     disk_pct = read_disk_pct("/")
     (top_proc, top_cpu), state.proc_prev = step_top_proc(state.proc_prev, read_proc_ticks(), now)

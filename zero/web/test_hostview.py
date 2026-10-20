@@ -120,6 +120,35 @@ class HostViewTest(unittest.TestCase):
         self.assertFalse(self.view.drop_incomplete())
         self.assertEqual(self.view.feed(b"Zrest"), b"\xfe\xfdZrest")
 
+    def test_drop_incomplete_clears_a_partial_header(self):
+        # MAGIC plus 1..4 more bytes is a header that will never finish.
+        for n in range(4, 9):
+            self.view.reset()
+            stats = packet(1, struct.pack("<fff", 1.0, 2.0, 3.0))
+            self.assertEqual(self.view.feed(stats[:n]), b"")
+            self.assertTrue(self.view.drop_incomplete(), n)
+            self.assertEqual(self.view.feed(b"$ "), b"$ ")
+
+    def test_restart_inside_a_frame_resyncs_without_terminal_noise(self):
+        # Helper dies 1000 bytes into a still and comes back with stats + a new still
+        # inside one second, so drop_incomplete() never runs.
+        frame = packet(2, b"\x5a" * FRAME_LEN)
+        stats = packet(1, struct.pack("<fff", 55.0, 0.3, 12.0))
+        out = self.view.feed(frame[:1009])
+        out += self.view.feed(stats + frame)
+        self.assertEqual(out, b"")
+        self.assertEqual(self.view.status_fields(True)["pc_temp_c"], 55.0)
+        self.assertEqual(self.view.frame_bytes(True), b"\x5a" * FRAME_LEN)
+        self.assertEqual(self.view.feed(b"login: "), b"login: ")
+
+    def test_restart_header_split_across_reads_still_resyncs(self):
+        frame = packet(2, b"\x5a" * FRAME_LEN)
+        stats = packet(1, struct.pack("<fff", 40.0, 0.1, 9.0))
+        out = self.view.feed(frame[:500] + stats[:6])
+        out += self.view.feed(stats[6:] + b"ok")
+        self.assertEqual(out, b"ok")
+        self.assertEqual(self.view.status_fields(True)["pc_temp_c"], 40.0)
+
     def test_helper_packets_match_the_parser(self):
         import importlib.util
         path = os.path.join(os.path.dirname(__file__), "..", "..", "host", "kvm_helper.py")
@@ -272,6 +301,28 @@ class HostViewTest(unittest.TestCase):
             hid.KBD_DEV = orig_kbd
             os.close(m); os.close(s)
 
+    def test_type_text_sends_tab_skips_unknown_and_releases_each_key(self):
+        import hid, select, time, tty
+        m, s = os.openpty()
+        orig_kbd = hid.KBD_DEV
+        try:
+            hid.KBD_DEV = os.ttyname(s)
+            tty.setraw(m); tty.setraw(s)
+            hid.type_text("A\tb\u00c9\u00e9")        # last two have no US key and are skipped
+            time.sleep(0.05)
+            data = b""
+            while select.select([m], [], [], 0.05)[0]:
+                data += os.read(m, 256)
+            reports = [data[i:i + 8] for i in range(0, len(data), 8)]
+            press = lambda mod, code: bytes([mod, 0, code, 0, 0, 0, 0, 0])
+            self.assertEqual(reports, [
+                press(0x02, 0x04), bytes(8),          # shift + a
+                press(0x00, 0x2B), bytes(8),          # tab
+                press(0x00, 0x05), bytes(8),          # b
+            ])
+        finally:
+            hid.KBD_DEV = orig_kbd
+            os.close(m); os.close(s)
 
 if __name__ == "__main__":
     unittest.main()

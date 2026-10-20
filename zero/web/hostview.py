@@ -99,6 +99,7 @@ class HostView:
         self._net = None            # (down bytes/s, up bytes/s, ncpu)
         self._net_at = None
         self._ncpu = None
+        self._ncpu_at = None
         self._cores = None          # [int 0..100, ...] sorted hottest-to-coolest (max 8)
         self._cores_at = None
         self._triage = None         # (disk_pct, top_cpu_pct, lan_ip, top_proc)
@@ -121,8 +122,12 @@ class HostView:
         """Drop a header whose payload never arrived. A short magic prefix stays, so a pause
         in the shell does not eat the last few characters. Readings stay until they go stale."""
         with self._lock:
-            if len(self._buf) < HDR or self._buf.find(MAGIC) != 0:
+            if self._buf.find(MAGIC) != 0:
                 return False
+            if len(self._buf) < HDR:
+                # MAGIC plus a partial type/length: the writer died mid-header.
+                self._buf.clear()
+                return True
             typ = self._buf[4]
             ln = struct.unpack_from("<I", self._buf, 5)[0]
             if not self._shape_ok(typ, ln) or len(self._buf) >= HDR + ln:
@@ -155,6 +160,12 @@ class HostView:
                 if not self._shape_ok(typ, ln):
                     out.append(self._buf[0])
                     del self._buf[:1]
+                    continue
+                # A fresh, fully valid header inside this packet's payload means the writer
+                # restarted mid-packet. Drop the truncated packet, keep parsing.
+                j = self._restart_at(HDR + ln)
+                if j > 0:
+                    del self._buf[:j]
                     continue
                 if len(self._buf) < HDR + ln:
                     break
@@ -196,8 +207,8 @@ class HostView:
                     fields["pc_ncpu"] = int(round(ncpu))
                 if self._cores is not None and self._fresh(self._cores_at):
                     fields["pc_cores"] = list(self._cores)
-                    if fields["pc_ncpu"] is None and self._ncpu is not None:
-                        fields["pc_ncpu"] = self._ncpu
+                if fields["pc_ncpu"] is None and self._ncpu is not None and self._fresh(self._ncpu_at):
+                    fields["pc_ncpu"] = self._ncpu
                 if self._triage is not None and self._fresh(self._triage_at):
                     disk_pct, top_cpu_pct, lan_ip, top_proc = self._triage
                     if 0 <= disk_pct <= 100:
@@ -236,6 +247,22 @@ class HostView:
     def _fresh(self, stamp):
         return stamp is not None and (self._now() - stamp) <= FRESH_S
 
+    def _restart_at(self, limit):
+        """Index (< limit) of a complete, fixed-length header inside the current packet's
+        payload, or -1. Every such header is one of a few exact 9-byte constants, so a false
+        match inside pixel data is vanishingly unlikely. Clipboard (variable length) is not
+        used."""
+        i = self._buf.find(MAGIC, 1)
+        while 0 < i < limit:
+            if len(self._buf) - i < HDR:
+                return -1
+            typ = self._buf[i + 4]
+            ln = struct.unpack_from("<I", self._buf, i + 5)[0]
+            if typ != TYPE_CLIP and self._shape_ok(typ, ln):
+                return i
+            i = self._buf.find(MAGIC, i + 1)
+        return -1
+
     @staticmethod
     def _shape_ok(typ, ln):
         if typ == TYPE_STATS:
@@ -269,6 +296,7 @@ class HostView:
             if not (math.isfinite(rx) and math.isfinite(tx) and math.isfinite(ncpu)) or ncpu < 1:
                 return
             self._ncpu = int(round(ncpu))
+            self._ncpu_at = now
             cores = [b for b in cbytes if b <= 100]
             if cores:
                 self._cores = cores

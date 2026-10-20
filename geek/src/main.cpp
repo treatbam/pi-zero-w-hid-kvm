@@ -1,6 +1,6 @@
 // ESP32-S3-GEEK KVM panel. Three pages, one short press to advance:
 //   scoreboard → desktop still → terminal → scoreboard.
-// A long press and a double press do nothing. There is no menu.
+// A long press does nothing, and two quick presses are just two page steps. There is no menu.
 // The status word (LINKED / KEYS / NO HOST) comes from the Zero's /api/status.
 // While LINKED, each PC figure has a 2-minute sparkline. After the helper goes
 // quiet the last PC figures stay up for a minute under a "reconnecting" toast,
@@ -236,6 +236,9 @@ void pollOnce() {
   bool live = s.api && strcmp(s.link, "LINKED") == 0
               && !isnan(s.pcTemp) && !isnan(s.pcLoad) && s.pcMem >= 0;
   pushHist(s, live);
+  // Cable pulled: the board shows NO HOST at once, and the PC figures held for "reconnecting"
+  // belong to a machine that is gone. Plugging into a different host must not revive them.
+  if (s.api && strcmp(s.link, "NO HOST") == 0) gHist.had = false;
   xSemaphoreGive(gLock);
 }
 
@@ -302,9 +305,15 @@ void pollFrame() {
 }
 
 void netTask(void*) {
-  uint32_t last = 0, lastTerm = 0, lastFrame = 0;
+  // Start due, and poll again the moment Wi-Fi comes up, so the first figures do not wait
+  // out a 2 s tick on a board that has been showing "wifi down".
+  uint32_t last = millis() - 2001, lastTerm = 0, lastFrame = 0;
+  bool wasUp = false;
   for (;;) {
     uint32_t now = millis();
+    bool up = WiFi.status() == WL_CONNECTED;
+    if (up && !wasUp) last = now - 2001;
+    wasUp = up;
     if (now - last > 2000) { last = now; pollOnce(); }
     if (gTermOn && now - lastTerm > 800) { lastTerm = now; pollTerm(); }
     if (gDeskOn && (gFramePull || now - lastFrame > 2000)) {
@@ -342,7 +351,9 @@ struct Btn {
     return EV_NONE;
   }
 };
-Btn bBack{BTN_BACK, true}, bUp{BTN_UP, true}, bDown{BTN_DOWN, true}, bSel{BTN_SELECT, true};
+// Double-press detection stays off: it would hold every short press for DBL ms and turn two
+// quick presses (scoreboard -> terminal) into an ignored EV_DOUBLE. Each press is one step.
+Btn bBack{BTN_BACK, false}, bUp{BTN_UP, false}, bDown{BTN_DOWN, false}, bSel{BTN_SELECT, false};
 
 uint16_t rgb(uint8_t r, uint8_t g, uint8_t b) { return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3); }
 uint16_t mix(uint16_t a, uint16_t b, int t) {
@@ -820,9 +831,11 @@ void go(int n) {
 void setup() {
   Serial.begin(115200);
   for (int p : {BTN_BACK, BTN_UP, BTN_DOWN, BTN_SELECT}) if (p >= 0) pinMode(p, INPUT_PULLUP);
-  pinMode(LCD_BL, OUTPUT); digitalWrite(LCD_BL, HIGH);
+  pinMode(LCD_BL, OUTPUT); digitalWrite(LCD_BL, LOW);   // light the panel only once it is cleared
   SPI.begin(LCD_SCLK, -1, LCD_MOSI, LCD_CS);
   tft.init(135, 240); tft.setSPISpeed(40000000); tft.setRotation(1);
+  tft.fillScreen(ST77XX_BLACK);
+  digitalWrite(LCD_BL, HIGH);
   if (!fb.getBuffer()) {
     tft.fillScreen(ST77XX_RED); tft.setTextColor(ST77XX_WHITE); tft.setTextSize(2);
     tft.setCursor(6, 50); tft.print("no RAM for UI"); Serial.println("framebuffer alloc failed");
