@@ -318,6 +318,72 @@ const fmtRate = bps => {
   return (bps / 1e9).toFixed(1) + 'G';
 };
 
+// Desktop preview: poll changed JPEG tiles and composite them on a canvas.
+// The Zero passes the helper's JPEGs through untouched; this page does the drawing.
+const PV_MS = {low: 1000, med: 500, high: 250};
+let pvSeq = 0, pvQuality = 'med', pvBusy = false;
+async function pvPoll() {
+  const box = document.getElementById('pv'), st = document.getElementById('pvst');
+  if (!box.open || !pin || pvBusy || serialMode === 'shell') {
+    if (serialMode === 'shell') st.textContent = 'paused (shell mode)';
+    return setTimeout(pvPoll, 500);
+  }
+  pvBusy = true;
+  try {
+    const r = await fetch('/api/preview?since=' + pvSeq, {headers: {'X-KVM-PIN': pin}});
+    if (r.status === 204) st.textContent = 'no preview (helper not sending)';
+    else if (r.ok) {
+      const j = await r.json(), c = document.getElementById('pvc'), g = c.getContext('2d');
+      if (c.width !== j.w || c.height !== j.h) { c.width = j.w; c.height = j.h; }
+      if (j.reset) { g.fillStyle = '#000'; g.fillRect(0, 0, c.width, c.height); }
+      const imgs = await Promise.all(j.tiles.map(t => {
+        const b = Uint8Array.from(atob(t.jpg), ch => ch.charCodeAt(0));
+        return createImageBitmap(new Blob([b], {type: 'image/jpeg'})).then(im => [t, im]);
+      }));
+      for (const [t, im] of imgs) { g.drawImage(im, t.x, t.y); im.close(); }
+      pvSeq = j.seq; pvQuality = j.quality;
+      st.textContent = `${j.w}×${j.h} ${j.quality}, ${j.tiles.length} tiles`;
+    } else st.textContent = 'HTTP ' + r.status;
+  } catch (e) { st.textContent = 'preview error'; }
+  pvBusy = false;
+  setTimeout(pvPoll, PV_MS[pvQuality] || 500);
+}
+// The helper streams nothing (no preview, no extended stats) until asked: send q:<level>
+// when the panel opens and q:off when it closes. After a 202, wait for the helper's ack.
+let qWant = null, qAskedAt = 0, qAckSeen = null;
+async function askQuality(q) {
+  const st = document.getElementById('pvst');
+  qWant = q; qAskedAt = Date.now();
+  const r = await post('/api/quality', {quality: q});
+  if (!r.ok) { const j = await r.json().catch(() => ({})); st.textContent = 'quality: ' + (j.error || r.status); qWant = null; }
+}
+document.getElementById('pvq').onchange = e => askQuality(e.target.value);
+document.getElementById('pv').addEventListener('toggle', e => askQuality(e.target.open ? document.getElementById('pvq').value : 'off'));
+window.addEventListener('pagehide', () => { if (document.getElementById('pv').open && pin)
+  fetch('/api/quality', {method: 'POST', keepalive: true, headers: {'Content-Type': 'application/json', 'X-KVM-PIN': pin}, body: '{"quality":"off"}'}); });
+function checkQualityAck(s) {
+  const st = document.getElementById('pvst'), open = document.getElementById('pv').open;
+  if (qWant && s.preview_quality === qWant) { qWant = null; return; }
+  if (qWant && s.preview_quality === 'off' && qWant !== 'off') { st.textContent = 'preview unavailable on the PC (no Pillow/ffmpeg/X)'; qWant = null; return; }
+  if (qWant && Date.now() - qAskedAt > 5000) { st.textContent = `no ack from the helper for "${qWant}" (is kvm_helper running?)`; qWant = null; return; }
+  // helper restarted while the panel is open: it forgot the level, ask again (at most every 10 s)
+  if (open && !qWant && s.serial_mode === 'helper' && s.preview_quality == null && Date.now() - qAskedAt > 10000)
+    askQuality(document.getElementById('pvq').value);
+}
+function showStats(s) {
+  const el = document.getElementById('pcstats'), parts = [];
+  if (s.link !== 'LINKED') { el.textContent = ''; return; }
+  const f = (v, u) => v == null ? null : v + u;
+  const t = [['CPU', f(s.pc_cpu_temp_c ?? s.pc_temp_c, '°C')], ['GPU', f(s.pc_gpu_temp_c, '°C')], ['NVMe', f(s.pc_nvme_temp_c, '°C')]]
+    .filter(x => x[1]).map(x => x.join(' '));
+  parts.push(`load ${s.pc_load1} · mem ${s.pc_mem_pct}%` + (s.pc_gpu_pct != null ? ` · GPU ${s.pc_gpu_pct}%` : ''));
+  if (t.length) parts.push(t.join(' · '));
+  el.innerHTML = parts.map(p => `<div>${p}</div>`).join('') + ((s.pc_cores_all || s.pc_cores) ? '<div>cores ' +
+    (s.pc_cores_all || s.pc_cores).map(c => `<span class="core" title="${c}%"><i style="block-size:${Math.round(c)}%"></i></span>`).join('') + '</div>' : '');
+  if (s.preview_quality && s.preview_quality !== 'off' && !qWant) document.getElementById('pvq').value = s.preview_quality;
+}
+pvPoll();
+
 async function poll() {
   const pill = document.getElementById('pill'), ip = document.getElementById('ip');
   try {
@@ -332,7 +398,7 @@ async function poll() {
       if (s.pc_top_proc) parts.push(`${s.pc_top_proc}${s.pc_top_cpu_pct != null ? ' ' + Math.round(s.pc_top_cpu_pct) + '%' : ''}`);
     }
     ip.textContent = parts.filter(Boolean).join('  ');
-    showMode(s);
+    showMode(s); showStats(s); checkQualityAck(s);
   } catch (e) {
     pill.textContent = 'offline'; pill.className = 'pill'; ip.textContent = '';
   }

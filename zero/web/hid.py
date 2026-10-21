@@ -186,7 +186,7 @@ def status():
     """hid_ready: device nodes exist. host_connected: UDC state == 'configured'
     (host enumerated us). Approximate: a powered-but-idle host may still read configured;
     a suspended host reports 'suspended'."""
-    udcs = glob.glob("/sys/class/udc/*/state")
+    udcs = glob.glob(os.environ.get("KVM_UDC_GLOB", "/sys/class/udc/*/state"))  # env: tests only
     state = open(udcs[0]).read().strip() if udcs else "no-udc"
     return {"hid_ready": os.path.exists(KBD_DEV) and os.path.exists(MOUSE_DEV),
             "power_keys": os.path.exists(SYS_DEV),

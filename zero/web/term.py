@@ -87,7 +87,7 @@ def _reader():
             dec = codecs.getincrementaldecoder("utf-8")("replace")
             last_data = time.monotonic()
             while True:
-                b = os.read(fd, 4096)
+                b = os.read(fd, 65536)   # preview frames are big; fewer syscalls
                 now = time.monotonic()
                 # A helper that dies mid-frame leaves a header waiting for 64800 bytes.
                 # The next open blocks, so the gap shows up on the following read.
@@ -140,6 +140,11 @@ def send_ctl(cmd):
     """Send a short control command ('frame', 'loupe', 'cget') to kvm_helper."""
     if cmd not in ("frame", "loupe", "cget"): raise ValueError("bad ctl")
     return _write(CTL + cmd.encode() + b"\n")
+
+def send_quality(q):
+    """Ask the host helper for a preview quality: 1E 1F "KVMCTL:q:" <low|med|high|off> LF."""
+    if q not in ("low", "med", "high", "off"): raise ValueError("bad quality")
+    return _write(CTL + b"q:" + q.encode() + b"\n")
 
 def send_clipboard(text):
     """Push UTF-8 clipboard text to the host helper as base64."""

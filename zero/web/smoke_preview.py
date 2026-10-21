@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""Smoke test for the preview/quality/extended-stats API (types 7-9) plus /api/mode, /api/term
+filtering and PIN-gated status. Run from zero/web. Uses 127.0.0.1:8137, a fake pty as the
+gadget serial port and a fake UDC state file; only stops the server it started."""
+import base64, select, json, os, subprocess, sys, tempfile, time, tty, urllib.request
+sys.path.insert(0, "."); sys.path.insert(0, os.path.join("..", "..", "host"))
+import hostview, kvm_preview, kvm_stats
+
+tmp = tempfile.mkdtemp()
+open(f"{tmp}/pin", "w").write("1234\n"); open(f"{tmp}/udc_state", "w").write("configured\n")
+m, s = os.openpty(); tty.setraw(m); tty.setraw(s)
+env = dict(os.environ, KVM_TERM_DEV=os.ttyname(s), KVM_PIN_FILE=f"{tmp}/pin", KVM_UDC_GLOB=f"{tmp}/udc_state")
+p = subprocess.Popen([sys.executable, "server.py", "--host", "127.0.0.1", "--port", "8137"], env=env)
+fails = []
+
+def req(path, body=None, pin="1234"):
+    h = {"Content-Type": "application/json"}
+    if pin: h["X-KVM-PIN"] = pin
+    r = urllib.request.Request("http://127.0.0.1:8137" + path, headers=h,
+                               data=None if body is None else json.dumps(body).encode())
+    try:
+        with urllib.request.urlopen(r) as f:
+            raw = f.read(); return f.status, (json.loads(raw) if raw else None)
+    except urllib.error.HTTPError as e: return e.code, json.loads(e.read() or b"{}")
+
+def check(name, cond, got=""):
+    print(("PASS " if cond else "FAIL ") + name, "" if cond else got); cond or fails.append(name)
+
+def wire():
+    time.sleep(0.3)
+    r, _, _ = select.select([m], [], [], 1.0)
+    return os.read(m, 1000) if r else b""
+
+try:
+    for _ in range(30):
+        try: req("/api/status"); break
+        except OSError: time.sleep(0.2)
+    serial = lambda st: any(k.startswith(("serial", "preview")) for k in st)
+    check("status no pin hides serial/preview", not serial(req("/api/status", pin=None)[1]))
+    check("status wrong pin hides serial/preview", not serial(req("/api/status", pin="9999")[1]))
+    check("status pin shows serial/preview", serial(req("/api/status")[1]))
+    for t in ("\x1e", "a\x1fb", "\x1e\x1fKVMCTL:helper", "\x1e\x1fKVMCTL:q:high"):
+        check(f"/api/term rejects {t!r}", req("/api/term", {"text": t})[0] == 400)
+    check("/api/mode no pin 401", req("/api/mode", {"mode": "shell"}, pin=None)[0] == 401)
+    check("/api/mode bad 400", req("/api/mode", {"mode": "root"})[0] == 400)
+    c, j = req("/api/mode", {"mode": "shell"}); w = wire()
+    check("/api/mode 202 + wire", c == 202 and w == b"\x1e\x1fKVMCTL:shell\n", (c, w))
+    req("/api/mode", {"mode": "helper"}); wire()          # back to helper before quality tests
+    os.write(m, hostview.MAGIC + bytes([3]) + (1).to_bytes(4, "little") + b"\x00"); time.sleep(0.3)
+    check("/api/quality no pin 401", req("/api/quality", {"quality": "low"}, pin=None)[0] == 401)
+    check("/api/quality bad 400", req("/api/quality", {"quality": "ultra"})[0] == 400)
+    c, j = req("/api/quality", {"quality": "low"}); w = wire()
+    check("/api/quality 202 + wire", c == 202 and w == b"\x1e\x1fKVMCTL:q:low\n", (c, w))
+    c, j = req("/api/quality", {"quality": "off"}); w = wire()
+    check("/api/quality off 202 + wire", c == 202 and w == b"\x1e\x1fKVMCTL:q:off\n", (c, w))
+    req("/api/quality", {"quality": "low"}); wire()
+    check("/api/preview no pin 401", req("/api/preview?since=0", pin=None)[0] == 401)
+    check("/api/preview stale 204", req("/api/preview?since=0")[0] == 204)
+    # play the helper: stats, ext stats, preview frame, acks
+    enc = kvm_preview.TileEncoder("low"); f = bytes(640 * 360 * 3)
+    blob = hostview.MAGIC + bytes([3]) + (1).to_bytes(4, "little") + b"\x00"   # helper mode first
+    blob += (hostview.MAGIC + bytes([1]) + (12).to_bytes(4, "little") + bytes(12)[:0] +
+            __import__("struct").pack("<fff", 45.0, 0.5, 30.0))
+    blob += kvm_stats.pack_ext({"v": 1, "cores": [10, 20], "temps": {"nvme": 40}})
+    blob += enc.encode(f) + kvm_preview.pack_quality("low")
+    blob += hostview.MAGIC + bytes([3]) + (1).to_bytes(4, "little") + b"\x00"
+    os.write(m, blob); time.sleep(0.6)
+    c, pv = req("/api/preview?since=0")
+    ok = c == 200 and pv["w"] == 640 and pv["reset"] and len(pv["tiles"]) == 60 and \
+        base64.b64decode(pv["tiles"][0]["jpg"])[:2] == b"\xff\xd8"
+    check("/api/preview returns 60 JPEG tiles, unmodified", ok, c)
+    c, pv2 = req(f"/api/preview?since={pv['seq']}")
+    check("/api/preview since=seq is empty", c == 200 and pv2["tiles"] == [] and not pv2["reset"], pv2)
+    st = req("/api/status")[1]
+    check("status ext stats", st["pc_cores_all"] == [10.0, 20.0] and st["pc_nvme_temp_c"] == 40.0
+          and st["pc_gpu_pct"] is None and st["pc_cpu_temp_c"] is None, st)
+    check("status quality ack", st["preview_quality"] == "low" and st["preview_quality_requested"] == "low", st)
+    check("status serial mode ack", st["serial_mode"] == "helper", st)
+    nopin = req("/api/status", pin=None)[1]
+    check("status no pin still has pc stats", nopin["pc_cores_all"] == [10.0, 20.0] and "preview_quality" not in nopin)
+    os.write(m, hostview.MAGIC + bytes([3]) + (1).to_bytes(4, "little") + b"\x01"); time.sleep(0.4)
+    c, j = req("/api/quality", {"quality": "med"})
+    check("/api/quality 409 in shell mode", c == 409, (c, j))
+    # /api/mode shell request: a faked helper ack must not re-open types 7-9
+    c, _ = req("/api/mode", {"mode": "shell"}); wire()
+    os.write(m, hostview.MAGIC + bytes([3]) + (1).to_bytes(4, "little") + b"\x00"
+             + kvm_preview.pack_quality("high")); time.sleep(0.4)
+    check("type 9 ignored while shell is requested", req("/api/status")[1]["preview_quality"] == "low")
+    os.set_blocking(m, False)
+    try: leftover = os.read(m, 1000)
+    except BlockingIOError: leftover = b""
+    check("nothing written to the host on 409", leftover == b"", leftover)
+    os.write(m, kvm_preview.pack_quality("high")); time.sleep(0.4)
+    check("type 9 ignored in shell mode", req("/api/status")[1]["preview_quality"] == "low")
+finally:
+    p.terminate(); p.wait()
+print("SMOKE", "OK" if not fails else f"FAILED {fails}")
+sys.exit(1 if fails else 0)

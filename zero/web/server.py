@@ -7,8 +7,11 @@ API:
                                       "pc_rx_bps","pc_tx_bps","pc_ncpu","pc_cores",
                                       "pc_ip","pc_disk_pct","pc_top_proc","pc_top_cpu_pct",
                                       "pc_age_s","frame_fresh",
-                                      "serial_mode","serial_mode_age_s","serial_mode_requested"}
-                                    serial_* only with a valid X-KVM-PIN header.
+                                      "pc_cores_all","pc_gpu_pct","pc_cpu_temp_c","pc_gpu_temp_c","pc_nvme_temp_c",
+                                      "serial_mode","serial_mode_age_s","serial_mode_requested",
+                                      "preview_quality","preview_quality_requested"}
+                                    pc_cores_all etc. (type 8) are null when the PC can't report them.
+                                    serial_* and preview_* only with a valid X-KVM-PIN header.
                                     serial_mode is the helper's last ack ("helper"/"shell")
                                     or null when no helper has answered yet.
                                     link is "LINKED", "KEYS", or "NO HOST".
@@ -27,6 +30,9 @@ API:
   POST /api/term   {"text":"ls","newline":true}  -> keystrokes to the host's serial console
   POST /api/mode   {"mode":"shell"|"helper"}   -> asks the host helper to switch the serial port
                    (202; the helper's ack shows up as serial_mode in /api/status)
+  POST /api/quality {"quality":"low"|"med"|"high"|"off"} -> preview quality (202; 409 in shell mode)
+  GET  /api/preview?since=N   -> {"seq","w","h","quality","reset","tiles":[{x,y,w,h,jpg(base64)}]}
+                                 changed JPEG tiles since seq N (PIN required; 204 when stale)
   POST /api/power  {"target":"host","action":"power|sleep|wake|hard_reset|hard_power","confirm":true}
                    {"target":"zero","action":"shutdown|reboot","confirm":true}
 Every POST needs Content-Type: application/json, a same-origin Origin (if sent), and the PIN
@@ -54,7 +60,7 @@ FAILS = {}            # ip -> (count, first_fail_time)
 MAX_FAILS, LOCKOUT_S = 5, 60
 HOST_POWER = ("power", "sleep", "wake")          # soft: System Control keys over USB
 HOST_HARD = ("hard_reset", "hard_power")         # needs optocoupler wiring (not built yet)
-MODE_REQ = {"mode": None}   # last mode asked for via /api/mode
+MODE_REQ = {"mode": None, "quality": None}   # last mode asked for via /api/mode
 FRAME_REQ = {"crop": "frame", "at": 0.0, "loupe_until": 0.0}
 ZERO_POWER = {"shutdown": "poweroff", "reboot": "reboot"}
 
@@ -115,6 +121,10 @@ def validate(path, body):
         m = body.get("mode")
         if m not in ("shell", "helper"): raise ValueError('mode must be "shell" or "helper"')
         return (m,)
+    if path == "/api/quality":
+        q = body.get("quality")
+        if q not in ("low", "med", "high", "off"): raise ValueError('quality must be "low", "med", "high" or "off"')
+        return (q,)
     if path == "/api/power":
         if body.get("confirm") is not True: raise ValueError("confirm must be true")
         t, a = body.get("target"), body.get("action")
@@ -173,7 +183,8 @@ class H(SimpleHTTPRequestHandler):
             sm = {}
             if self.headers.get("X-KVM-PIN") and self._pin_ok():   # serial fields need the PIN
                 mode, age = hostview.shared.mode()
-                sm = {"serial_mode": mode, "serial_mode_age_s": age, "serial_mode_requested": MODE_REQ["mode"]}
+                sm = {"serial_mode": mode, "serial_mode_age_s": age, "serial_mode_requested": MODE_REQ["mode"],
+                      "preview_quality": hostview.shared.quality(), "preview_quality_requested": MODE_REQ["quality"]}
             return self._json(200, {**st, "ip": self._my_ip(), **sysstats(), **pc, **sm})
         u = urlsplit(self.path)
         if u.path == "/api/frame":
@@ -233,6 +244,16 @@ class H(SimpleHTTPRequestHandler):
                     time.sleep(0.02)
             text, age, _ = hostview.shared.clipboard()
             return self._json(200, {"ok": True, "text": text or "", "age_s": age})
+        if u.path == "/api/preview":
+            ok = self._pin_ok()
+            if ok is None: return self._json(429, {"error": "too many wrong PINs, wait a minute"})
+            if not ok: return self._json(401, {"error": "wrong or missing PIN"})
+            try: since = int(parse_qs(u.query).get("since", ["0"])[0])
+            except ValueError: return self._json(400, {"error": "since must be an int"})
+            pv = hostview.shared.preview(since, hid.status()["host_connected"])
+            if pv is None:
+                self.send_response(204); self.send_header("Content-Length", "0"); self.end_headers(); return
+            return self._json(200, pv)
         if u.path == "/api/term":
             ok = self._pin_ok()
             if ok is None: return self._json(429, {"error": "too many wrong PINs, wait a minute"})
@@ -298,7 +319,20 @@ class H(SimpleHTTPRequestHandler):
             except (TimeoutError, OSError) as e:
                 return self._json(503, {"error": str(e)})
             MODE_REQ["mode"] = args[0]
+            hostview.shared.requested_mode = args[0]   # while "shell", types 7-9 are not parsed
             return self._json(202, {"ok": True, "requested": args[0], "note": "watch serial_mode in /api/status"})
+        if self.path == "/api/quality":
+            mode = hostview.shared.mode()[0]
+            if mode == "shell" or (MODE_REQ["mode"] == "shell" and mode != "helper"):
+                return self._json(409, {"error": "serial port is in shell mode; switch to helper first"})
+            if MODE_REQ["mode"] == "shell":      # bash exited on its own; the user is back in helper
+                MODE_REQ["mode"] = "helper"; hostview.shared.requested_mode = "helper"
+            try:
+                if not term.send_quality(args[0]): return self._json(409, {"error": "serial port not open"})
+            except (TimeoutError, OSError) as e:
+                return self._json(503, {"error": str(e)})
+            MODE_REQ["quality"] = args[0]
+            return self._json(202, {"ok": True, "requested": args[0]})
         if self.path == "/api/power":
             target, action = args
             if target == "zero":

@@ -24,6 +24,12 @@ Control packets, Zero -> host (never valid UTF-8 text a person types):
           | b"loupe"                  request 1:1 cursor-crop 240x135 still lease
           | b"cget"                   read host clipboard -> sends type 6 envelope
           | b"cset:" <base64>         write decoded UTF-8 bytes to host clipboard
+          | b"q:" low|med|high|off    browser preview quality (types 7/8/9 start only
+                                      after the first q:; off stops them again)
+
+Optional extras, detected once at startup (the helper itself needs only the Python 3
+standard library): ffmpeg + xrandr + X display for stills, Pillow for the browser
+preview, psutil / nvidia-smi for more temperature and GPU sources.
 
 This program owns the port. Stop any getty on this port first:
 
@@ -47,12 +53,18 @@ import os
 import pty
 import re
 import select
+import shutil
 import signal
 import socket
 import struct
 import subprocess
 import termios
+import sys
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import kvm_preview  # noqa: E402
+import kvm_stats  # noqa: E402
 
 MAGIC = b"\xfe\xfdKV"
 FRAME_LEN = 240 * 135 * 2
@@ -63,6 +75,10 @@ CTL_MAX = len(CTL) + 8          # longest valid non-clipboard packet body before
 CTL_CLIP_MAX = len(CTL) + 1500  # longest valid cset:<base64> packet before newline
 MODES = {b"helper": 0, b"shell": 1}
 SIMPLE_CTLS = {b"frame", b"loupe", b"cget"}
+QCMDS = {b"q:low": "low", b"q:med": "med", b"q:high": "high", b"q:off": "off"}
+# None until the Zero sends KVMCTL:q:<level>; until then no type 7-9 packets go out.
+QUALITY_STATE = {"q": None}
+OUTBOX_PREVIEW_MAX = 64 * 1024   # don't queue a preview frame behind more than this
 B64_RE = re.compile(rb"^[A-Za-z0-9+/=]*$")
 CLIP_MAX = 1024
 
@@ -72,7 +88,7 @@ def pack_mode(mode):
 
 
 def _valid_ctl(cmd):
-    if cmd in SIMPLE_CTLS:
+    if cmd in SIMPLE_CTLS or cmd in QCMDS:
         return True
     if cmd.startswith(b"cset:"):
         b64 = cmd[5:]
@@ -652,6 +668,80 @@ def open_port(path):
     return fd
 
 
+class Outbox:
+    """Non-blocking writer for the serial port. Whole envelopes are appended, so nothing is
+    split or interleaved; pump() writes what the port takes now. A big preview frame just
+    waits in the buffer instead of tripping a write timeout. Only a port that makes no
+    progress for `stall_s` raises TimeoutError (then main() reopens it)."""
+
+    def __init__(self, fd, stall_s=10.0, chunk=65536):
+        self.fd, self.stall_s, self.chunk = fd, stall_s, chunk
+        self.buf = bytearray()
+        self.progress_at = time.monotonic()
+
+    def fileno(self):
+        return self.fd
+
+    def pending(self):
+        return len(self.buf)
+
+    def send(self, data):
+        if not self.buf:
+            self.progress_at = time.monotonic()
+        self.buf += data
+        self.pump()
+
+    def pump(self):
+        while self.buf:
+            try:
+                n = os.write(self.fd, self.buf[:self.chunk])
+            except BlockingIOError:
+                break
+            if n <= 0:
+                break
+            del self.buf[:n]
+            self.progress_at = time.monotonic()
+        if self.buf and time.monotonic() - self.progress_at > self.stall_s:
+            raise TimeoutError("serial port not accepting data")
+
+    def flush(self, limit=2.0):
+        end = time.monotonic() + limit
+        while self.buf and time.monotonic() < end:
+            select.select([], [self.fd], [], 0.05)
+            self.pump()
+
+
+def _out(dst, data):
+    """Write to an Outbox (queued) or a raw fd (blocking)."""
+    if isinstance(dst, Outbox):
+        dst.send(data)
+    else:
+        write_all(dst, data)
+
+
+def detect_caps(display):
+    """Which optional pieces this machine has. All optional; the helper needs only the stdlib."""
+    have = {
+        "pillow": kvm_preview.Image is not None,
+        "ffmpeg": bool(shutil.which("ffmpeg")),
+        "xrandr": bool(shutil.which("xrandr")),
+        "psutil": kvm_stats.psutil is not None,
+        "nvidia-smi": bool(shutil.which("nvidia-smi")),
+        "display": bool(display),
+    }
+    test = os.environ.get("KVM_PREVIEW_SOURCE") == "test"
+    have["preview"] = have["pillow"] and (test or (have["ffmpeg"] and have["xrandr"] and have["display"]))
+    have["still"] = have["ffmpeg"] and have["xrandr"] and have["display"]
+    return have
+
+
+def log_caps(have):
+    missing = [k for k in ("pillow", "ffmpeg", "xrandr", "psutil", "nvidia-smi", "display") if not have[k]]
+    print("optional: missing " + (", ".join(missing) if missing else "nothing")
+          + f"; preview {'on' if have['preview'] else 'off'}, GEEK still {'on' if have['still'] else 'off'}"
+          + "; basic stats on", flush=True)
+
+
 def write_all(fd, data):
     """Blocking write with a 1 s stall limit. The loop is single-threaded, so a
     host-side reader that stops draining (or a full pty) pauses everything for up to
@@ -711,7 +801,7 @@ class Shell:
                 return
             if not out:
                 return
-            write_all(port_fd, out); last = time.monotonic()
+            _out(port_fd, out); last = time.monotonic()
 
     def close(self):
         if self.pid is not None:
@@ -750,6 +840,7 @@ class HelperState:
         self.frame_until = time.monotonic() + FRAME_LEASE_S
         self.last_frame_at = 0.0
         self.clip_buf = b""
+        self.ext = kvm_stats.ExtStats()
 
 
 def send_helper_packets(fd, display, announced, state=None, want_frame=True):
@@ -780,8 +871,15 @@ def send_helper_packets(fd, display, announced, state=None, want_frame=True):
         if frame:
             blob += pack_frame(frame)
             state.last_frame_at = time.monotonic()
+    q = QUALITY_STATE["q"]
+    if q not in (None, "off"):            # extended stats only while a preview is wanted
+        more = state.ext.sample()
+        if len(more) > 1:
+            blob += kvm_stats.pack_ext(more)
     blob += pack_mode(b"helper")
-    write_all(fd, blob)
+    if q is not None:
+        blob += kvm_preview.pack_quality(q if getattr(state, "preview_ok", False) else "off")
+    _out(fd, blob)
     has_frame = bool(frame) or (want_frame and bool(display) and state.last_frame_at > 0)
     st_str = ("stats" if stats else "no-stats") + ("+net" if net else "") + ("+frame" if has_frame else "")
     if st_str != announced:
@@ -789,25 +887,53 @@ def send_helper_packets(fd, display, announced, state=None, want_frame=True):
     return st_str
 
 
-def run(fd, display):
+def run(fd, display, have=None):
     """Serve one open port until an OSError. Returns on error (caller reopens)."""
+    have = have or detect_caps(display)
+    ob = Outbox(fd)
     parser = CtlParser()
     shell = None
     announced = None
     next_tick = 0.0
     was_shell = requested_back = False
     hstate = HelperState()
+    level = QUALITY_STATE["q"] if QUALITY_STATE["q"] in kvm_preview.QUALITY else "med"
+    enc = kvm_preview.TileEncoder(level)
+    grab = kvm_preview.Grabber(display, level, screen_size)
+    pv_prev = None
+    next_prev = key_at = 0.0
+    streaming = lambda: have["preview"] and QUALITY_STATE["q"] in kvm_preview.QUALITY
+    hstate.preview_ok = have["preview"]
     try:
-        write_all(fd, pack_mode(b"helper"))
+        ob.send(pack_mode(b"helper"))
         while True:
             now = time.monotonic()
             if shell is None and now >= next_tick:
                 want_frame = bool(display) and (now <= hstate.frame_until)
-                announced = send_helper_packets(fd, display, announced, state=hstate, want_frame=want_frame)
+                announced = send_helper_packets(ob, display, announced, state=hstate, want_frame=want_frame)
                 next_tick = time.monotonic() + INTERVAL
+            if shell is None and streaming():
+                grab.start()
+                grab.pump()
+                if now >= next_prev:
+                    if now >= key_at:
+                        enc.force_key(); key_at = now + kvm_preview.KEY_EVERY_S
+                    frame = grab.take()
+                    # Skip (drop) this frame if the port is still busy with older data; the
+                    # tile refs are untouched, so the changes go out with a later frame.
+                    if frame is not None and len(frame) == enc.w * enc.h * 3 and ob.pending() < OUTBOX_PREVIEW_MAX:
+                        ob.send(enc.encode(frame, pv_prev))
+                        pv_prev = frame
+                    next_prev = now + enc.interval
             rlist = [fd] + ([shell.master] if shell else [])
-            timeout = 0.5 if shell else max(0.0, next_tick - time.monotonic())
-            ready, _, _ = select.select(rlist, [], [], timeout)
+            if shell is None and grab.fileno() is not None:
+                rlist.append(grab.fileno())
+            wake = min(next_tick, next_prev) if streaming() else next_tick
+            timeout = 0.5 if shell else max(0.0, wake - time.monotonic())
+            if ob.pending():
+                timeout = min(timeout, 0.2)
+            ready, _, _ = select.select(rlist, [fd] if ob.pending() else [], [], timeout)
+            ob.pump()
             if fd in ready:
                 try:
                     data = os.read(fd, 4096)
@@ -823,7 +949,17 @@ def run(fd, display):
                     elif kind == "ctl":
                         if shell is not None:
                             continue
-                        if val in (b"frame", b"loupe"):
+                        if val in QCMDS:
+                            q = QCMDS[val]
+                            QUALITY_STATE["q"] = q
+                            if q == "off" or not have["preview"]:
+                                grab.stop(); pv_prev = None
+                            else:
+                                enc.set_quality(q); grab.set_quality(q)   # forces a key frame
+                                pv_prev = None; next_prev = 0.0
+                            print("preview quality", q if streaming() or q == "off" else q + " (unavailable: off)", flush=True)
+                            ob.send(kvm_preview.pack_quality(q if streaming() else "off"))
+                        elif val in (b"frame", b"loupe"):
                             new_crop = "loupe" if val == b"loupe" else "full"
                             crop_changed = new_crop != hstate.crop_mode
                             if crop_changed:
@@ -833,13 +969,13 @@ def run(fd, display):
                             if display and (crop_changed or time.monotonic() - hstate.last_frame_at >= 0.8):
                                 frame, hstate.prev_raw = capture_with_state(display, crop=hstate.crop_mode, prev_raw=hstate.prev_raw)
                                 if frame:
-                                    write_all(fd, pack_frame(frame))
+                                    ob.send(pack_frame(frame))
                                     hstate.last_frame_at = time.monotonic()
                         elif val == b"cget":
                             clip = get_clipboard(display)
                             if clip is not None:
                                 hstate.clip_buf = clip
-                            write_all(fd, pack_clip(clip if clip is not None else hstate.clip_buf))
+                            ob.send(pack_clip(clip if clip is not None else hstate.clip_buf))
                         elif val.startswith(b"cset:"):
                             try:
                                 raw_clip = base64.b64decode(val[5:], validate=True)[:CLIP_MAX]
@@ -847,23 +983,25 @@ def run(fd, display):
                                 continue
                             hstate.clip_buf = raw_clip
                             set_clipboard(raw_clip, display)
-                            write_all(fd, pack_clip(raw_clip))
+                            ob.send(pack_clip(raw_clip))
                     elif val == b"shell" and shell is None:
                         try:
+                            grab.stop(); pv_prev = None    # preview pauses in shell mode
                             shell = Shell()
                             print("shell mode: bash -l pid", shell.pid, flush=True)
-                            write_all(fd, pack_mode(b"shell"))
+                            ob.send(pack_mode(b"shell"))
                         except (PermissionError, OSError) as exc:
                             print("shell refused:", exc, flush=True)
-                            write_all(fd, pack_mode(b"helper"))
+                            ob.send(pack_mode(b"helper"))
                     elif val == b"helper" and shell is not None:
-                        shell.drain(fd)          # let bash act on bytes sent just before
+                        shell.drain(ob)          # let bash act on bytes sent just before
                         shell.close(); shell = None
                         print("helper mode (requested)", flush=True)
-                        write_all(fd, pack_mode(b"helper")); next_tick = 0.0
+                        ob.send(pack_mode(b"helper")); next_tick = 0.0
+                        enc.force_key(); next_prev = 0.0
                         requested_back = True
                     else:
-                        write_all(fd, pack_mode(b"shell" if shell else b"helper"))
+                        ob.send(pack_mode(b"shell" if shell else b"helper"))
             if shell and shell.master in ready:
                 try:
                     out = os.read(shell.master, 4096)
@@ -872,7 +1010,7 @@ def run(fd, display):
                 except OSError:          # EIO: bash exited, slave closed
                     out = b""
                 if out:
-                    write_all(fd, out)
+                    ob.send(out)
                 elif out == b"":
                     shell.close(); shell = None
             if shell and not shell.alive():
@@ -881,15 +1019,17 @@ def run(fd, display):
                         out = os.read(shell.master, 4096)
                         if not out:
                             break
-                        write_all(fd, out)
+                        ob.send(out)
                 except OSError:
                     pass
                 shell.close(); shell = None
             if shell is None and was_shell and not requested_back:
                 print("helper mode (shell exited)", flush=True)
-                write_all(fd, pack_mode(b"helper")); next_tick = 0.0
+                ob.send(pack_mode(b"helper")); next_tick = 0.0
+                enc.force_key(); next_prev = 0.0
             was_shell, requested_back = shell is not None, False
     finally:
+        grab.stop()
         if shell:
             shell.close()
 
@@ -897,12 +1037,14 @@ def run(fd, display):
 def main():
     dev = os.environ.get("KVM_HOST_DEV", "/dev/ttyACM0")
     display = os.environ.get("KVM_DISPLAY", os.environ.get("DISPLAY", "")).strip()
+    have = detect_caps(display)
+    log_caps(have)                       # once; missing pieces just switch features off
     while True:
         fd = None
         try:
             fd = open_port(dev)
             print(f"helper on {dev}", flush=True)
-            run(fd, display)
+            run(fd, display, have)
         except (OSError, TimeoutError) as exc:
             print(f"{dev}: {exc}", flush=True)
         finally:

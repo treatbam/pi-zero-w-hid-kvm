@@ -124,6 +124,13 @@ button.hw { opacity: .55; }
 .pad-btns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; padding: 8px; }
 .pad-btns button { background: rgba(255, 255, 255, .08); color: #ccc; border-radius: 8px; }
 #mode.shell { background: #6a2c7a; color: #f3e0ff; }
+#pv { display: flex; flex-direction: column; gap: 4px; }
+#pv summary { cursor: pointer; font-size: 13px; color: #bbb; }
+#pvc { inline-size: 100%; max-block-size: 45dvh; object-fit: contain; background: #000; border-radius: 6px; }
+#pvbar { display: flex; gap: 8px; align-items: center; font-size: 12px; color: #aaa; flex-wrap: wrap; }
+#pcstats { font: 12px/1.4 ui-monospace, monospace; color: #cde; }
+#pcstats .core { display: inline-block; inline-size: 6px; block-size: 14px; margin-inline-end: 1px; background: #2c2c30; vertical-align: middle; position: relative; }
+#pcstats .core i { position: absolute; inset-inline: 0; inset-block-end: 0; background: #3aa76d; }
 #pwr { font-size: 13px; color: #bbb; min-block-size: 1em; }
 </style></head><body>
 <header>
@@ -139,6 +146,13 @@ button.hw { opacity: .55; }
   <a href="term.html">term</a>
   <button type="button" id="pin">PIN</button>
 </header>
+<details id="pv"><summary>Desktop preview &amp; PC stats</summary>
+  <canvas id="pvc" width="960" height="540"></canvas>
+  <div id="pvbar">quality
+    <select id="pvq"><option value="low">low (640×360, 1 fps)</option><option value="med">med (960×540, 2 fps)</option><option value="high">high (1280×720, 4 fps)</option></select>
+    <span id="pvst">…</span></div>
+  <div id="pcstats"></div>
+</details>
 <div id="type">
   <input id="txt" placeholder="type text or sync clipboard" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
   <button type="button" id="send" title="Type as US HID keystrokes">Send</button>

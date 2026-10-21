@@ -54,6 +54,8 @@ Then browse to `http://192.168.4.1:8080`. Manual run: `sudo bash zero/gadget/hid
 | POST | /api/mouse | `{"dx":0,"dy":0,"wheel":0,"buttons":0}` |
 | POST | /api/macro | `{"name":"ctrl_alt_del"|"alt_tab"|"win_l"}` |
 | GET | /api/term?n=40 | → `{"seq","lines":[...],"partial","open","error"}` (needs `X-KVM-PIN`) |
+| POST | /api/quality | `{"quality":"low"\|"med"\|"high"\|"off"}` → preview quality (409 in shell mode) |
+| GET | /api/preview?since=N | changed JPEG tiles since N (PIN; 204 when no fresh preview) |
 | POST | /api/mode | `{"mode":"shell"\|"helper"}` → switch the host serial port (see Serial mode toggle) |
 | POST | /api/term | `{"text":"ls","newline":true}` → keystrokes to the host serial console |
 
@@ -148,6 +150,57 @@ and terminal text are unencrypted on the LAN (Tailscale encrypts them). Anything
 from the host, including output printed inside the shell (e.g. `printf`), can forge
 envelopes: fake PC stats, a fake desktop still, or a fake mode ack. That only changes what
 the console *displays*; it can't start a shell or send keys.
+
+### Desktop preview (quality: low / med / high) and extra PC stats
+
+Open **Desktop preview & PC stats** on the console. The helper streams only the 64×64
+tiles that changed, as JPEGs; the Zero stores and serves them untouched (no re-encoding)
+and the browser draws them onto a canvas. Pick a quality in the dropdown (PIN-protected,
+sent to the helper as `1E 1F "KVMCTL:q:" low|med|high 0A`, the same framing and `/api/term`
+filter as the mode toggle). The preview pauses in shell mode and resumes afterwards.
+
+| quality | size | rate | JPEG q | max per frame | idle | typical (15% of screen changing) | ceiling |
+|---|---|---|---|---|---|---|---|
+| low | 640×360 | 1 fps | 45 | 48 KB | ~18 B/s | ~5 KB/s | 48 KB/s |
+| med | 960×540 | 2 fps | 60 | 96 KB | ~36 B/s | ~35 KB/s | 192 KB/s |
+| high | 1280×720 | 4 fps | 75 | 160 KB | ~72 B/s | ~90 KB/s | 640 KB/s |
+
+A full refresh (on start, quality change, leaving shell mode, and every 60 s) of a busy desktop
+is about 55 / 140 / 270 KB, so it is spread over one or two frames by the per-frame budget.
+The 240×135 GEEK still keeps main's on-demand lease (`frame`/`loupe`). Serial writes are queued in a non-blocking outbox, so a large preview frame waits instead of timing out; a preview frame is skipped while more than 64 KB is queued.
+
+The helper needs **only the Python 3 standard library** (fresh, minimal SBC installs are the
+main use). Everything else is optional and detected once at startup, logged as one
+`optional: missing ...` line:
+
+- `ffmpeg` + `xrandr` + an X display: the GEEK still (the same one-shot grab as before).
+- `python3-pil` as well: the browser preview. `numpy` makes the still conversion faster.
+- `psutil`, `nvidia-smi`: extra temperature and GPU sources. `/proc` and `/sys` are used without them.
+
+With none of them, or on a headless box with no X, the helper sends the basic stats and the
+mode acks and still does shell mode; the preview answers `off`.
+
+The helper sends **no** preview, extended stats or quality ack (types 7–9) until the Zero asks
+with `KVMCTL:q:<level>`. The console sends that when the preview panel opens, and `q:off`
+when it closes or the page is left (this stops the preview and the extended stats; with
+several browsers, the last one to close wins). `/api/quality` returns 409 in shell mode, and
+the console reports "no ack from the helper" if nothing confirms the level within 5 s.
+The Zero parses types 7–9 only while it holds a helper-mode ack less than 5 s old and the console hasn't asked for shell mode, and releases
+any header whose payload hasn't arrived within 3 s as terminal text, so shell output can't fake
+a preview or stall the terminal. Preview frames are bounded: 64-aligned tiles up to 64×64,
+1280×720 at most, and 2 MiB of stored JPEG in total (the grid resets past that).
+
+Extra stats (console panel, and `/api/status`): `pc_cores_all` (every core, %; `pc_cores` stays main's top-8), `pc_gpu_pct`,
+`pc_cpu_temp_c`, `pc_gpu_temp_c`, `pc_nvme_temp_c`. Each is `null` when the PC can't report it.
+Sources: `/proc/stat`, `psutil` if installed, `/sys/class/hwmon` (coretemp/k10temp, nvme,
+amdgpu/nouveau), AMD `gpu_busy_percent`, `nvidia-smi`. Intel iGPU usage is not reported.
+
+Wire additions (envelope `FE FD 4B 56`, type, u32 length): type 7 preview frame, type 8
+extended stats JSON `{"v":1,...}`, type 9 quality ack (types 4/5/6 stay net, triage, clipboard). Type 1 stats are still sent, so a new Zero
+works with an old helper. An **old Zero with a new helper is not supported**: it treats types 7–9 as
+terminal text and the term page fills with junk, so update the Zero first.
+Quality ack values are 0 low, 1 med, 2 high, 3 off. `GET /api/preview?since=N` (PIN) returns the tiles changed after N; `preview_quality` and
+`preview_quality_requested` appear in `/api/status` only with the PIN.
 
 **Windows host** — no getty; find the port in Device Manager → Ports (COM & LPT)
 ("USB Serial Device", driver `usbser.sys` is automatic on Windows 10/11), then stream a
