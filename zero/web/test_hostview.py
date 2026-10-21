@@ -31,6 +31,28 @@ class HostViewTest(unittest.TestCase):
         self.clock = Clock()
         self.view = hostview.HostView(now=self.clock)
 
+    def _pkt(self, typ, payload):
+        return b"\xfe\xfdKV" + struct.pack("<BI", typ, len(payload)) + payload
+
+    def test_bash_exit_clears_shell_request_and_reopens_types_8_9(self):
+        v = self.view
+        v.requested_mode = "shell"
+        self.assertEqual(v.feed(self._pkt(hostview.TYPE_MODE, b"\x01")), b"")
+        ext = self._pkt(hostview.TYPE_EXT, b'{"v":1,"gpu_pct":5}')
+        self.assertEqual(v.feed(ext), ext)               # shell: type 8 is terminal text
+        self.clock.t = 1.0
+        v.feed(self._pkt(hostview.TYPE_MODE, b"\x00"))   # bash hit Ctrl-D, helper acks
+        self.assertIsNone(v.requested_mode)
+        self.assertEqual(v.feed(ext), b"")
+        self.assertEqual(v.ext()["gpu_pct"], 5.0)
+        self.assertEqual(v.feed(self._pkt(hostview.TYPE_QUALITY, b"\x02")), b"")
+        self.assertEqual(v.quality(), "high")
+
+    def test_helper_ack_without_shell_keeps_request(self):
+        self.view.requested_mode = "shell"
+        self.view.feed(self._pkt(hostview.TYPE_MODE, b"\x00"))   # stale helper ack, shell not up yet
+        self.assertEqual(self.view.requested_mode, "shell")
+
     def test_plain_terminal_bytes_pass_through(self):
         self.assertEqual(self.view.feed(b"login: "), b"login: ")
 

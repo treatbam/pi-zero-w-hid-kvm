@@ -22,7 +22,7 @@
 #define KVM_PLACEHOLDER_SECRETS 1
 #endif
 #ifndef KVM_PIN
-#error "add #define KVM_PIN \"<pin>\" to secrets.h (see secrets.example.h)"
+#define KVM_PIN ""   // not in secrets.h: set it in the setup portal (BOOT held at power-on)
 #endif
 
 #define LCD_MOSI 11
@@ -184,6 +184,18 @@ static void pushHist(const Status& s, bool live) {
   }
 }
 SemaphoreHandle_t gLock;
+// Wrong PIN: the Zero counts every failed attempt and locks this address out after 5.
+// After a 401/429 (or pin_ok:false on the status poll) stop sending the PIN for a while.
+static const uint32_t PIN_BACKOFF_MS = 180000;
+volatile uint32_t gPinBadAt = 0;
+volatile bool gPinBad = false;
+static bool pinUsable() {
+  if (!cfg.pin.length()) return false;
+  if (gPinBad && millis() - gPinBadAt < PIN_BACKOFF_MS) return false;
+  gPinBad = false;
+  return true;
+}
+static void pinFailed() { gPinBad = true; gPinBadAt = millis(); }
 volatile bool gTermOn = false;
 volatile bool gDeskOn = false;
 volatile bool gFramePull = false;
@@ -198,7 +210,7 @@ void pollOnce() {
   if (s.wifi) {
     HTTPClient http; http.setTimeout(1500); http.setConnectTimeout(1500);
     uint32_t t0 = millis(); http.begin(BASE + "/api/status");
-    http.addHeader("X-KVM-PIN", cfg.pin);   // unlocks the Zero link + serial fields
+    if (pinUsable()) http.addHeader("X-KVM-PIN", cfg.pin);   // unlocks the Zero link + serial fields
     s.httpCode = http.GET(); s.latencyMs = millis() - t0;
     if (s.httpCode == 200) {
       JsonDocument d;
@@ -235,6 +247,7 @@ void pollOnce() {
         if (!d["pc_disk_pct"].isNull()) s.pcDisk = d["pc_disk_pct"].as<int>();
         if (!d["pc_top_proc"].isNull()) copyStr(s.pcTopProc, sizeof s.pcTopProc, d["pc_top_proc"] | "");
         if (!d["pc_top_cpu_pct"].isNull()) s.pcTopCpu = d["pc_top_cpu_pct"].as<float>();
+        if (d["pin_ok"].is<bool>() && !(d["pin_ok"] | true)) pinFailed();
         if (!d["zero_wifi_rssi"].isNull()) s.zRssi = d["zero_wifi_rssi"].as<int>();
         if (d["tailscale"].is<const char*>()) s.ts = strcmp(d["tailscale"] | "", "up") == 0 ? 1 : 0;
         copyStr(s.serialMode, sizeof s.serialMode, d["serial_mode"] | "");
@@ -274,6 +287,7 @@ void pollTerm() {
     HTTPClient http; http.setTimeout(1500); http.setConnectTimeout(1500);
     http.begin(BASE + "/api/term?n=" + TROWS); http.addHeader("X-KVM-PIN", cfg.pin);
     t.code = http.GET();
+    if (t.code == 401 || t.code == 429) pinFailed();
     if (t.code == 200) {
       JsonDocument d;
       if (!deserializeJson(d, http.getString())) {
@@ -309,6 +323,7 @@ void pollFrame() {
     HTTPClient http; http.setTimeout(4000); http.setConnectTimeout(1500);
     http.begin(BASE + "/api/frame"); http.addHeader("X-KVM-PIN", cfg.pin);
     int code = http.GET();
+    if (code == 401 || code == 429) pinFailed();
     if (code == 200) {
       WiFiClient* stream = http.getStreamPtr();
       uint8_t* dst = (uint8_t*)gFrame;
@@ -341,8 +356,9 @@ void netTask(void*) {
     if (up && !wasUp) last = now - 2001;
     wasUp = up;
     if (now - last > 2000) { last = now; pollOnce(); }
-    if (gTermOn && now - lastTerm > 800) { lastTerm = now; pollTerm(); }
-    if (gDeskOn && (gFramePull || now - lastFrame > 2000)) {
+    bool pinOk = pinUsable();     // PIN-only endpoints wait out the backoff
+    if (gTermOn && pinOk && now - lastTerm > 800) { lastTerm = now; pollTerm(); }
+    if (gDeskOn && pinOk && (gFramePull || now - lastFrame > 2000)) {
       gFramePull = false; lastFrame = now; pollFrame();
     }
     delay(50);
@@ -824,7 +840,8 @@ void drawKvm(const Status& s) {
   vgrad(0, 0, W, 13, mix(C_BG, lc, 90), C_BG);
   txt(3, 3, "KVM", C_TXT, 1);
   txt(26, 3, lw, lc, 1);
-  if (s.pcIp[0]) txtR(W - 3, 3, s.pcIp, VAL, 1);
+  if (gPinBad) txtR(W - 3, 3, "bad PIN", C_BAD, 1);
+  else if (s.pcIp[0]) txtR(W - 3, 3, s.pcIp, VAL, 1);
   else if (s.serialMode[0]) { snprintf(a, sizeof a, "serial %s", s.serialMode); txtR(W - 3, 3, a, LBL, 1); }
 
   // ZERO row
@@ -889,13 +906,15 @@ void drawKvm(const Status& s) {
 void drawWaiting() {
   vgrad(0, 0, W, H, rgb(126, 182, 238), rgb(18, 60, 110));
   vword((W - 72) / 2, 0, 72, H, "KEYS", rgb(4, 16, 24));
-  txt(99, 120, "waiting", rgb(4, 20, 32), 1);
+  if (gPinBad) txt(78, 120, "bad PIN (portal)", rgb(120, 10, 10), 1);
+  else txt(99, 120, "waiting", rgb(4, 20, 32), 1);
 }
 
 void drawTerm() {
   Term t; xSemaphoreTake(gLock, portMAX_DELAY); t = gTerm; xSemaphoreGive(gLock);
   fb.fillScreen(0x0000);
   uint16_t fg = rgb(170, 255, 170);
+  if (gPinBad) { txt(4, 4, "bad PIN: set it in the setup portal", C_BAD); txt(4, 14, "(retrying in a few minutes)", C_DIM); return; }
   if (t.stampMs == 0) txt(4, 4, "loading...", C_DIM);
   else if (t.code != 200) {
     const char* msg = t.code == 401 ? "wrong PIN (setup portal)" : t.code == 429 ? "PIN locked out"

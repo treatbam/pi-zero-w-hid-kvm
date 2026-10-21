@@ -14,7 +14,8 @@ API:
                                     zero_wifi_rssi (dBm) / tailscale ("up"/"down"/null) are PIN-only
                                     too; the GEEK sends its KVM_PIN on the status poll.
                                     pc_cores_all etc. (type 8) are null when the PC can't report them.
-                                    serial_* and preview_* only with a valid X-KVM-PIN header.
+                                    serial_* and preview_* only with a valid X-KVM-PIN header;
+                                    a header that is wrong (or locked out) adds "pin_ok":false.
                                     serial_mode is the helper's last ack ("helper"/"shell")
                                     or null when no helper has answered yet.
                                     link is "LINKED", "KEYS", or "NO HOST".
@@ -78,7 +79,7 @@ def stats_keeper_loop():
             try:
                 if term.send_stats(True): STATS.sent()
             except (TimeoutError, OSError):
-                pass   # last mode asked for via /api/mode
+                pass
 FRAME_REQ = {"crop": "frame", "at": 0.0, "loupe_until": 0.0}
 ZERO_POWER = {"shutdown": "poweroff", "reboot": "reboot"}
 
@@ -226,9 +227,14 @@ class H(SimpleHTTPRequestHandler):
             st = hid.status()
             pc = hostview.shared.status_fields(st["host_connected"])
             sm = {}
-            if self.headers.get("X-KVM-PIN") and self._pin_ok():   # serial fields need the PIN
+            # Serial/link detail needs the PIN. A wrong (or locked-out) PIN still gets a 200 with
+            # the open fields plus pin_ok:false, so the GEEK can notice and stop sending it.
+            if self.headers.get("X-KVM-PIN") and not self._pin_ok():
+                sm = {"pin_ok": False}
+            elif self.headers.get("X-KVM-PIN"):
                 mode, age = hostview.shared.mode()
-                sm = {**zero_link(), "serial_mode": mode, "serial_mode_age_s": age, "serial_mode_requested": MODE_REQ["mode"],
+                sm = {"pin_ok": True, **zero_link(), "serial_mode": mode, "serial_mode_age_s": age,
+                      "serial_mode_requested": hostview.shared.requested_mode,
                       "preview_quality": hostview.shared.quality(), "preview_quality_requested": MODE_REQ["quality"]}
             return self._json(200, {**st, "ip": self._my_ip(), **sysstats(), **pc, **sm})
         u = urlsplit(self.path)
@@ -378,10 +384,10 @@ class H(SimpleHTTPRequestHandler):
             return self._json(202, {"ok": True, "stats": args[0]})
         if self.path == "/api/quality":
             mode = hostview.shared.mode()[0]
-            if mode == "shell" or (MODE_REQ["mode"] == "shell" and mode != "helper"):
+            if mode == "shell" or (hostview.shared.requested_mode == "shell" and mode != "helper"):
                 return self._json(409, {"error": "serial port is in shell mode; switch to helper first"})
-            if MODE_REQ["mode"] == "shell":      # bash exited on its own; the user is back in helper
-                MODE_REQ["mode"] = "helper"; hostview.shared.requested_mode = "helper"
+            if hostview.shared.requested_mode == "shell":   # acked helper again: back in helper
+                hostview.shared.requested_mode = "helper"
             try:
                 if not term.send_quality(args[0]): return self._json(409, {"error": "serial port not open"})
             except (TimeoutError, OSError) as e:

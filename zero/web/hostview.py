@@ -398,6 +398,10 @@ class HostView:
             if MODE_NAMES[payload[0]] == "helper" and (
                     self._mode_at is None or now - self._mode_at > MODE_ACK_TTL_S):
                 self.helper_returned += 1          # first ack, or first after a gap (restart)
+            if MODE_NAMES[payload[0]] == "helper" and self._mode == "shell":
+                # bash exited on its own (Ctrl-D / exit): the shell request is over, so
+                # types 7-9 are parsed again and the GEEK keeps its extended stats.
+                self.requested_mode = None
             self._mode = MODE_NAMES[payload[0]]
             self._mode_at = now
         elif typ == TYPE_QUALITY and payload[0] in QUALITY_NAMES:

@@ -84,6 +84,8 @@ QUALITY_STATE = {"q": None}
 STATS_CMDS = {b"stats:on": True, b"stats:off": False}
 STATS_STATE = {"on": False}
 OUTBOX_PREVIEW_MAX = 64 * 1024   # don't queue a preview frame behind more than this
+SHELL_OUT_MAX = 256 * 1024       # stop reading the pty while this much is queued (`yes`, `cat big`)
+LAST_OUTBOX = [None]             # tests peek at the live Outbox
 B64_RE = re.compile(rb"^[A-Za-z0-9+/=]*$")
 CLIP_MAX = 1024
 
@@ -897,6 +899,7 @@ def run(fd, display, have=None):
     """Serve one open port until an OSError. Returns on error (caller reopens)."""
     have = have or detect_caps(display)
     ob = Outbox(fd)
+    LAST_OUTBOX[0] = ob
     parser = CtlParser()
     shell = None
     announced = None
@@ -931,11 +934,15 @@ def run(fd, display, have=None):
                         ob.send(enc.encode(frame, pv_prev))
                         pv_prev = frame
                     next_prev = now + enc.interval
-            rlist = [fd] + ([shell.master] if shell else [])
+            # Back-pressure: while the port is behind, leave bash's output in the pty (bash
+            # then blocks on write) instead of growing the outbox without limit.
+            rlist = [fd] + ([shell.master] if shell and ob.pending() < SHELL_OUT_MAX else [])
             if shell is None and grab.fileno() is not None:
                 rlist.append(grab.fileno())
             wake = min(next_tick, next_prev) if streaming() else next_tick
             timeout = 0.5 if shell else max(0.0, wake - time.monotonic())
+            if shell and ob.pending() >= SHELL_OUT_MAX:
+                timeout = 0.05
             if ob.pending():
                 timeout = min(timeout, 0.2)
             ready, _, _ = select.select(rlist, [fd] if ob.pending() else [], [], timeout)

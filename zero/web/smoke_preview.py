@@ -48,7 +48,11 @@ try:
         except OSError: time.sleep(0.2)
     serial = lambda st: any(k.startswith(("serial", "preview")) for k in st)
     check("status no pin hides serial/preview", not serial(req("/api/status", pin=None)[1]))
-    check("status wrong pin hides serial/preview", not serial(req("/api/status", pin="9999")[1]))
+    bad = req("/api/status", pin="9999")
+    check("status wrong pin hides serial/preview", not serial(bad[1]))
+    check("status wrong pin: 200 + pin_ok false", bad[0] == 200 and bad[1].get("pin_ok") is False, bad)
+    check("status no pin: no pin_ok", "pin_ok" not in req("/api/status", pin=None)[1])
+    check("status good pin: pin_ok true", req("/api/status")[1].get("pin_ok") is True)
     check("status pin shows serial/preview", serial(req("/api/status")[1]))
     st0 = req("/api/status")[1]
     check("zero link fields with PIN", st0.get("zero_wifi_rssi") == -61 and st0.get("tailscale") == "up", st0)
@@ -98,7 +102,12 @@ try:
     os.write(m, hostview.MAGIC + bytes([3]) + (1).to_bytes(4, "little") + b"\x01"); time.sleep(0.4)
     c, j = req("/api/quality", {"quality": "med"})
     check("/api/quality 409 in shell mode", c == 409, (c, j))
-    # /api/mode shell request: a faked helper ack must not re-open types 7-9
+    # bash exits on its own (Ctrl-D): a helper ack right after a shell ack ends the shell request
+    req("/api/mode", {"mode": "shell"}); wire()
+    os.write(m, hostview.MAGIC + bytes([3]) + (1).to_bytes(4, "little") + b"\x00"); time.sleep(0.4)
+    check("helper ack after shell ack clears the shell request",
+          req("/api/status")[1]["serial_mode_requested"] is None)
+    # /api/mode shell request while in helper: a stale helper ack must not re-open types 7-9
     c, _ = req("/api/mode", {"mode": "shell"}); wire()
     os.write(m, hostview.MAGIC + bytes([3]) + (1).to_bytes(4, "little") + b"\x00"
              + kvm_preview.pack_quality("high")); time.sleep(0.4)
@@ -107,7 +116,7 @@ try:
     try: leftover = os.read(m, 1000)
     except BlockingIOError: leftover = b""
     check("nothing written to the host on 409", leftover == b"", leftover)
-    os.write(m, kvm_preview.pack_quality("high")); time.sleep(0.4)
+    os.write(m, hostview.MAGIC + bytes([3]) + (1).to_bytes(4, "little") + b"\x01" + kvm_preview.pack_quality("high")); time.sleep(0.4)
     check("type 9 ignored in shell mode", req("/api/status")[1]["preview_quality"] == "low")
     # automatic stats:on: sent after the first helper ack; again after a helper restart
     check("kvm-web sent stats:on after the first helper ack", stats_on_seen[0] >= 1, stats_on_seen)

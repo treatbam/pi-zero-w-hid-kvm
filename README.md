@@ -200,8 +200,8 @@ amdgpu/nouveau), AMD `gpu_busy_percent`, `nvidia-smi`. Intel iGPU usage is not r
 
 Wire additions (envelope `FE FD 4B 56`, type, u32 length): type 7 preview frame, type 8
 extended stats JSON `{"v":1,...}`, type 9 quality ack (types 4/5/6 stay net, triage, clipboard). Type 1 stats are still sent, so a new Zero
-works with an old helper. An **old Zero with a new helper is not supported**: it treats types 7–9 as
-terminal text and the term page fills with junk, so update the Zero first.
+works with an old helper. An old Zero with a new helper also works: the helper sends types 7–9 only
+after the Zero asks with `KVMCTL:q:` or `KVMCTL:stats:on`, which an old Zero never does.
 Quality ack values are 0 low, 1 med, 2 high, 3 off. `GET /api/preview?since=N` (PIN) returns the tiles changed after N; `preview_quality` and
 `preview_quality_requested` appear in `/api/status` only with the PIN.
 

@@ -12,6 +12,7 @@ except ImportError:
 needs_pil = unittest.skipUnless(Image is not None, "Pillow not installed (preview tests skipped)")
 CTL = kvm_helper.CTL
 
+@needs_pil
 class Tiles(unittest.TestCase):
     def frame(self, enc, fill=0):
         return bytearray([fill]) * (enc.w * enc.h * 3)
@@ -145,11 +146,13 @@ class ReviewNits(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             n, smi = f"{d}/n", f"{d}/nvidia-smi"
             open(n, "w").write("0")
-            open(smi, "w").write(f"""#!/bin/sh
-c=$(cat {n}); echo $((c+1)) > {n}
-if [ "$c" -lt 2 ]; then echo garbage; exit 1; fi
-echo "33, 61"
-""")
+            open(smi, "w").write(f"""#!{sys.executable}
+import sys
+c = int(open({n!r}).read()); open({n!r}, "w").write(str(c + 1))
+if c < 2:
+    print("garbage"); sys.exit(1)
+print("33, 61")
+""")                                       # no shell/coreutils: independent of PATH
             os.chmod(smi, 0o755)
             e = kvm_stats.ExtStats(root=d, nvidia_smi=smi)
             sleeps = []
@@ -163,6 +166,41 @@ echo "33, 61"
         self.assertEqual([x for x, _ in sleeps], [20.0, 40.0, 10.0])
         self.assertEqual(sleeps[2][1], (33.0, 61.0))
         self.assertIsNone(e.nvsmi)
+
+    def test_shell_output_is_bounded_when_the_port_stalls(self):
+        """`yes` in shell mode with nobody reading: the pty is left unread past SHELL_OUT_MAX."""
+        m, s = os.openpty(); tty.setraw(m); tty.setraw(s)
+        os.set_blocking(s, False)
+        have = {k: False for k in ("pillow", "ffmpeg", "xrandr", "psutil", "nvidia-smi",
+                                   "display", "preview", "still")}
+        kvm_helper.LAST_OUTBOX[0] = None
+        t = threading.Thread(target=lambda: self._run_quiet(s, have), daemon=True)
+        t.start()
+        try:
+            os.write(m, CTL + b"shell\n")
+            time.sleep(1.0)
+            os.write(m, b"exec yes\n")
+            peak, t0 = 0, time.monotonic()
+            while time.monotonic() - t0 < 3.0:
+                ob = kvm_helper.LAST_OUTBOX[0]
+                if ob is not None:
+                    peak = max(peak, ob.pending())
+                time.sleep(0.05)
+            self.assertGreater(peak, kvm_helper.SHELL_OUT_MAX // 2, "shell output never queued")
+            self.assertLess(peak, kvm_helper.SHELL_OUT_MAX + 64 * 1024)
+        finally:
+            os.close(m)                  # port gone: run() gets EIO and closes the shell
+            t.join(15)
+            os.close(s)
+        self.assertFalse(t.is_alive())
+
+    @staticmethod
+    def _run_quiet(fd, have):
+        try:
+            with open(os.devnull, "w") as dn, __import__("contextlib").redirect_stdout(dn):
+                kvm_helper.run(fd, "", have)
+        except (OSError, TimeoutError):
+            pass
 
     def test_outbox_queues_big_frame_without_timeout(self):
         m, s = os.openpty(); tty.setraw(m); tty.setraw(s)
