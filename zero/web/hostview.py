@@ -282,7 +282,7 @@ class HostView:
             temps = ext.get("temps", {})
             fields.update({"pc_cores_all": ext.get("cores"), "pc_gpu_pct": ext.get("gpu_pct"),
                            "pc_cpu_temp_c": temps.get("cpu"), "pc_gpu_temp_c": temps.get("gpu"),
-                           "pc_nvme_temp_c": temps.get("nvme")})
+                           "pc_nvme_temp_c": temps.get("nvme"), "pc_uptime_s": ext.get("uptime_s")})
             return fields
 
     def frame_bytes(self, host_connected):
@@ -523,6 +523,8 @@ def _parse_ext(payload):
         tt = {k: round(float(t[k]), 1) for k in ("cpu", "gpu", "nvme") if _num(t.get(k), -50, 200)}
         if tt:
             out["temps"] = tt
+    if _num(d.get("uptime_s"), 0, 10 ** 9):
+        out["uptime_s"] = int(d["uptime_s"])
     return out
 
 

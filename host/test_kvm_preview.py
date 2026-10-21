@@ -299,7 +299,7 @@ class Stats(unittest.TestCase):
         hv.feed(kvm_helper.pack_mode(b"helper") + kvm_helper.pack_stats(40, 1, 50) + kvm_stats.pack_ext({"v": 1}))
         f = hv.status_fields(True)
         self.assertEqual(f["link"], "LINKED")
-        for k in ("pc_cores_all", "pc_gpu_pct", "pc_cpu_temp_c", "pc_gpu_temp_c", "pc_nvme_temp_c"):
+        for k in ("pc_cores_all", "pc_gpu_pct", "pc_cpu_temp_c", "pc_gpu_temp_c", "pc_nvme_temp_c", "pc_uptime_s"):
             self.assertIsNone(f[k])
 
     def test_fake_sysfs(self):
@@ -320,6 +320,19 @@ class Stats(unittest.TestCase):
         f = hv.status_fields(True)
         self.assertEqual((f["pc_cores_all"], f["pc_gpu_pct"], f["pc_cpu_temp_c"], f["pc_nvme_temp_c"], f["pc_gpu_temp_c"]),
                          ([50.0, 0.0], 17.0, 51.0, 38.5, None))
+
+    def test_uptime(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(f"{d}/proc"); open(f"{d}/proc/uptime", "w").write("12345.67 999.0\n")
+            s = kvm_stats.ExtStats(root=d, nvidia_smi="").sample()
+            self.assertEqual(s.get("uptime_s"), 12345)
+            open(f"{d}/proc/uptime", "w").write("garbage")
+            self.assertNotIn("uptime_s", kvm_stats.ExtStats(root=d, nvidia_smi="").sample())
+        hv = hostview.HostView()
+        hv.feed(kvm_helper.pack_mode(b"helper") + kvm_helper.pack_stats(40, 1, 50) + kvm_stats.pack_ext({"v": 1, "uptime_s": 7200}))
+        self.assertEqual(hv.status_fields(True)["pc_uptime_s"], 7200)
+        hv.feed(kvm_stats.pack_ext({"v": 1, "uptime_s": -5}))
+        self.assertIsNone(hv.status_fields(True)["pc_uptime_s"])
 
     def test_bad_ext_rejected(self):
         hv = hostview.HostView(); hv.feed(kvm_helper.pack_mode(b"helper"))

@@ -1,6 +1,6 @@
 """Extended PC stats for the helper (envelope type 8, JSON, version 1).
 
-    {"v":1, "cores":[pct,...], "gpu_pct":n, "temps":{"cpu":c,"gpu":c,"nvme":c}}
+    {"v":1, "cores":[pct,...], "gpu_pct":n, "temps":{"cpu":c,"gpu":c,"nvme":c}, "uptime_s":n}
 
 Every key except "v" is optional and simply left out when this PC can't report it.
 Sources, cheapest first: /proc/stat (per-core), psutil if installed, /sys/class/hwmon,
@@ -54,6 +54,14 @@ class ExtStats:
             dt = t1 - t0
             out.append(round(100.0 * (1 - (i1 - i0) / dt), 1) if dt > 0 else 0.0)
         return out
+
+    def uptime(self):
+        """Seconds since boot from /proc/uptime (Linux); None elsewhere or if unreadable."""
+        try:
+            v = float(open(self._p("/proc/uptime")).read().split()[0])
+        except (OSError, ValueError, IndexError):
+            return None
+        return int(v) if math.isfinite(v) and v >= 0 else None
 
     def hwmon_temps(self):
         temps = {}
@@ -141,6 +149,9 @@ class ExtStats:
             temps["gpu"] = round(gtemp, 1)
         if temps:
             d["temps"] = temps
+        up = self.uptime()
+        if up is not None:
+            d["uptime_s"] = up
         return d
 
 
