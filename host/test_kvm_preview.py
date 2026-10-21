@@ -192,6 +192,22 @@ echo "33, 61"
             os.close(m); os.close(s)
 
 
+class Keeper(unittest.TestCase):
+    def test_rerequests_after_helper_restart_rate_limited(self):
+        t = [100.0]; hv = hostview.HostView(now=lambda: t[0])
+        k = hostview.StatsKeeper(hv, min_s=10.0, now=lambda: t[0])
+        self.assertFalse(k.due(), "nothing before any helper ack (could be a getty)")
+        hv.feed(kvm_helper.pack_mode(b"helper")); self.assertTrue(k.due()); k.sent()
+        t[0] += 2; hv.feed(kvm_helper.pack_mode(b"helper")); self.assertFalse(k.due(), "steady acks: no resend")
+        t[0] += 20; hv.feed(kvm_helper.pack_mode(b"helper"))    # helper restarted after a 20 s gap
+        self.assertTrue(k.due()); k.sent()
+        t[0] += 6; hv.feed(kvm_helper.pack_mode(b"helper"))     # another restart 6 s later
+        self.assertFalse(k.due(), "rate limit: at most every 10 s")
+        t[0] += 4.5; self.assertTrue(k.due(), "pending request goes out once the limit allows")
+        k.sent(); k.want = False
+        t[0] += 30; hv.feed(kvm_helper.pack_mode(b"helper")); self.assertFalse(k.due(), "stats:off sticks")
+
+
 class StdlibOnly(unittest.TestCase):
     """Derek's SBC case: no Pillow/psutil/numpy, no ffmpeg/xrandr/nvidia-smi, no X."""
     def test_helper_runs_on_stdlib(self):
@@ -317,6 +333,29 @@ class PreviewLoopback(unittest.TestCase):
         self.pump(lambda: False, timeout=2.5)
         self.assertEqual(self.hv._pv_seq, s1, "preview still running after q:off")
         self.assertEqual(self.hv._ext_at, e1, "ext stats still sent after q:off")
+
+    def test_stats_on_without_q_off_and_shell_pause(self):
+        self.assertTrue(self.pump(lambda: self.mode() == "helper"))
+        self.pump(lambda: False, timeout=2.5); self.assertIsNone(self.hv._ext)
+        os.write(self.m, CTL + b"stats:on\n")
+        self.assertTrue(self.pump(lambda: self.hv._ext is not None, timeout=6), "no type 8 after stats:on")
+        self.assertIsNone(self.hv.quality()); self.assertIsNone(self.hv.preview(0, True))
+        n0 = self.hv._ext_at
+        self.assertTrue(self.pump(lambda: self.hv._ext_at != n0, timeout=6), "type 8 not repeating")
+        os.write(self.m, CTL + b"stats:off\n")
+        self.pump(lambda: False, timeout=0.6); e1 = self.hv._ext_at
+        self.pump(lambda: False, timeout=4.5)
+        self.assertEqual(self.hv._ext_at, e1, "type 8 still sent after stats:off")
+        os.write(self.m, CTL + b"stats:on\n")
+        self.assertTrue(self.pump(lambda: self.hv._ext_at != e1, timeout=6))
+        os.write(self.m, CTL + b"shell\n")
+        self.assertTrue(self.pump(lambda: self.mode() == "shell"))
+        self.pump(lambda: False, timeout=0.6); e2 = self.hv._ext_at
+        self.pump(lambda: False, timeout=4.5)
+        self.assertEqual(self.hv._ext_at, e2, "type 8 sent in shell mode")
+        os.write(self.m, CTL + b"helper\n")
+        self.assertTrue(self.pump(lambda: self.mode() == "helper"))
+        self.assertTrue(self.pump(lambda: self.hv._ext_at != e2, timeout=6), "type 8 did not resume")
 
     @needs_pil
     def test_preview_quality_and_shell_pause(self):

@@ -135,6 +135,7 @@ class HostView:
         self._mode = None           # last mode the helper acked ("helper"/"shell")
         self._mode_at = None
         self.requested_mode = None  # set by the server from /api/mode
+        self.helper_returned = 0    # bumps on a helper ack after silence (StatsKeeper watches it)
         self._ext = None            # validated type-8 dict
         self._ext_at = None
         self._quality = None        # last quality the helper acked
@@ -394,6 +395,9 @@ class HostView:
             self._frame_at = now
             self._frame_seq += 1
         elif typ == TYPE_MODE and payload[0] in MODE_NAMES:
+            if MODE_NAMES[payload[0]] == "helper" and (
+                    self._mode_at is None or now - self._mode_at > MODE_ACK_TTL_S):
+                self.helper_returned += 1          # first ack, or first after a gap (restart)
             self._mode = MODE_NAMES[payload[0]]
             self._mode_at = now
         elif typ == TYPE_QUALITY and payload[0] in QUALITY_NAMES:
@@ -465,6 +469,31 @@ class HostView:
             if self._mode_at is None:
                 return None, None
             return self._mode, round(self._now() - self._mode_at, 1)
+
+
+class StatsKeeper:
+    """Decides when kvm-web sends KVMCTL:stats:on. Only after a helper ack (so a plain
+    getty on the port never gets control bytes): the first one, and the first after a gap,
+    which is what a helper restart looks like. At most once per `min_s`. A pending request
+    that hits the rate limit is sent as soon as the limit allows. want=False (POST
+    /api/stats {"on":false}) stops the automatic requests until it is turned back on."""
+
+    def __init__(self, view, min_s=10.0, now=None):
+        self.view, self.min_s, self._now = view, min_s, now or time.monotonic
+        self.want = True
+        self.seen = 0               # helper_returned value already answered
+        self.last_sent = None
+
+    def due(self):
+        if not self.want or self.view.helper_returned == self.seen:
+            return False
+        if self.view.mode()[0] != "helper":
+            return False
+        return self.last_sent is None or self._now() - self.last_sent >= self.min_s
+
+    def sent(self):
+        self.seen = self.view.helper_returned
+        self.last_sent = self._now()
 
 
 def _num(v, lo, hi):

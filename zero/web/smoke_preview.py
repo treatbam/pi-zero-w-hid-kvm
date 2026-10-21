@@ -14,7 +14,7 @@ open(f"{tmp}/net/proc/net/wireless", "w").write(
     "Inter-| sta-|   Quality        |   Discarded packets\n face | tus | link level noise |  nwid\n"
     " wlan0: 0000   54.  -61.  -256        0      0      0\n")
 open(f"{tmp}/net/sys/class/net/tailscale0/flags", "w").write("0x1091\n")
-env = dict(os.environ, KVM_NET_ROOT=f"{tmp}/net", KVM_TERM_DEV=os.ttyname(s), KVM_PIN_FILE=f"{tmp}/pin", KVM_UDC_GLOB=f"{tmp}/udc_state")
+env = dict(os.environ, KVM_STATS_MIN_S="1", KVM_NET_ROOT=f"{tmp}/net", KVM_TERM_DEV=os.ttyname(s), KVM_PIN_FILE=f"{tmp}/pin", KVM_UDC_GLOB=f"{tmp}/udc_state")
 p = subprocess.Popen([sys.executable, "server.py", "--host", "127.0.0.1", "--port", "8137"], env=env)
 fails = []
 
@@ -31,10 +31,16 @@ def req(path, body=None, pin="1234"):
 def check(name, cond, got=""):
     print(("PASS " if cond else "FAIL ") + name, "" if cond else got); cond or fails.append(name)
 
+STATS_ON = b"\x1e\x1fKVMCTL:stats:on\n"
+stats_on_seen = [0]
+
 def wire():
+    """Next control bytes from the Zero, minus kvm-web's automatic stats:on (counted)."""
     time.sleep(0.3)
     r, _, _ = select.select([m], [], [], 1.0)
-    return os.read(m, 1000) if r else b""
+    got = os.read(m, 1000) if r else b""
+    stats_on_seen[0] += got.count(STATS_ON)
+    return got.replace(STATS_ON, b"")
 
 try:
     for _ in range(30):
@@ -103,6 +109,26 @@ try:
     check("nothing written to the host on 409", leftover == b"", leftover)
     os.write(m, kvm_preview.pack_quality("high")); time.sleep(0.4)
     check("type 9 ignored in shell mode", req("/api/status")[1]["preview_quality"] == "low")
+    # automatic stats:on: sent after the first helper ack; again after a helper restart
+    check("kvm-web sent stats:on after the first helper ack", stats_on_seen[0] >= 1, stats_on_seen)
+    req("/api/mode", {"mode": "helper"}); wire()
+    c, j = req("/api/stats", {"on": "yes"}); check("/api/stats bad body 400", c == 400, c)
+    c, _ = req("/api/stats", {"on": True}, pin=None); check("/api/stats no pin 401", c == 401, c)
+    hello = hostview.MAGIC + bytes([3]) + (1).to_bytes(4, "little") + b"\x00"
+    os.write(m, hello); time.sleep(1.5); wire()
+    n0 = stats_on_seen[0]
+    time.sleep(hostview.MODE_ACK_TTL_S + 1.5)                 # helper silent: looks like a restart
+    os.write(m, hello)
+    end = time.time() + 4
+    while time.time() < end and stats_on_seen[0] == n0: wire()
+    check("stats:on re-sent after a helper restart", stats_on_seen[0] > n0, stats_on_seen)
+    c, j = req("/api/stats", {"on": False}); w = wire()
+    check("/api/stats off 202 + wire", c == 202 and w == b"\x1e\x1fKVMCTL:stats:off\n", (c, w))
+    n1 = stats_on_seen[0]
+    time.sleep(hostview.MODE_ACK_TTL_S + 1.5); os.write(m, hello); time.sleep(2.5); wire()
+    check("no automatic stats:on after stats:off", stats_on_seen[0] == n1, stats_on_seen)
+    os.write(m, hostview.MAGIC + bytes([3]) + (1).to_bytes(4, "little") + b"\x01"); time.sleep(0.4)
+    c, _ = req("/api/stats", {"on": True}); check("/api/stats 409 in shell mode", c == 409, c)
 finally:
     p.terminate(); p.wait()
 print("SMOKE", "OK" if not fails else f"FAILED {fails}")

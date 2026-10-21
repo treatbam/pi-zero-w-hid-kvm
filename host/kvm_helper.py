@@ -24,6 +24,7 @@ Control packets, Zero -> host (never valid UTF-8 text a person types):
           | b"loupe"                  request 1:1 cursor-crop 240x135 still lease
           | b"cget"                   read host clipboard -> sends type 6 envelope
           | b"cset:" <base64>         write decoded UTF-8 bytes to host clipboard
+          | b"stats:" on|off           type 8 extended stats every 2 s (independent of q:)
           | b"q:" low|med|high|off    browser preview quality (types 7/8/9 start only
                                       after the first q:; off stops them again)
 
@@ -71,13 +72,17 @@ FRAME_LEN = 240 * 135 * 2
 INTERVAL = 2.0
 FRAME_LEASE_S = 8.0
 CTL = b"\x1e\x1fKVMCTL:"
-CTL_MAX = len(CTL) + 8          # longest valid non-clipboard packet body before newline
+CTL_MAX = len(CTL) + 12         # longest valid non-clipboard packet body before newline ("stats:off")
 CTL_CLIP_MAX = len(CTL) + 1500  # longest valid cset:<base64> packet before newline
 MODES = {b"helper": 0, b"shell": 1}
 SIMPLE_CTLS = {b"frame", b"loupe", b"cget"}
 QCMDS = {b"q:low": "low", b"q:med": "med", b"q:high": "high", b"q:off": "off"}
 # None until the Zero sends KVMCTL:q:<level>; until then no type 7-9 packets go out.
 QUALITY_STATE = {"q": None}
+# Type 8 extended stats, independent of the preview: KVMCTL:stats:on|off. kvm-web turns this
+# on when it sees the helper, so the GEEK gets them with no browser open.
+STATS_CMDS = {b"stats:on": True, b"stats:off": False}
+STATS_STATE = {"on": False}
 OUTBOX_PREVIEW_MAX = 64 * 1024   # don't queue a preview frame behind more than this
 B64_RE = re.compile(rb"^[A-Za-z0-9+/=]*$")
 CLIP_MAX = 1024
@@ -88,7 +93,7 @@ def pack_mode(mode):
 
 
 def _valid_ctl(cmd):
-    if cmd in SIMPLE_CTLS or cmd in QCMDS:
+    if cmd in SIMPLE_CTLS or cmd in QCMDS or cmd in STATS_CMDS:
         return True
     if cmd.startswith(b"cset:"):
         b64 = cmd[5:]
@@ -872,7 +877,8 @@ def send_helper_packets(fd, display, announced, state=None, want_frame=True):
             blob += pack_frame(frame)
             state.last_frame_at = time.monotonic()
     q = QUALITY_STATE["q"]
-    if q not in (None, "off"):            # extended stats only while a preview is wanted
+    # Type 8 every tick (2 s) while stats:on, or while a browser preview level is set.
+    if STATS_STATE["on"] or q not in (None, "off"):
         more = state.ext.sample()
         if len(more) > 1:
             blob += kvm_stats.pack_ext(more)
@@ -949,7 +955,12 @@ def run(fd, display, have=None):
                     elif kind == "ctl":
                         if shell is not None:
                             continue
-                        if val in QCMDS:
+                        if val in STATS_CMDS:
+                            if STATS_STATE["on"] != STATS_CMDS[val]:
+                                print("extended stats", "on" if STATS_CMDS[val] else "off", flush=True)
+                            STATS_STATE["on"] = STATS_CMDS[val]
+                            next_tick = 0.0           # send (or stop) right away
+                        elif val in QCMDS:
                             q = QCMDS[val]
                             QUALITY_STATE["q"] = q
                             if q == "off" or not have["preview"]:

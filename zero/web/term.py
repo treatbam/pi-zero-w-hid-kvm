@@ -141,6 +141,10 @@ def send_ctl(cmd):
     if cmd not in ("frame", "loupe", "cget"): raise ValueError("bad ctl")
     return _write(CTL + cmd.encode() + b"\n")
 
+def send_stats(on):
+    """Ask the host helper to start/stop type 8 extended stats: KVMCTL:stats:on|off."""
+    return _write(CTL + (b"stats:on" if on else b"stats:off") + b"\n")
+
 def send_quality(q):
     """Ask the host helper for a preview quality: 1E 1F "KVMCTL:q:" <low|med|high|off> LF."""
     if q not in ("low", "med", "high", "off"): raise ValueError("bad quality")

@@ -36,6 +36,9 @@ API:
   POST /api/quality {"quality":"low"|"med"|"high"|"off"} -> preview quality (202; 409 in shell mode)
   GET  /api/preview?since=N   -> {"seq","w","h","quality","reset","tiles":[{x,y,w,h,jpg(base64)}]}
                                  changed JPEG tiles since seq N (PIN required; 204 when stale)
+  POST /api/stats  {"on":true|false}           -> KVMCTL:stats:on|off (type 8 extended stats).
+                   kvm-web sends stats:on by itself on the first helper ack and after a helper
+                   restart (<= every 10 s); "off" stops that until turned on again. 409 in shell.
   POST /api/power  {"target":"host","action":"power|sleep|wake|hard_reset|hard_power","confirm":true}
                    {"target":"zero","action":"shutdown|reboot","confirm":true}
 Every POST needs Content-Type: application/json, a same-origin Origin (if sent), and the PIN
@@ -63,7 +66,19 @@ FAILS = {}            # ip -> (count, first_fail_time)
 MAX_FAILS, LOCKOUT_S = 5, 60
 HOST_POWER = ("power", "sleep", "wake")          # soft: System Control keys over USB
 HOST_HARD = ("hard_reset", "hard_power")         # needs optocoupler wiring (not built yet)
-MODE_REQ = {"mode": None, "quality": None}   # last mode asked for via /api/mode
+MODE_REQ = {"mode": None, "quality": None}
+STATS = hostview.StatsKeeper(hostview.shared, min_s=float(os.environ.get("KVM_STATS_MIN_S", "10")))
+
+def stats_keeper_loop():
+    """Re-arm the helper's type 8 stats when it (re)appears, so the GEEK's KVM page has
+    them with no browser open."""
+    while True:
+        time.sleep(1.0)
+        if STATS.due():
+            try:
+                if term.send_stats(True): STATS.sent()
+            except (TimeoutError, OSError):
+                pass   # last mode asked for via /api/mode
 FRAME_REQ = {"crop": "frame", "at": 0.0, "loupe_until": 0.0}
 ZERO_POWER = {"shutdown": "poweroff", "reboot": "reboot"}
 
@@ -124,6 +139,10 @@ def validate(path, body):
         m = body.get("mode")
         if m not in ("shell", "helper"): raise ValueError('mode must be "shell" or "helper"')
         return (m,)
+    if path == "/api/stats":
+        on = body.get("on")
+        if not isinstance(on, bool): raise ValueError("on must be a bool")
+        return (on,)
     if path == "/api/quality":
         q = body.get("quality")
         if q not in ("low", "med", "high", "off"): raise ValueError('quality must be "low", "med", "high" or "off"')
@@ -347,6 +366,16 @@ class H(SimpleHTTPRequestHandler):
             MODE_REQ["mode"] = args[0]
             hostview.shared.requested_mode = args[0]   # while "shell", types 7-9 are not parsed
             return self._json(202, {"ok": True, "requested": args[0], "note": "watch serial_mode in /api/status"})
+        if self.path == "/api/stats":
+            if hostview.shared.mode()[0] == "shell":
+                return self._json(409, {"error": "serial port is in shell mode; switch to helper first"})
+            try:
+                if not term.send_stats(args[0]): return self._json(409, {"error": "serial port not open"})
+            except (TimeoutError, OSError) as e:
+                return self._json(503, {"error": str(e)})
+            STATS.want = args[0]
+            if args[0]: STATS.sent()
+            return self._json(202, {"ok": True, "stats": args[0]})
         if self.path == "/api/quality":
             mode = hostview.shared.mode()[0]
             if mode == "shell" or (MODE_REQ["mode"] == "shell" and mode != "helper"):
@@ -391,5 +420,6 @@ if __name__ == "__main__":
     p.add_argument("--port", type=int, default=8080); a = p.parse_args()
     PIN = load_pin()
     term.start()
+    threading.Thread(target=stats_keeper_loop, name="stats-keeper", daemon=True).start()
     print(f"KVM console on http://{a.host}:{a.port}")
     ThreadingHTTPServer((a.host, a.port), H).serve_forever()
