@@ -707,7 +707,12 @@ void drawCapsule(int x, int y, int w, int h, float level, float peakLevel, float
   int fw = (int)(shown * inner + 0.5f);
   for (int dx = 0; dx < fw; dx++) {
     float p = inner > 1 ? (float)dx / (float)(inner - 1) : 0.f;
+#if defined(RAMP_BANDS) || defined(RAMP_STEPPED)
+    (void)p;   // stepped themes: one solid colour per bar, from the current value's step
+    uint16_t col = dimmed(ramp(shown, warnAt, isTemp), dim);
+#else
     uint16_t col = dimmed(ramp(p, warnAt, isTemp), dim);
+#endif
     int topPad = (dx == 0 || dx == inner - 1) ? 2 : 1;
     int colH = h - topPad * 2;
     if (colH > 0) fb.drawFastVLine(x + 1 + dx, y + topPad, colH, col);
