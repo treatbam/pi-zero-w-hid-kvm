@@ -412,33 +412,92 @@ uint16_t mix(uint16_t a, uint16_t b, int t) {
 }
 
 // ---- Design system: every page draws with these and nothing else. ----------------------
-// Palette. One value ramp (low -> warm -> hot) feeds every bar, capsule, sparkline and core.
-const uint16_t C_BG   = rgb(12, 16, 24),   C_TXT  = 0xFFFF,           C_DIM  = rgb(130, 140, 165),
-               C_VAL  = rgb(220, 228, 240), C_SOFT = rgb(197, 208, 200),
-               C_OK   = rgb(60, 220, 120), C_WARN = rgb(255, 170, 40), C_BAD  = rgb(255, 70, 70),
-               C_EDGE = rgb(44, 56, 80),   C_HDR  = rgb(26, 34, 52),   C_TRACK = rgb(22, 30, 44),
-               C_LOW  = rgb(48, 176, 255), C_WARM = rgb(255, 186, 48), C_HOT  = rgb(255, 60, 60),
-               C_RX   = rgb(48, 224, 136), C_TX   = rgb(245, 165, 45),
-               C_RISE = rgb(255, 200, 90), C_FALL = rgb(110, 245, 190);
+// Palette + ramp per theme. Pick with -DGEEK_THEME=n in platformio.ini build_flags:
+//   0 Classic (default): dark navy, green->yellow->orange->red ramp
+//     (GEEK_RAMP_LOW_BLUE=1 starts it at blue instead)
+//   1 Synthwave: deep indigo, teal -> violet -> magenta -> hot pink
+//   2 Amber CRT: near-black, dim amber -> bright amber -> white-hot
+//   3 Nord/Arctic: slate, frost blue -> aurora purple -> warm coral
+// Rail rows are ZERO, LINKED, NO HOST, KEYS: gradient top, bottom, letter ink.
+// The ramp's `warn` point always lands on the 0.75 stop, so "hot" sits in the same place.
+#ifndef GEEK_THEME
+#define GEEK_THEME 0
+#endif
+#ifndef GEEK_RAMP_LOW_BLUE
+#define GEEK_RAMP_LOW_BLUE 0
+#endif
+struct Stop { float at; uint8_t r, g, b; };
+struct Rgb { uint8_t r, g, b; };
+#define P(r, g, b) rgb(r, g, b)
+#if GEEK_THEME == 1
+const uint16_t C_BG = P(20, 12, 40), C_TXT = P(255, 255, 255), C_DIM = P(160, 140, 210),
+               C_VAL = P(235, 222, 255), C_SOFT = P(212, 200, 238),
+               C_OK = P(60, 240, 220), C_WARN = P(255, 170, 70), C_BAD = P(255, 60, 130),
+               C_EDGE = P(84, 50, 140), C_HDR = P(40, 24, 76), C_TRACK = P(36, 24, 64),
+               C_LOW = P(60, 230, 220), C_WARM = P(220, 80, 230), C_HOT = P(255, 50, 140),
+               C_RX = P(60, 230, 220), C_TX = P(255, 120, 220),
+               C_RISE = P(255, 140, 220), C_FALL = P(90, 240, 230);
+const Stop RAMP[] = {{0.f, 50, 220, 210}, {0.35f, 110, 160, 255}, {0.6f, 190, 90, 240},
+                     {0.75f, 235, 70, 220}, {1.f, 255, 50, 130}};
+const Rgb RAIL_C[4][3] = {{{78, 64, 104}, {34, 26, 52}, {200, 190, 225}},
+                          {{80, 240, 220}, {20, 120, 130}, {8, 20, 36}},
+                          {{255, 170, 100}, {150, 64, 50}, {36, 12, 8}},
+                          {{180, 150, 255}, {72, 44, 170}, {12, 6, 32}}};
+#elif GEEK_THEME == 2
+const uint16_t C_BG = P(10, 8, 4), C_TXT = P(255, 224, 160), C_DIM = P(176, 124, 44),
+               C_VAL = P(255, 204, 120), C_SOFT = P(232, 184, 104),
+               C_OK = P(255, 190, 60), C_WARN = P(255, 232, 150), C_BAD = P(255, 252, 236),
+               C_EDGE = P(104, 68, 12), C_HDR = P(40, 26, 4), C_TRACK = P(34, 22, 4),
+               C_LOW = P(200, 130, 30), C_WARM = P(255, 190, 50), C_HOT = P(255, 252, 236),
+               C_RX = P(255, 184, 64), C_TX = P(196, 128, 32),
+               C_RISE = P(255, 240, 200), C_FALL = P(200, 146, 56);
+const Stop RAMP[] = {{0.f, 170, 100, 14}, {0.4f, 232, 144, 24}, {0.75f, 255, 196, 60},
+                     {0.9f, 255, 232, 160}, {1.f, 255, 255, 245}};
+const Rgb RAIL_C[4][3] = {{{70, 50, 18}, {28, 20, 6}, {190, 136, 50}},
+                          {{255, 190, 60}, {150, 90, 10}, {22, 12, 0}},
+                          {{255, 240, 190}, {176, 136, 64}, {34, 22, 0}},
+                          {{190, 126, 34}, {84, 52, 6}, {255, 226, 160}}};
+#elif GEEK_THEME == 3
+const uint16_t C_BG = P(46, 52, 64), C_TXT = P(236, 239, 244), C_DIM = P(156, 166, 186),
+               C_VAL = P(229, 233, 240), C_SOFT = P(216, 222, 233),
+               C_OK = P(163, 190, 140), C_WARN = P(235, 203, 139), C_BAD = P(220, 110, 118),
+               C_EDGE = P(86, 96, 118), C_HDR = P(59, 66, 82), C_TRACK = P(36, 41, 52),
+               C_LOW = P(136, 192, 208), C_WARM = P(180, 142, 173), C_HOT = P(240, 120, 100),
+               C_RX = P(136, 192, 208), C_TX = P(208, 135, 112),
+               C_RISE = P(235, 203, 139), C_FALL = P(143, 188, 187);
+const Stop RAMP[] = {{0.f, 136, 200, 216}, {0.3f, 129, 161, 213}, {0.55f, 180, 142, 200},
+                     {0.75f, 214, 132, 150}, {1.f, 246, 118, 96}};
+const Rgb RAIL_C[4][3] = {{{96, 106, 128}, {59, 66, 82}, {226, 230, 238}},
+                          {{163, 200, 140}, {88, 120, 78}, {28, 34, 42}},
+                          {{235, 203, 139}, {168, 126, 66}, {40, 32, 18}},
+                          {{136, 192, 208}, {78, 116, 150}, {24, 30, 40}}};
+#else
+const uint16_t C_BG = P(12, 16, 24), C_TXT = 0xFFFF, C_DIM = P(130, 140, 165),
+               C_VAL = P(220, 228, 240), C_SOFT = P(197, 208, 200),
+               C_OK = P(60, 220, 120), C_WARN = P(255, 170, 40), C_BAD = P(255, 70, 70),
+               C_EDGE = P(44, 56, 80), C_HDR = P(26, 34, 52), C_TRACK = P(22, 30, 44),
+               C_LOW = P(48, 176, 255), C_WARM = P(255, 186, 48), C_HOT = P(255, 60, 60),
+               C_RX = P(48, 224, 136), C_TX = P(245, 165, 45),
+               C_RISE = P(255, 200, 90), C_FALL = P(110, 245, 190);
+#if GEEK_RAMP_LOW_BLUE
+const Stop RAMP[] = {{0.f, 48, 140, 255}, {0.25f, 40, 210, 200}, {0.5f, 230, 220, 50}, {0.75f, 255, 150, 40}, {1.f, 255, 60, 60}};
+#else
+const Stop RAMP[] = {{0.f, 40, 200, 90}, {0.45f, 230, 220, 50}, {0.75f, 255, 150, 40}, {1.f, 255, 60, 60}};
+#endif
+const Rgb RAIL_C[4][3] = {{{50, 52, 60}, {20, 22, 28}, {180, 184, 196}},
+                          {{94, 234, 144}, {18, 122, 66}, {4, 34, 8}},
+                          {{255, 210, 122}, {138, 90, 16}, {42, 24, 4}},
+                          {{126, 182, 238}, {26, 78, 134}, {4, 16, 24}}};
+#endif
+#undef P
+inline uint16_t railC(int st, int k) { const Rgb& c = RAIL_C[st][k]; return rgb(c.r, c.g, c.b); }
 // Type and spacing. Small = 6x8 GFX font, big = 12x16.
 const int FS_S = 1, FS_L = 2, CW = 6, LINE = 10, PAD = 4, GAP = 2, HDR_H = 10, RADIUS = 3;
 // Shared scales: level in 0..1 plus the point where the ramp turns hot.
 const float T_LO = 35.f, T_SPAN = 60.f;
 inline float tempLevel(float c) { return (c - T_LO) / T_SPAN; }
 
-// The single value -> colour ramp, one continuous gradient for every bar, spark, core and temp.
-// GEEK_RAMP_LOW_BLUE 0 (default): green -> yellow -> orange -> red.
-// GEEK_RAMP_LOW_BLUE 1:           blue -> cyan -> yellow -> orange -> red.
-// `warn` is where the metric turns hot; it is mapped onto the orange stop (0.75).
-#ifndef GEEK_RAMP_LOW_BLUE
-#define GEEK_RAMP_LOW_BLUE 0
-#endif
-struct Stop { float at; uint8_t r, g, b; };
-#if GEEK_RAMP_LOW_BLUE
-const Stop RAMP[] = {{0.f, 48, 140, 255}, {0.25f, 40, 210, 200}, {0.5f, 230, 220, 50}, {0.75f, 255, 150, 40}, {1.f, 255, 60, 60}};
-#else
-const Stop RAMP[] = {{0.f, 40, 200, 90}, {0.45f, 230, 220, 50}, {0.75f, 255, 150, 40}, {1.f, 255, 60, 60}};
-#endif
+// The single value -> colour ramp (theme RAMP above), used by every bar, spark, core and temp.
 const int RAMP_N = sizeof RAMP / sizeof RAMP[0];
 uint16_t ramp(float t, float warn = 0.75f) {
   if (isnan(t) || t < 0.f) t = 0.f;
@@ -713,7 +772,7 @@ void drawRailLeds(int railW, const Status& s, uint16_t ink) {
   int cx = railW / 2;
   for (int i = 0; i < 3; i++) {
     int cy = H - 26 + i * 9;
-    if (on[i]) { fb.fillCircle(cx, cy, 3, C_FALL); fb.drawCircle(cx, cy, 3, rgb(8, 24, 16)); }
+    if (on[i]) { fb.fillCircle(cx, cy, 3, C_FALL); fb.drawCircle(cx, cy, 3, ink); }
     else fb.drawCircle(cx, cy, 2, ink);
   }
 }
@@ -786,10 +845,9 @@ void drawBoard(const Status& s, const PcHist& h, uint32_t now) {
   bool showPc = linked || reconnecting;
   uint16_t top, bot, ink;
   const char* word;
-  if (!s.api) { top = rgb(50, 52, 60); bot = rgb(20, 22, 28); ink = rgb(180, 184, 196); word = "ZERO"; }
-  else if (linked) { top = rgb(94, 234, 144); bot = rgb(18, 122, 66); ink = rgb(4, 34, 8); word = "LINKED"; }
-  else if (nohost) { top = rgb(255, 210, 122); bot = rgb(138, 90, 16); ink = rgb(42, 24, 4); word = "NO HOST"; }
-  else { top = rgb(126, 182, 238); bot = rgb(26, 78, 134); ink = rgb(4, 16, 24); word = "KEYS"; }
+  int st = !s.api ? 0 : linked ? 1 : nohost ? 2 : 3;
+  const char* words[4] = {"ZERO", "LINKED", "NO HOST", "KEYS"};
+  word = words[st]; top = railC(st, 0); bot = railC(st, 1); ink = railC(st, 2);
   // Thin state rail: colour carries the state, one letter names it (L/N/K/Z).
   const int RAIL = 14, PX = RAIL + GAP, PW = W - PX, PH = 100, BY = PH + GAP, BH = H - BY;
   vgrad(0, 0, RAIL, H, top, bot);
@@ -858,7 +916,7 @@ void drawBoard(const Status& s, const PcHist& h, uint32_t now) {
   int ny = p.bot() - 12;
   fb.drawFastHLine(p.x + 1, ny - 2, p.w - 2, C_EDGE);
   if (reconnecting) {
-    fb.fillRoundRect(p.l(), ny, p.w - 2 * PAD, 11, RADIUS, rgb(72, 44, 8));
+    fb.fillRoundRect(p.l(), ny, p.w - 2 * PAD, 11, RADIUS, mix(C_BG, C_WARN, 70));
     uint16_t toastC = ((now / 400) & 1) ? C_WARM : mix(C_BG, C_WARM, 150);
     txt(p.x + (p.w - 12 * CW) / 2, ny + 2, "reconnecting", toastC);
   } else if (linked) {
@@ -945,8 +1003,8 @@ void drawKvm(const Status& s, const PcHist& h) {
 }
 
 void drawWaiting() {
-  vgrad(0, 0, W, H, rgb(126, 182, 238), rgb(18, 60, 110));
-  vword((W - 72) / 2, 0, 72, H, "KEYS", rgb(4, 16, 24));
+  vgrad(0, 0, W, H, railC(3, 0), railC(3, 1));
+  vword((W - 72) / 2, 0, 72, H, "KEYS", railC(3, 2));
   if (gPinBad) txt(78, 120, "bad PIN (portal)", rgb(120, 10, 10), 1);
   else txt(99, 120, "waiting", rgb(4, 20, 32), 1);
 }
