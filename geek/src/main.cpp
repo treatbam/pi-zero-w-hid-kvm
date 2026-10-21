@@ -418,6 +418,9 @@ uint16_t mix(uint16_t a, uint16_t b, int t) {
 //   1 Synthwave: deep indigo, teal -> violet -> magenta -> hot pink
 //   2 Amber CRT: near-black, dim amber -> bright amber -> white-hot
 //   3 Nord/Arctic: slate, frost blue -> aurora purple -> warm coral
+//   4 Mono+accent: true black, white/grey text, one cyan accent; stepped orange past warn, red past hot
+//   5 Solarized dark: base03 bg, official base/accent colours, cyan -> yellow -> orange -> red
+//   6 Light/paper: off-white bg, dark text, muted teal -> ochre -> brick
 // Rail rows are ZERO, LINKED, NO HOST, KEYS: gradient top, bottom, letter ink.
 // The ramp's `warn` point always lands on the 0.75 stop, so "hot" sits in the same place.
 #ifndef GEEK_THEME
@@ -471,6 +474,50 @@ const Rgb RAIL_C[4][3] = {{{96, 106, 128}, {59, 66, 82}, {226, 230, 238}},
                           {{163, 200, 140}, {88, 120, 78}, {28, 34, 42}},
                           {{235, 203, 139}, {168, 126, 66}, {40, 32, 18}},
                           {{136, 192, 208}, {78, 116, 150}, {24, 30, 40}}};
+#elif GEEK_THEME == 4
+#define RAMP_STEPPED 1   // flat colour per band: cyan < warn <= orange < hot <= red
+const uint16_t C_BG = P(0, 0, 0), C_TXT = P(255, 255, 255), C_DIM = P(140, 140, 140),
+               C_VAL = P(224, 224, 224), C_SOFT = P(190, 190, 190),
+               C_OK = P(0, 200, 230), C_WARN = P(255, 150, 0), C_BAD = P(255, 50, 40),
+               C_EDGE = P(72, 72, 72), C_HDR = P(26, 26, 26), C_TRACK = P(30, 30, 30),
+               C_LOW = P(0, 200, 230), C_WARM = P(255, 150, 0), C_HOT = P(255, 50, 40),
+               C_RX = P(0, 200, 230), C_TX = P(200, 200, 200),
+               C_RISE = P(255, 150, 0), C_FALL = P(0, 200, 230);
+const Stop RAMP[] = {{0.f, 0, 200, 230}, {0.75f, 255, 150, 0}, {0.9f, 255, 50, 40}};
+const Rgb RAIL_C[4][3] = {{{64, 64, 64}, {30, 30, 30}, {210, 210, 210}},
+                          {{0, 200, 230}, {0, 110, 130}, {0, 0, 0}},
+                          {{255, 150, 0}, {150, 80, 0}, {0, 0, 0}},
+                          {{210, 210, 210}, {110, 110, 110}, {0, 0, 0}}};
+#elif GEEK_THEME == 5
+// Solarized: base03 002b36, base02 073642, base01 586e75, base0 839496, base1 93a1a1,
+// base2 eee8d5, base3 fdf6e3; yellow b58900 orange cb4b16 red dc322f blue 268bd2 cyan 2aa198 green 859900.
+const uint16_t C_BG = P(0x00, 0x2b, 0x36), C_TXT = P(0xee, 0xe8, 0xd5), C_DIM = P(0x58, 0x6e, 0x75),
+               C_VAL = P(0x93, 0xa1, 0xa1), C_SOFT = P(0x83, 0x94, 0x96),
+               C_OK = P(0x85, 0x99, 0x00), C_WARN = P(0xb5, 0x89, 0x00), C_BAD = P(0xdc, 0x32, 0x2f),
+               C_EDGE = P(0x58, 0x6e, 0x75), C_HDR = P(0x07, 0x36, 0x42), C_TRACK = P(0x07, 0x36, 0x42),
+               C_LOW = P(0x2a, 0xa1, 0x98), C_WARM = P(0xcb, 0x4b, 0x16), C_HOT = P(0xdc, 0x32, 0x2f),
+               C_RX = P(0x2a, 0xa1, 0x98), C_TX = P(0xb5, 0x89, 0x00),
+               C_RISE = P(0xcb, 0x4b, 0x16), C_FALL = P(0x2a, 0xa1, 0x98);
+const Stop RAMP[] = {{0.f, 0x2a, 0xa1, 0x98}, {0.5f, 0xb5, 0x89, 0x00}, {0.75f, 0xcb, 0x4b, 0x16},
+                     {1.f, 0xdc, 0x32, 0x2f}};
+const Rgb RAIL_C[4][3] = {{{0x07, 0x36, 0x42}, {0x00, 0x2b, 0x36}, {0x93, 0xa1, 0xa1}},
+                          {{0x85, 0x99, 0x00}, {80, 92, 0}, {0x00, 0x2b, 0x36}},
+                          {{0xb5, 0x89, 0x00}, {110, 80, 0}, {0x00, 0x2b, 0x36}},
+                          {{0x26, 0x8b, 0xd2}, {20, 80, 130}, {0xfd, 0xf6, 0xe3}}};
+#elif GEEK_THEME == 6
+const uint16_t C_BG = P(244, 240, 228), C_TXT = P(36, 36, 40), C_DIM = P(116, 112, 102),
+               C_VAL = P(48, 48, 54), C_SOFT = P(78, 76, 70),
+               C_OK = P(40, 130, 90), C_WARN = P(176, 116, 16), C_BAD = P(170, 50, 40),
+               C_EDGE = P(168, 160, 142), C_HDR = P(224, 218, 200), C_TRACK = P(222, 216, 200),
+               C_LOW = P(40, 128, 138), C_WARM = P(186, 132, 36), C_HOT = P(160, 52, 40),
+               C_RX = P(30, 120, 130), C_TX = P(170, 110, 20),
+               C_RISE = P(170, 70, 40), C_FALL = P(30, 120, 110);
+const Stop RAMP[] = {{0.f, 44, 132, 140}, {0.5f, 186, 140, 44}, {0.75f, 184, 104, 40},
+                     {1.f, 156, 46, 36}};
+const Rgb RAIL_C[4][3] = {{{204, 200, 190}, {168, 162, 148}, {56, 54, 50}},
+                          {{60, 150, 110}, {28, 98, 70}, {250, 248, 240}},
+                          {{214, 154, 54}, {160, 100, 20}, {40, 24, 0}},
+                          {{70, 130, 172}, {38, 88, 130}, {250, 248, 240}}};
 #else
 const uint16_t C_BG = P(12, 16, 24), C_TXT = 0xFFFF, C_DIM = P(130, 140, 165),
                C_VAL = P(220, 228, 240), C_SOFT = P(197, 208, 200),
@@ -504,6 +551,11 @@ uint16_t ramp(float t, float warn = 0.75f) {
   if (t > 1.f) t = 1.f;
   if (!(warn > 0.05f && warn < 0.95f)) warn = 0.75f;
   float u = t < warn ? t / warn * 0.75f : 0.75f + (t - warn) / (1.f - warn) * 0.25f;
+#ifdef RAMP_STEPPED
+  int k = 0;
+  for (int i = 1; i < RAMP_N; i++) if (u >= RAMP[i].at) k = i;
+  return rgb(RAMP[k].r, RAMP[k].g, RAMP[k].b);
+#endif
   for (int i = 1; i < RAMP_N; i++) {
     if (u <= RAMP[i].at || i == RAMP_N - 1) {
       const Stop &a = RAMP[i - 1], &b = RAMP[i];
