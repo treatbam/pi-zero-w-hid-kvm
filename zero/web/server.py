@@ -9,7 +9,10 @@ API:
                                       "pc_age_s","frame_fresh",
                                       "pc_cores_all","pc_gpu_pct","pc_cpu_temp_c","pc_gpu_temp_c","pc_nvme_temp_c",
                                       "serial_mode","serial_mode_age_s","serial_mode_requested",
-                                      "preview_quality","preview_quality_requested"}
+                                      "preview_quality","preview_quality_requested",
+                                      "zero_wifi_rssi","tailscale"}
+                                    zero_wifi_rssi (dBm) / tailscale ("up"/"down"/null) are PIN-only
+                                    too; the GEEK sends its KVM_PIN on the status poll.
                                     pc_cores_all etc. (type 8) are null when the PC can't report them.
                                     serial_* and preview_* only with a valid X-KVM-PIN header.
                                     serial_mode is the helper's last ack ("helper"/"shell")
@@ -136,6 +139,29 @@ def validate(path, body):
         return (body["name"],)
     raise LookupError(path)
 
+NET_ROOT = os.environ.get("KVM_NET_ROOT", "/")   # tests point this at a fake /proc + /sys
+
+def zero_link():
+    """Zero Wi-Fi RSSI (dBm) and Tailscale state for the GEEK's KVM page. Two tiny file
+    reads, no subprocess. tailscale: "up" (tailscale0 exists and is IFF_UP), "down"
+    (tailscaled installed but no live interface), or None (not installed)."""
+    out = {"zero_wifi_rssi": None, "tailscale": None}
+    try:
+        for line in open(os.path.join(NET_ROOT, "proc/net/wireless")):
+            f = line.split()
+            if f and f[0].rstrip(":") == "wlan0" and len(f) > 3:
+                v = int(float(f[3].rstrip(".")))
+                if -120 <= v < 0: out["zero_wifi_rssi"] = v
+    except (OSError, ValueError): pass
+    ts = os.path.join(NET_ROOT, "sys/class/net/tailscale0")
+    try:
+        out["tailscale"] = "up" if int(open(os.path.join(ts, "flags")).read(), 16) & 1 else "down"
+    except (OSError, ValueError):
+        installed = any(os.path.exists(os.path.join(NET_ROOT, p)) for p in
+                        ("usr/sbin/tailscaled", "usr/bin/tailscaled", "usr/bin/tailscale"))
+        out["tailscale"] = "down" if installed else None
+    return out
+
 def sysstats():
     """Cheap /proc reads for the GEEK dashboard; any failure just omits the field."""
     out = {}
@@ -183,7 +209,7 @@ class H(SimpleHTTPRequestHandler):
             sm = {}
             if self.headers.get("X-KVM-PIN") and self._pin_ok():   # serial fields need the PIN
                 mode, age = hostview.shared.mode()
-                sm = {"serial_mode": mode, "serial_mode_age_s": age, "serial_mode_requested": MODE_REQ["mode"],
+                sm = {**zero_link(), "serial_mode": mode, "serial_mode_age_s": age, "serial_mode_requested": MODE_REQ["mode"],
                       "preview_quality": hostview.shared.quality(), "preview_quality_requested": MODE_REQ["quality"]}
             return self._json(200, {**st, "ip": self._my_ip(), **sysstats(), **pc, **sm})
         u = urlsplit(self.path)

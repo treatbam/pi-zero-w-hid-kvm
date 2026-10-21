@@ -9,7 +9,12 @@ import hostview, kvm_preview, kvm_stats
 tmp = tempfile.mkdtemp()
 open(f"{tmp}/pin", "w").write("1234\n"); open(f"{tmp}/udc_state", "w").write("configured\n")
 m, s = os.openpty(); tty.setraw(m); tty.setraw(s)
-env = dict(os.environ, KVM_TERM_DEV=os.ttyname(s), KVM_PIN_FILE=f"{tmp}/pin", KVM_UDC_GLOB=f"{tmp}/udc_state")
+os.makedirs(f"{tmp}/net/proc/net"); os.makedirs(f"{tmp}/net/sys/class/net/tailscale0")
+open(f"{tmp}/net/proc/net/wireless", "w").write(
+    "Inter-| sta-|   Quality        |   Discarded packets\n face | tus | link level noise |  nwid\n"
+    " wlan0: 0000   54.  -61.  -256        0      0      0\n")
+open(f"{tmp}/net/sys/class/net/tailscale0/flags", "w").write("0x1091\n")
+env = dict(os.environ, KVM_NET_ROOT=f"{tmp}/net", KVM_TERM_DEV=os.ttyname(s), KVM_PIN_FILE=f"{tmp}/pin", KVM_UDC_GLOB=f"{tmp}/udc_state")
 p = subprocess.Popen([sys.executable, "server.py", "--host", "127.0.0.1", "--port", "8137"], env=env)
 fails = []
 
@@ -39,6 +44,12 @@ try:
     check("status no pin hides serial/preview", not serial(req("/api/status", pin=None)[1]))
     check("status wrong pin hides serial/preview", not serial(req("/api/status", pin="9999")[1]))
     check("status pin shows serial/preview", serial(req("/api/status")[1]))
+    st0 = req("/api/status")[1]
+    check("zero link fields with PIN", st0.get("zero_wifi_rssi") == -61 and st0.get("tailscale") == "up", st0)
+    np0 = req("/api/status", pin=None)[1]
+    check("zero link fields hidden without PIN", "zero_wifi_rssi" not in np0 and "tailscale" not in np0)
+    open(f"{tmp}/net/sys/class/net/tailscale0/flags", "w").write("0x1090\n")
+    check("tailscale down when the interface is not up", req("/api/status")[1].get("tailscale") == "down")
     for t in ("\x1e", "a\x1fb", "\x1e\x1fKVMCTL:helper", "\x1e\x1fKVMCTL:q:high"):
         check(f"/api/term rejects {t!r}", req("/api/term", {"text": t})[0] == 400)
     check("/api/mode no pin 401", req("/api/mode", {"mode": "shell"}, pin=None)[0] == 401)

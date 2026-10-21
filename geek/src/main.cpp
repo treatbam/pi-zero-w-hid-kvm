@@ -121,6 +121,14 @@ struct Status {
   float pcRx = NAN, pcTx = NAN, pcNcpu = NAN, pcTopCpu = NAN;
   int mem = -1, pcMem = -1, pcDisk = -1, pcCoreCount = 0;
   uint8_t pcCores[8] = {0};
+  // KVM page (PIN-gated fields: the status GET sends X-KVM-PIN)
+  int zRssi = 0;                 // Zero wlan0 dBm, 0 = unknown
+  int8_t ts = -1;                // tailscale: -1 n/a, 0 down, 1 up
+  char serialMode[8] = "";
+  // type-8 extended stats (absent -> NAN / 0)
+  uint8_t coresAll[16] = {0};
+  int coresAllN = 0, coresTotal = 0;
+  float pcGpu = NAN, pcCpuT = NAN, pcGpuT = NAN, pcNvmeT = NAN;
   long upS = -1;
   uint32_t latencyMs = 0, stampMs = 0, polls = 0, fails = 0;
 };
@@ -190,6 +198,7 @@ void pollOnce() {
   if (s.wifi) {
     HTTPClient http; http.setTimeout(1500); http.setConnectTimeout(1500);
     uint32_t t0 = millis(); http.begin(BASE + "/api/status");
+    http.addHeader("X-KVM-PIN", cfg.pin);   // unlocks the Zero link + serial fields
     s.httpCode = http.GET(); s.latencyMs = millis() - t0;
     if (s.httpCode == 200) {
       JsonDocument d;
@@ -226,6 +235,23 @@ void pollOnce() {
         if (!d["pc_disk_pct"].isNull()) s.pcDisk = d["pc_disk_pct"].as<int>();
         if (!d["pc_top_proc"].isNull()) copyStr(s.pcTopProc, sizeof s.pcTopProc, d["pc_top_proc"] | "");
         if (!d["pc_top_cpu_pct"].isNull()) s.pcTopCpu = d["pc_top_cpu_pct"].as<float>();
+        if (!d["zero_wifi_rssi"].isNull()) s.zRssi = d["zero_wifi_rssi"].as<int>();
+        if (d["tailscale"].is<const char*>()) s.ts = strcmp(d["tailscale"] | "", "up") == 0 ? 1 : 0;
+        copyStr(s.serialMode, sizeof s.serialMode, d["serial_mode"] | "");
+        if (d["pc_cores_all"].is<JsonArray>()) {
+          int ci = 0, tot = 0;
+          for (JsonVariant v : d["pc_cores_all"].as<JsonArray>()) {
+            tot++;
+            if (ci >= 16) continue;
+            float cv = v | -1.f;
+            if (cv >= 0.f && cv <= 100.f) s.coresAll[ci++] = (uint8_t)(cv + 0.5f);
+          }
+          s.coresAllN = ci; s.coresTotal = tot;
+        }
+        if (!d["pc_gpu_pct"].isNull()) s.pcGpu = d["pc_gpu_pct"].as<float>();
+        if (!d["pc_cpu_temp_c"].isNull()) s.pcCpuT = d["pc_cpu_temp_c"].as<float>();
+        if (!d["pc_gpu_temp_c"].isNull()) s.pcGpuT = d["pc_gpu_temp_c"].as<float>();
+        if (!d["pc_nvme_temp_c"].isNull()) s.pcNvmeT = d["pc_nvme_temp_c"].as<float>();
       }
     }
     http.end();
@@ -406,6 +432,14 @@ void fmtRate(char* b, size_t n, float bps) {
   else if (bps < 999500000.f) snprintf(b, n, "%.0fM", bps / 1000000.f);
   else snprintf(b, n, "%.1fG", bps / 1000000000.f);
 }
+void fmtUptime(char* b, size_t n, long s) {
+  if (s < 0) snprintf(b, n, "--");
+  else if (s < 3600) snprintf(b, n, "%ldm", s / 60);
+  else if (s < 86400) snprintf(b, n, "%ldh%02ldm", s / 3600, (s % 3600) / 60);
+  else snprintf(b, n, "%ldd%02ldh", s / 86400, (s % 86400) / 3600);
+}
+void dot(int x, int y, bool ok) { fb.fillCircle(x, y, 2, ok ? C_OK : C_BAD); }
+
 float logRate(float bps) {
   if (isnan(bps) || bps <= 500.f) return 0.f;
   float t = log10f(bps / 500.f) / 5.3f;
@@ -541,27 +575,30 @@ void drawDeltaBadge(int x, int y, const float* series, int n, int next, int rowI
   if (isnan(ref)) return;
   float d = cur - ref;
   char buf[10];
-  uint16_t col = rgb(100, 112, 136);
+  // Bright enough to read at a glance on C_BG: neutral is light grey, not slate.
+  uint16_t col = rgb(205, 214, 232);
   if (rowIdx == 0) {
     int di = (int)roundf(d);
     snprintf(buf, sizeof buf, di > 0 ? "+%dc" : di < 0 ? "%dc" : "=0c", di);
-    if (di >= 2) col = rgb(255, 176, 64);
-    else if (di <= -2) col = rgb(80, 210, 160);
+    if (di >= 2) col = rgb(255, 200, 90);
+    else if (di <= -2) col = rgb(110, 245, 190);
   } else if (rowIdx == 1) {
     int tenths = (int)roundf(fabsf(d) * 10.f);
     if (tenths == 0) snprintf(buf, sizeof buf, "=0.0");
     else if (tenths < 10) snprintf(buf, sizeof buf, "%s.%d", d > 0 ? "+" : "-", tenths);
     else if (fabsf(d) < 9.95f) snprintf(buf, sizeof buf, "%+.1f", d);
     else snprintf(buf, sizeof buf, "%+d", (int)roundf(d));
-    if (d >= 0.25f) col = rgb(255, 176, 64);
-    else if (d <= -0.25f) col = rgb(80, 210, 160);
+    if (d >= 0.25f) col = rgb(255, 200, 90);
+    else if (d <= -0.25f) col = rgb(110, 245, 190);
   } else {
     int di = (int)roundf(d);
     snprintf(buf, sizeof buf, di > 0 ? "+%d%%" : di < 0 ? "%d%%" : "=0%%", di);
-    if (di >= 2) col = rgb(255, 176, 64);
-    else if (di <= -2) col = rgb(80, 210, 160);
+    if (di >= 2) col = rgb(255, 200, 90);
+    else if (di <= -2) col = rgb(110, 245, 190);
   }
-  if (dim) col = mix(C_BG, col, 120);
+  if (dim) col = mix(C_BG, col, 150);
+  int bw = (int)strlen(buf) * 6 + 2;
+  fb.fillRoundRect(x - 1, y - 1, bw, 9, 2, rgb(30, 38, 56));   // dark pill so thin glyphs pop
   txt(x, y, buf, col, 1);
 }
 
@@ -624,16 +661,17 @@ void drawRailLeds(int railW, const Status& s, uint16_t ink) {
   int y = H - 11;
   for (int i = 0; i < 3; i++) {
     int bx = 5 + i * 15;
+    const char lb[2] = {labels[i], 0};   // a named array: (char[2]){...} is a temporary in C++
     if (on[i]) {
       fb.fillRoundRect(bx, y, 13, 9, 2, rgb(8, 24, 16));
-      txt(bx + 4, y + 1, (char[2]){labels[i], 0}, rgb(120, 255, 180), 1);
+      txt(bx + 4, y + 1, lb, rgb(120, 255, 180), 1);
     } else {
-      txt(bx + 4, y + 1, (char[2]){labels[i], 0}, ink, 1);
+      txt(bx + 4, y + 1, lb, ink, 1);
     }
   }
 }
 
-enum Page { P_BOARD, P_DESK, P_TERM, NPAGES };
+enum Page { P_BOARD, P_KVM, P_DESK, P_TERM, NPAGES };
 int page = P_BOARD;
 
 void drawBoard(const Status& s, const PcHist& h, uint32_t now) {
@@ -667,11 +705,10 @@ void drawBoard(const Status& s, const PcHist& h, uint32_t now) {
   txt(RAIL + 4, 1, !s.api ? "" : showPc ? "PC" : "PI", tagC, 1);
 
   if (showPc) {
-    const char* pIp = linked ? s.pcIp : h.lastPcIp;
     int pDisk = linked ? s.pcDisk : h.lastDisk;
     const char* pProc = linked ? s.pcTopProc : h.lastTopProc;
     float pCpu = linked ? s.pcTopCpu : h.lastTopCpu;
-    char hdr[29] = "";
+    char hdr[40] = "";
     size_t pos = 0;
     auto app = [&](const char* fmt, ...) {
       if (pos >= sizeof(hdr) - 1) return;
@@ -680,12 +717,14 @@ void drawBoard(const Status& s, const PcHist& h, uint32_t now) {
       va_end(ap);
       if (w > 0) pos = min(sizeof(hdr) - 1, pos + (size_t)w);
     };
-    if (pIp && pIp[0]) app("%s ", pIp);
+    // PC IP lives on the KVM page now; the header is disk + the full top process name
+    // (<= 15 chars from the triage packet), which fits the 168 px after the tag.
     if (pDisk >= 0) app("/:%d%% ", pDisk);
     if (pProc && pProc[0]) {
-      if (!isnan(pCpu) && pCpu >= 1.f) app("%.7s:%.0f%%", pProc, pCpu);
-      else app("%.10s", pProc);
+      if (!isnan(pCpu) && pCpu >= 1.f) app("%s %.0f%%", pProc, pCpu);
+      else app("%s", pProc);
     }
+    hdr[(W - (RAIL + 20)) / 6] = 0;
     if (hdr[0]) {
       uint16_t hCol = (pDisk >= 90) ? C_WARN : rgb(140, 156, 180);
       txt(RAIL + 20, 1, hdr, reconnecting ? mix(C_BG, hCol, 130) : hCol, 1);
@@ -722,16 +761,12 @@ void drawBoard(const Status& s, const PcHist& h, uint32_t now) {
     drawDeltaBadge(LAB_X, ROW_Y[0] + 9, h.temp, h.n, h.next, 0, reconnecting);
     drawDeltaBadge(LAB_X, ROW_Y[1] + 9, h.load, h.n, h.next, 1, reconnecting);
     drawDeltaBadge(LAB_X, ROW_Y[2] + 9, h.mem,  h.n, h.next, 2, reconnecting);
-    const uint8_t* cores = linked ? s.pcCores : h.lastCores;
-    int ccnt = linked ? s.pcCoreCount : h.lastCoreCount;
-    drawCoreChiclets(LAB_X, ROW_Y[1] + 18, cores, ccnt, reconnecting);
 
     float lo = 0.f, hi = 0.f;
     if (!seriesRange(h.temp, h.n, h.next, 8.f, lo, hi)) { lo = 0.f; hi = 0.f; }
     drawHorizonSpark(SP_X, ROW_Y[0] + 9, SP_W, 13, h.temp, h.n, h.next, lo, hi, 80.f, rgb(255, 170, 80), reconnecting);
     if (!seriesRange(h.load, h.n, h.next, 0.5f, lo, hi)) { lo = 0.f; hi = 0.f; }
     drawHorizonSpark(SP_X, ROW_Y[1] + 9, SP_W, 13, h.load, h.n, h.next, lo, hi, 0.75f * ncpu, rgb(110, 190, 255), reconnecting);
-    drawHorizonSpark(SP_X, ROW_Y[2] + 9, SP_W, 13, h.mem, h.n, h.next, 0.f, 100.f, 85.f, rgb(186, 160, 255), reconnecting);
   }
 
   if (reconnecting) {
@@ -745,12 +780,20 @@ void drawBoard(const Status& s, const PcHist& h, uint32_t now) {
   char l1[40], l2[40];
   if (!s.api) snprintf(l1, sizeof l1, "%s", s.wifi ? "no zero" : "wifi down");
   else if (linked) {
-    char tc[8], mem[8];
-    fmtTemp(tc, sizeof tc, s.temp); fmtMem(mem, sizeof mem, s.mem);
-    snprintf(l1, sizeof l1, "pi %s %s %s", tc, mem, s.ip);
+    // Glance line: two dots, nothing to read unless one goes red. Detail is on the KVM page.
+    char up[12], rs[12];
+    fmtUptime(up, sizeof up, s.upS);
+    if (s.wifi) snprintf(rs, sizeof rs, "%ddBm", s.rssi); else snprintf(rs, sizeof rs, "--");
+    int x = RAIL + 6;
+    fb.fillCircle(x + 2, 110, 2, s.api ? C_OK : C_BAD);
+    txt(x + 8, 107, "pi", C_DIM, 1); txt(x + 22, 107, up, rgb(197, 208, 200), 1);
+    x += 90;
+    fb.fillCircle(x + 2, 110, 2, s.wifi ? (s.rssi > -75 ? C_OK : C_WARN) : C_BAD);
+    txt(x + 8, 107, "geek", C_DIM, 1); txt(x + 34, 107, rs, rgb(197, 208, 200), 1);
+    l1[0] = 0;
   } else if (nohost) snprintf(l1, sizeof l1, "zero %s", s.ip);
   else snprintf(l1, sizeof l1, "searching");
-  txt(RAIL + 6, 107, l1, rgb(197, 208, 200), 1);
+  if (l1[0]) txt(RAIL + 6, 107, l1, rgb(197, 208, 200), 1);
 
   if (linked) {
     char dn[8], up[8];
@@ -766,6 +809,81 @@ void drawBoard(const Status& s, const PcHist& h, uint32_t now) {
   if (!s.wifi) snprintf(l2, sizeof l2, "geek --");
   else snprintf(l2, sizeof l2, "geek %s %ddBm", s.geekIp, s.rssi);
   txt(RAIL + 6, 121, l2, rgb(197, 208, 200), 1);
+}
+
+// Page 2: the KVM itself. Zero health, both radios, the link, and whatever the PC's
+// extended stats (type 8) add. Every field degrades to "--" or is left out.
+void drawKvm(const Status& s) {
+  const uint16_t LBL = C_DIM, VAL = rgb(220, 228, 240), SEP = rgb(30, 38, 56);
+  char a[24], b[24], c[24];
+  // title strip: link word + PC IP
+  bool linked = s.api && strcmp(s.link, "LINKED") == 0;
+  bool nohost = s.api && strcmp(s.link, "NO HOST") == 0;
+  const char* lw = !s.api ? "NO ZERO" : linked ? "LINKED" : nohost ? "NO HOST" : "waiting";
+  uint16_t lc = !s.api ? C_DIM : linked ? C_OK : nohost ? C_WARN : rgb(159, 212, 255);
+  vgrad(0, 0, W, 13, mix(C_BG, lc, 90), C_BG);
+  txt(3, 3, "KVM", C_TXT, 1);
+  txt(26, 3, lw, lc, 1);
+  if (s.pcIp[0]) txtR(W - 3, 3, s.pcIp, VAL, 1);
+  else if (s.serialMode[0]) { snprintf(a, sizeof a, "serial %s", s.serialMode); txtR(W - 3, 3, a, LBL, 1); }
+
+  // ZERO row
+  int y = 17;
+  dot(5, y + 3, s.api); txt(11, y, "zero", LBL, 1);
+  fmtTemp(a, sizeof a, s.temp); fmtLoad(b, sizeof b, s.load1); fmtMem(c, sizeof c, s.mem);
+  char line[48];
+  snprintf(line, sizeof line, "%s  ld %s  mem %s", a, b, c);
+  txt(42, y, line, VAL, 1);
+  y += 11;
+  if (s.zRssi) snprintf(a, sizeof a, "%ddBm", s.zRssi); else snprintf(a, sizeof a, "--");
+  fmtUptime(b, sizeof b, s.upS);
+  txt(42, y, "wifi", LBL, 1); txt(68, y, a, s.zRssi && s.zRssi < -75 ? C_WARN : VAL, 1);
+  txt(118, y, "ts", LBL, 1);
+  if (s.ts >= 0) { dot(134, y + 3, s.ts == 1); txt(140, y, s.ts == 1 ? "up" : "down", VAL, 1); }
+  else txt(134, y, "n/a", LBL, 1);
+  txt(172, y, "up", LBL, 1); txt(188, y, b, VAL, 1);
+
+  // GEEK row
+  y += 13;
+  fb.drawFastHLine(4, y - 3, W - 8, SEP);
+  dot(5, y + 3, s.wifi); txt(11, y, "geek", LBL, 1);
+  if (s.wifi) { snprintf(a, sizeof a, "%ddBm", s.rssi); txt(42, y, a, s.rssi < -75 ? C_WARN : VAL, 1); txt(90, y, s.geekIp, VAL, 1); }
+  else txt(42, y, "wifi down", C_BAD, 1);
+
+  // PC cores (type 8: every core; else main's top-8, hottest first)
+  y += 14;
+  fb.drawFastHLine(4, y - 3, W - 8, SEP);
+  const uint8_t* cv = s.coresAllN ? s.coresAll : s.pcCores;
+  int cn = s.coresAllN ? s.coresAllN : s.pcCoreCount;
+  txt(4, y, s.coresAllN ? "cores" : "top8", LBL, 1);
+  if (!linked || cn == 0) txt(42, y, linked ? "no per-core data" : "--", LBL, 1);
+  else {
+    const int BX = 42, BW = W - BX - 4, BH = 26;
+    int gap = 2, bw = max(3, (BW - gap * (cn - 1)) / cn);
+    for (int i = 0; i < cn; i++) {
+      int x = BX + i * (bw + gap);
+      int fh = (int)(cv[i] * (BH - 2) / 100.f + 0.5f);
+      fb.fillRect(x, y, bw, BH, rgb(22, 30, 44));
+      uint16_t col = cv[i] >= 85 ? C_BAD : cv[i] >= 60 ? C_WARN : rgb(48, 176, 255);
+      if (fh > 0) vgrad(x, y + BH - 1 - fh, bw, fh, mix(col, C_TXT, 60), col);
+    }
+    if (s.coresTotal > cn) { snprintf(a, sizeof a, "+%d", s.coresTotal - cn); txt(4, y + 10, a, LBL, 1); }
+  }
+
+  // extra temps / GPU (only the ones the PC reports)
+  y += 32;
+  int x = 4;
+  auto item = [&](const char* k, float v, const char* unit, float warn) {
+    if (isnan(v)) return;
+    char t[16]; snprintf(t, sizeof t, "%.0f%s", v, unit);
+    txt(x, y, k, LBL, 1); x += (int)strlen(k) * 6 + 3;
+    txt(x, y, t, v >= warn ? C_WARN : VAL, 1); x += (int)strlen(t) * 6 + 8;
+  };
+  if (linked) {
+    item("cpu", s.pcCpuT, "c", 85.f); item("gpu", s.pcGpuT, "c", 85.f);
+    item("nvme", s.pcNvmeT, "c", 70.f); item("gpu", s.pcGpu, "%", 90.f);
+  }
+  if (x == 4) txt(4, y, linked ? "no extra sensors" : "", LBL, 1);
 }
 
 void drawWaiting() {
@@ -810,6 +928,7 @@ void paint() {
   xSemaphoreTake(gLock, portMAX_DELAY); s = gStat; h = gHist; xSemaphoreGive(gLock);
   fb.fillScreen(rgb(12, 16, 24));
   if (page == P_TERM) drawTerm();
+  else if (page == P_KVM) drawKvm(s);
   else drawBoard(s, h, millis());
   tft.drawRGBBitmap(0, 0, fb.getBuffer(), W, H);
 }
