@@ -683,17 +683,16 @@ void drawCoreBars(int x, int y, int w, int h, const uint8_t* cv, int cn) {
   }
 }
 
-// Num / Caps / Scroll lock indicators on the bottom of the status rail.
-void drawRailLeds(const Status& s, uint16_t ink) {
+// Num / Caps / Scroll lock indicators: three small dots stacked at the foot of the rail,
+// lit = C_FALL, off = a hollow ring in the rail's ink colour.
+void drawRailLeds(int railW, const Status& s, uint16_t ink) {
   if (!s.host) return;
-  const char labels[3] = {'N', 'C', 'S'};
   const bool on[3] = {s.ledNum, s.ledCaps, s.ledScroll};
-  int y = H - 11;
+  int cx = railW / 2;
   for (int i = 0; i < 3; i++) {
-    int bx = 2 + i * 15;
-    const char lb[2] = {labels[i], 0};
-    if (on[i]) { fb.fillRoundRect(bx, y, 13, 9, 2, rgb(8, 24, 16)); txt(bx + 4, y + 1, lb, C_FALL); }
-    else txt(bx + 4, y + 1, lb, ink);
+    int cy = H - 26 + i * 9;
+    if (on[i]) { fb.fillCircle(cx, cy, 3, C_FALL); fb.drawCircle(cx, cy, 3, rgb(8, 24, 16)); }
+    else fb.drawCircle(cx, cy, 2, ink);
   }
 }
 
@@ -769,10 +768,14 @@ void drawBoard(const Status& s, const PcHist& h, uint32_t now) {
   else if (linked) { top = rgb(94, 234, 144); bot = rgb(18, 122, 66); ink = rgb(4, 34, 8); word = "LINKED"; }
   else if (nohost) { top = rgb(255, 210, 122); bot = rgb(138, 90, 16); ink = rgb(42, 24, 4); word = "NO HOST"; }
   else { top = rgb(126, 182, 238); bot = rgb(26, 78, 134); ink = rgb(4, 16, 24); word = "KEYS"; }
-  const int RAIL = 48, PX = RAIL + GAP, PW = W - PX, PH = 100, BY = PH + GAP, BH = H - BY;
+  // Thin state rail: colour carries the state, one letter names it (L/N/K/Z).
+  const int RAIL = 14, PX = RAIL + GAP, PW = W - PX, PH = 100, BY = PH + GAP, BH = H - BY;
   vgrad(0, 0, RAIL, H, top, bot);
-  vword(0, 0, RAIL, s.host ? H - 12 : H, word, ink);
-  drawRailLeds(s, ink);
+  char letter[2] = {word[0], 0};
+  if (!s.api) letter[0] = 'Z';
+  else if (nohost) letter[0] = 'N';
+  txt((RAIL - CW) / 2 + 1, 4, letter, ink);
+  drawRailLeds(RAIL, s, ink);
 
   // Main panel: the PC when linked / held, otherwise the Zero's own figures.
   Box p = panel(PX, 0, PW, PH, showPc ? "PC" : "ZERO", reconnecting ? C_WARN : showPc ? C_OK : C_DIM);
@@ -791,7 +794,7 @@ void drawBoard(const Status& s, const PcHist& h, uint32_t now) {
     if (hdr[0]) panelNote(p, hdr, dimmed(pDisk >= 90 ? C_WARN : C_DIM, reconnecting));
   }
 
-  const int NUM_R = PX + 60, LAB_X = NUM_R + 4, SP_X = LAB_X + 34, SP_W = p.r() - SP_X;
+  const int NUM_R = PX + 62, LAB_X = NUM_R + 5, SP_X = LAB_X + 34, SP_W = p.r() - SP_X;
   const int ROW_Y[3] = {p.top() + 1, p.top() + 25, p.top() + 49};
   float ft, fl; int fm;
   uint16_t numC = C_TXT;
