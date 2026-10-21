@@ -426,13 +426,35 @@ const int FS_S = 1, FS_L = 2, CW = 6, LINE = 10, PAD = 4, GAP = 2, HDR_H = 10, R
 const float T_LO = 35.f, T_SPAN = 60.f;
 inline float tempLevel(float c) { return (c - T_LO) / T_SPAN; }
 
-// The single value -> color ramp: C_LOW at 0, C_WARM at `warn`, C_HOT at 1.
+// The single value -> colour ramp, one continuous gradient for every bar, spark, core and temp.
+// GEEK_RAMP_LOW_BLUE 0 (default): green -> yellow -> orange -> red.
+// GEEK_RAMP_LOW_BLUE 1:           blue -> cyan -> yellow -> orange -> red.
+// `warn` is where the metric turns hot; it is mapped onto the orange stop (0.75).
+#ifndef GEEK_RAMP_LOW_BLUE
+#define GEEK_RAMP_LOW_BLUE 0
+#endif
+struct Stop { float at; uint8_t r, g, b; };
+#if GEEK_RAMP_LOW_BLUE
+const Stop RAMP[] = {{0.f, 48, 140, 255}, {0.25f, 40, 210, 200}, {0.5f, 230, 220, 50}, {0.75f, 255, 150, 40}, {1.f, 255, 60, 60}};
+#else
+const Stop RAMP[] = {{0.f, 40, 200, 90}, {0.45f, 230, 220, 50}, {0.75f, 255, 150, 40}, {1.f, 255, 60, 60}};
+#endif
+const int RAMP_N = sizeof RAMP / sizeof RAMP[0];
 uint16_t ramp(float t, float warn = 0.75f) {
   if (isnan(t) || t < 0.f) t = 0.f;
   if (t > 1.f) t = 1.f;
   if (!(warn > 0.05f && warn < 0.95f)) warn = 0.75f;
-  if (t < warn) return mix(C_LOW, C_WARM, (int)(t / warn * 255.f));
-  return mix(C_WARM, C_HOT, (int)((t - warn) / (1.f - warn) * 255.f));
+  float u = t < warn ? t / warn * 0.75f : 0.75f + (t - warn) / (1.f - warn) * 0.25f;
+  for (int i = 1; i < RAMP_N; i++) {
+    if (u <= RAMP[i].at || i == RAMP_N - 1) {
+      const Stop &a = RAMP[i - 1], &b = RAMP[i];
+      float f = (u - a.at) / (b.at - a.at);
+      if (f < 0.f) f = 0.f;
+      if (f > 1.f) f = 1.f;
+      return rgb(a.r + (b.r - a.r) * f, a.g + (b.g - a.g) * f, a.b + (b.b - a.b) * f);
+    }
+  }
+  return rgb(RAMP[RAMP_N - 1].r, RAMP[RAMP_N - 1].g, RAMP[RAMP_N - 1].b);
 }
 uint16_t dimmed(uint16_t c, bool dim) { return dim ? mix(C_BG, c, 120) : c; }
 
@@ -771,10 +793,14 @@ void drawBoard(const Status& s, const PcHist& h, uint32_t now) {
   // Thin state rail: colour carries the state, one letter names it (L/N/K/Z).
   const int RAIL = 14, PX = RAIL + GAP, PW = W - PX, PH = 100, BY = PH + GAP, BH = H - BY;
   vgrad(0, 0, RAIL, H, top, bot);
-  char letter[2] = {word[0], 0};
-  if (!s.api) letter[0] = 'Z';
-  else if (nohost) letter[0] = 'N';
-  txt((RAIL - CW) / 2 + 1, 4, letter, ink);
+  // Full state word, stacked 6x8 letters on a 10 px pitch; a space is a 5 px gap.
+  // Longest (NO HOST) ends at y=67, the lock dots start at y=106.
+  for (int i = 0, yy = 4; word[i]; i++) {
+    if (word[i] == ' ') { yy += 5; continue; }
+    char ch[2] = {word[i], 0};
+    txt((RAIL - CW) / 2 + 1, yy, ch, ink);
+    yy += 10;
+  }
   drawRailLeds(RAIL, s, ink);
 
   // Main panel: the PC when linked / held, otherwise the Zero's own figures.
