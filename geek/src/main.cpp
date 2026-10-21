@@ -504,7 +504,7 @@ const uint16_t C_BG = P(0, 0, 0), C_TXT = P(255, 255, 255), C_DIM = P(140, 140, 
 const Stop RAMP[] = {{0.f, 40, 210, 80}, {0.f, 240, 220, 40}, {0.f, 255, 140, 0}, {0.f, 255, 45, 40}};
 const float BAND_TEMP_C[3] = {50.f, 65.f, 80.f};
 const float BAND_PCT[3] = {0.50f, 0.75f, 0.90f};
-const Rgb RAIL_C[4][3] = {{{64, 64, 64}, {30, 30, 30}, {210, 210, 210}},
+const Rgb RAIL_C[4][3] = {{{128, 128, 128}, {48, 48, 48}, {245, 245, 245}},
                           {{0, 200, 230}, {0, 110, 130}, {0, 0, 0}},
                           {{255, 150, 0}, {150, 80, 0}, {0, 0, 0}},
                           {{210, 210, 210}, {110, 110, 110}, {0, 0, 0}}};
@@ -558,6 +558,16 @@ const Rgb RAIL_C[4][3] = {{{50, 52, 60}, {20, 22, 28}, {180, 184, 196}},
 #endif
 #undef P
 inline uint16_t railC(int st, int k) { const Rgb& c = RAIL_C[st][k]; return rgb(c.r, c.g, c.b); }
+// One status colour for the rail and every panel header name, so they always agree.
+// ST_ZERO/LINKED/NOHOST/KEYS are the rail states (their rail top colour); ST_OK / ST_WARN /
+// ST_BAD are the per-device link states used by the ZERO and GEEK headers.
+enum { ST_ZERO = 0, ST_LINKED = 1, ST_NOHOST = 2, ST_KEYS = 3, ST_OK, ST_WARN, ST_BAD };
+uint16_t statusC(int st) {
+  if (st <= ST_KEYS) return railC(st, 0);
+  if (st == ST_OK) return railC(ST_LINKED, 0);
+  if (st == ST_WARN) return railC(ST_NOHOST, 0);
+  return C_BAD;
+}
 // Type and spacing. Small = 6x8 GFX font, big = 12x16.
 const int FS_S = 1, FS_L = 2, CW = 6, LINE = 10, PAD = 4, GAP = 2, HDR_H = 10, RADIUS = 3;
 // Shared scales: level in 0..1 plus the point where the ramp turns hot.
@@ -866,7 +876,7 @@ void drawRailLeds(int railW, const Status& s, uint16_t ink) {
 
 // Shared ZERO / GEEK detail panels (both pages). `rows` = how many text lines fit.
 void drawZeroPanel(int x, int y, int w, int h, const Status& s, int rows) {
-  Box b = panel(x, y, w, h, "ZERO", s.api ? C_TXT : C_DIM);
+  Box b = panel(x, y, w, h, "ZERO", statusC(s.api ? ST_OK : ST_BAD));
   panelDot(b, s.api);
   char a[24], c[24], d[24], line[40];
   int ly = b.top();
@@ -893,7 +903,7 @@ void drawZeroPanel(int x, int y, int w, int h, const Status& s, int rows) {
   }
 }
 void drawGeekPanel(int x, int y, int w, int h, const Status& s, int rows) {
-  Box b = panel(x, y, w, h, "GEEK", s.wifi ? C_TXT : C_DIM);
+  Box b = panel(x, y, w, h, "GEEK", statusC(!s.wifi ? ST_BAD : gPinBad ? ST_WARN : ST_OK));
   panelDot(b, s.wifi);
   char a[24], c[24];
   int ly = b.top();
@@ -934,7 +944,7 @@ void drawBoard(const Status& s, const PcHist& h, uint32_t now) {
   const char* word;
   int st = !s.api ? 0 : linked ? 1 : nohost ? 2 : 3;
   const char* words[4] = {"ZERO", "LINKED", "NO HOST", "KEYS"};
-  word = words[st]; top = railC(st, 0); bot = railC(st, 1); ink = railC(st, 2);
+  word = words[st]; top = statusC(st); bot = railC(st, 1); ink = railC(st, 2);
   // Thin state rail: colour carries the state, one letter names it (L/N/K/Z).
   const int RAIL = 14, PX = RAIL + GAP, PW = W - PX, PH = 100, BY = PH + GAP, BH = H - BY;
   vgrad(0, 0, RAIL, H, top, bot);
@@ -949,7 +959,7 @@ void drawBoard(const Status& s, const PcHist& h, uint32_t now) {
   drawRailLeds(RAIL, s, ink);
 
   // Main panel: the PC when linked / held, otherwise the Zero's own figures.
-  Box p = panel(PX, 0, PW, PH, showPc ? "PC" : "ZERO", reconnecting ? C_WARN : showPc ? C_OK : C_DIM);
+  Box p = panel(PX, 0, PW, PH, showPc ? "PC" : "ZERO", statusC(reconnecting ? ST_NOHOST : st));
   if (showPc) {
     int pDisk = linked ? s.pcDisk : h.lastDisk;
     const char* pProc = linked ? s.pcTopProc : h.lastTopProc;
@@ -1010,8 +1020,8 @@ void drawBoard(const Status& s, const PcHist& h, uint32_t now) {
     char dn[8], up[8];
     fmtRate(dn, sizeof dn, s.pcRx); fmtRate(up, sizeof up, s.pcTx);
     int x = p.l();
-    txt(x, ny + 2, "dn", C_RX); txtR(x + 42, ny + 2, dn, C_TXT);
-    txt(x + 46, ny + 2, "up", C_TX); txtR(x + 88, ny + 2, up, C_TXT);
+    txt(x, ny + 2, "dn", C_RX); txtR(x + 42, ny + 2, dn, C_RX);
+    txt(x + 46, ny + 2, "up", C_TX); txtR(x + 88, ny + 2, up, C_TX);
     drawDuplexWaterfall(SP_X, ny - 1, SP_W, 13, h.rx, h.tx, h.n, h.next, false);
   } else {
     char l1[40];
@@ -1033,7 +1043,7 @@ void drawKvm(const Status& s, const PcHist& h) {
   bool linked = s.api && strcmp(s.link, "LINKED") == 0;
   bool nohost = s.api && strcmp(s.link, "NO HOST") == 0;
   const char* lw = !s.api ? "NO ZERO" : linked ? "LINKED" : nohost ? "NO HOST" : "waiting";
-  uint16_t lc = !s.api ? C_DIM : linked ? C_OK : nohost ? C_WARN : C_LOW;
+  uint16_t lc = statusC(!s.api ? ST_ZERO : linked ? ST_LINKED : nohost ? ST_NOHOST : ST_KEYS);
   const int PH = 82, BY = PH + GAP, BH = H - BY;
   Box p = panel(0, 0, W, PH, "PC", lc);
   txt(p.l() + 3 * CW, p.y + 1, lw, lc);
