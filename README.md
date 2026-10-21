@@ -319,12 +319,29 @@ already sends it to the Zero on every poll, and OTA auth has no lockout, so a PI
 brute-forced.
 
 ```bash
-tools/flash-geek.sh usb                       # USB, fixed by-id port (never ttyACM*)
-tools/flash-geek.sh ota                       # Wi-Fi to kvm-geek.local, prompts for the password
-GEEK_OTA_PASS=... tools/flash-geek.sh ota --host 192.168.1.77
-# or plain PlatformIO:
-cd geek && GEEK_HOST=kvm-geek.local GEEK_OTA_PASS=... pio run -e geek_ota -t upload
+tools/flash-geek.sh                 # auto: USB if plugged in, else direct OTA, else relay via the Zero
+tools/flash-geek.sh usb             # fixed by-id port only (never ttyACM*)
+tools/flash-geek.sh ota [--host kvm-geek.local|IP]
+tools/flash-geek.sh relay [--via geekpi-1] [--user pi] [--key ~/.ssh/id_ed255] [--geek-ip IP]
+tools/flash-geek.sh relay --dry-run
 ```
+`auto` checks the by-id port, then resolves `--host` (`GEEK_HOST`, default `kvm-geek.local`)
+and pings it for about 2 s. If neither works, it relays. `ota` and `relay` first build `geek_ota` if
+`firmware.bin` is missing or older than `geek/src` / `platformio.ini`.
+
+**Relay** (workbenchpc can't reach the GEEK, but the Zero can): over SSH with `-o IdentitiesOnly=yes`
+(`ZERO_HOST` / `ZERO_USER` / `ZERO_KEY`) it makes a private `mktemp -d /tmp/geek-ota.XXXXXX` on
+the Zero (`/tmp` only, since the root is read-only) and copies `espota.py`, a small runner and
+`firmware.bin` into it. The password goes in over SSH stdin to a 0600 file. It finds the GEEK
+in order: `--geek-ip`, `ip neigh` for MAC `84:fc:e6:51:45:f8`, `kvm-geek.local`, then a /24 ping
+sweep followed by `ip neigh` again. espota then runs there, and the dir is removed on exit,
+failure or Ctrl-C.
+
+**Password**: `GEEK_OTA_PASS`, else a hidden prompt. It is never on a command line. Direct OTA
+gives it to espota through the runner's environment. On the Zero, the runner reads the 0600
+file and calls `espota.py` in the same process. espota has no password-file option, so this is
+how both stay out of `ps`. Calling `pio run -e geek_ota -t upload` directly still passes
+`--auth=` on the command line; the script avoids that path.
 Partitions: `default_8MB.csv` (two 3.25 MB OTA slots, firmware ~1 MB). It's the same layout the
 board already used, so no repartition is needed. Firmware older than this has no OTA listener,
 so the first flash of this version must be over USB. The screen shows an OTA progress panel while

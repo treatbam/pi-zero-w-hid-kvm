@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+echo "getent $*" >> "$FAKE_LOG"
+[ -f "$FAKE_STATE/resolve" ] && echo "192.168.4.50 kvm-geek.local" || exit 2

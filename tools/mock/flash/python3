@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# fake python3: log argv; emulate ota_run.py's password source and record what espota got.
+echo "python3 $*" >> "$FAKE_LOG"
+if [ $# -ge 5 ]; then pw=$(cat "$5"); mode=$(stat -c %a "$5"); echo "pwfile mode=$mode" >> "$FAKE_STATE/result"
+else pw="$GEEK_OTA_PASS"; fi
+echo "espota ip=$3 pw_ok=$([ "$pw" = "$FAKE_PW" ] && echo yes || echo no)" >> "$FAKE_STATE/result"
+[ -f "$FAKE_STATE/espota_fail" ] && exit 1
+exit 0

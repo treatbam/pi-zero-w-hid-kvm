@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+echo "scp $*" >> "$FAKE_LOG"
+args=(); while [ $# -gt 0 ]; do case "$1" in -i|-o) shift 2;; -*) shift;; *) args+=("$1"); shift;; esac; done
+dst="${args[-1]#*:}"; unset 'args[-1]'; cp "${args[@]}" "$dst"
