@@ -16,6 +16,8 @@
 #include <Adafruit_ST7789.h>
 #include <Preferences.h>
 #include <WebServer.h>
+#include <ArduinoOTA.h>
+#include <ESPmDNS.h>
 #if __has_include("secrets.h")
 #include "secrets.h"
 #else
@@ -55,12 +57,13 @@ static bool gFrameOk = false;
 static volatile bool gFrameBusy = false;
 static bool gShown = false;
 
-struct Cfg { String ssid, pass, host, pin; int port; } cfg;
+struct Cfg { String ssid, pass, host, pin, ota; int port; } cfg;
 String BASE;
 static void loadCfg() {
   Preferences p; p.begin("kvm", true);
   cfg.ssid = p.getString("ssid", KVM_WIFI_SSID); cfg.pass = p.getString("pass", KVM_WIFI_PASS);
   cfg.host = p.getString("host", KVM_HOST);      cfg.pin  = p.getString("pin", KVM_PIN);
+  cfg.ota = p.getString("ota", "");   // no default: OTA stays off until set in the portal
   cfg.port = p.getInt("port", KVM_PORT); p.end();
   BASE = String("http://") + cfg.host + ":" + cfg.port;
 }
@@ -86,7 +89,10 @@ static void setupPortal() {
     f("ssid", "Zero Wi-Fi SSID", cfg.ssid, "text"); f("pass", "Wi-Fi password", "", "password");
     f("host", "Zero address", cfg.host, "text");   f("port", "Port", String(cfg.port), "number");
     f("pin", "Console PIN (from install.sh)", "", "password");
-    h += F("<small>Blank password/PIN keeps the saved value.</small><br><br><button>Save &amp; reboot</button></form>");
+    f("ota", "OTA update password (8+ chars; blank keeps saved)", "", "password");
+    h += cfg.ota.length() ? F("<label><input type=checkbox name=ota_off style='width:auto'> turn OTA off (clear password)</label><br>")
+                          : F("<small>OTA is off until a password is set.</small><br>");
+    h += F("<small>Blank password/PIN keeps the saved value. OTA host: kvm-geek.local</small><br><br><button>Save &amp; reboot</button></form>");
     srv.send(200, "text/html", h);
   });
   srv.on("/save", HTTP_POST, [] {
@@ -105,8 +111,13 @@ static void setupPortal() {
 #endif
     if (srv.arg("pass").length()) p.putString("pass", srv.arg("pass")); else if (!p.isKey("pass")) p.putString("pass", defPass);
     if (srv.arg("pin").length())  p.putString("pin", srv.arg("pin"));   else if (!p.isKey("pin"))  p.putString("pin", defPin);
+    String ota = srv.arg("ota");
+    bool otaShort = ota.length() && ota.length() < 8;
+    if (srv.hasArg("ota_off")) p.remove("ota");
+    else if (ota.length() >= 8) p.putString("ota", ota);
     p.end();
-    srv.send(200, "text/html", "<h3>Saved. GEEK is rebooting.</h3>"); delay(800); ESP.restart();
+    srv.send(200, "text/html", otaShort ? "<h3>Saved, but the OTA password was under 8 characters and was ignored. GEEK is rebooting.</h3>"
+                                        : "<h3>Saved. GEEK is rebooting.</h3>"); delay(800); ESP.restart();
   });
   srv.begin(); Serial.println("setup portal: AP KVM-GEEK-setup, http://192.168.4.1");
   for (;;) { srv.handleClient(); delay(2); }
@@ -349,6 +360,25 @@ void pollFrame() {
   gFrameOk = ok && gDeskOn;
   gFrameBusy = false;
   xSemaphoreGive(gLock);
+}
+
+// OTA over Wi-Fi (ArduinoOTA / espota), only when an OTA password is saved in the portal.
+// Runs in its own task so ArduinoOTA.handle() (and the blocking transfer once an upload
+// starts) never stalls the UI loop; the UI shows progress from gOtaPct.
+static const char* OTA_HOST = "kvm-geek";
+volatile int gOtaPct = -1;           // -1 idle, 0..100 uploading
+volatile bool gOtaErr = false;
+void otaTask(void*) {
+  while (WiFi.status() != WL_CONNECTED) delay(500);
+  ArduinoOTA.setHostname(OTA_HOST);
+  ArduinoOTA.setPassword(cfg.ota.c_str());
+  ArduinoOTA.setRebootOnSuccess(true);
+  ArduinoOTA.onStart([] { gOtaPct = 0; gOtaErr = false; gDeskOn = false; gTermOn = false; });
+  ArduinoOTA.onProgress([](unsigned int done, unsigned int total) { if (total) gOtaPct = done * 100 / total; });
+  ArduinoOTA.onError([](ota_error_t e) { Serial.printf("OTA error %u\n", e); gOtaErr = true; gOtaPct = -1; });
+  ArduinoOTA.begin();
+  Serial.printf("OTA ready: %s.local / %s\n", OTA_HOST, WiFi.localIP().toString().c_str());
+  for (;;) { ArduinoOTA.handle(); delay(20); }
 }
 
 void netTask(void*) {
@@ -1127,8 +1157,20 @@ void drawTerm() {
   if (t.code == 200) fb.fillCircle(W - 5, 6, 2, t.open ? C_OK : C_WARN);
 }
 
+void drawOta() {
+  fb.fillScreen(C_BG);
+  Box b = panel(20, 30, W - 40, 70, "OTA UPDATE", statusC(ST_OK));
+  char t[16]; snprintf(t, sizeof t, "%d%%", (int)gOtaPct);
+  txt(b.l(), b.top() + 4, t, C_TXT, FS_L);
+  int bw = b.w - 2 * PAD;
+  fb.drawRect(b.l(), b.top() + 30, bw, 10, C_EDGE);
+  fb.fillRect(b.l() + 1, b.top() + 31, (bw - 2) * gOtaPct / 100, 8, statusC(ST_OK));
+  txt(b.l(), b.top() + 44, "do not power off", C_DIM);
+}
+
 void paint() {
   fb.setTextWrap(false);
+  if (gOtaPct >= 0) { drawOta(); tft.drawRGBBitmap(0, 0, fb.getBuffer(), W, H); return; }
   if (page == P_DESK) {
     bool show = false;
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) == pdTRUE) {
@@ -1192,6 +1234,8 @@ void setup() {
   WiFi.mode(WIFI_STA); WiFi.setAutoReconnect(true);
   WiFi.begin(cfg.ssid.c_str(), cfg.pass.length() ? cfg.pass.c_str() : nullptr);
   xTaskCreatePinnedToCore(netTask, "net", 12288, nullptr, 1, nullptr, 0);
+  if (cfg.ota.length() >= 8) xTaskCreatePinnedToCore(otaTask, "ota", 8192, nullptr, 1, nullptr, 0);
+  else Serial.println("OTA off: set an OTA password in the setup portal (hold BOOT at power-on)");
 }
 
 void loop() {

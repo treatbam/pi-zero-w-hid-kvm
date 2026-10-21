@@ -277,3 +277,55 @@ Port may be `/dev/ttyUSB0`; check `ls /dev/tty{ACM,USB}*`. Hold BOOT while plugg
 
 ### Building the merged bin yourself
 `tools/merge-geek-bin.sh` (needs `pio`) builds with placeholders and writes `build/kvm-geek.bin` (bootloader 0x0, partitions 0x8000, boot_app0 0xe000, app 0x10000 merged at 0x0, 8MB DIO).
+
+## Updating remotely (from workbenchpc)
+
+### Zero: `tools/update-zero.sh`
+Updates the Zero over SSH, handling the read-only (overlayfs) root:
+preflight (nothing changes) → disable overlay + reboot → `git fetch` + checkout `--ref` →
+`sudo bash zero/install.sh` → restart `kvm-web` → check `kvm-web` + `tailscaled` →
+re-enable overlay + reboot → check root is `overlay` and both services are active.
+Then it copies `host/*.py` (not tests) to `~/.local/share/kvm-helper` and runs
+`systemctl --user restart kvm-helper` on workbenchpc.
+
+```bash
+tools/update-zero.sh --dry-run                       # print the plan
+tools/update-zero.sh --key ~/.ssh/id_ed25519_homelab # Zero + local helper
+tools/update-zero.sh --ref geek-ui-polish --skip-helper
+tools/update-zero.sh --helper-only
+tools/update-zero.sh --ref <previous-commit>         # roll back
+```
+Defaults: `--host geekpi-1` (`ZERO_HOST`), `--user pi` (`ZERO_USER`), `--key ~/.ssh/id_ed255`
+(`ZERO_KEY`; check this name, the homelab key is `~/.ssh/id_ed25519_homelab`), `--ref` = the
+Zero's current branch (`main` if detached), `--timeout 300` s per reboot.
+`--no-reboot-ro` leaves the Zero writable at the end.
+
+Safety: the Zero must be a git clone with an `origin` it can fetch (a private repo needs a deploy
+key or token on the Zero), with no local changes and passwordless sudo. These are checked before
+anything changes. The previous commit is printed and saved in
+`~/pi-zero-w-hid-kvm/.kvm-update-prev` on the Zero. If any step fails after the overlay
+is disabled, the script stops, **leaves the Zero writable**, and prints recovery and rollback
+commands. It doesn't re-enable read-only over a broken install unless you pass `--ro-on-failure`.
+The helper copy only helps if the user unit's `ExecStart` points at
+`~/.local/share/kvm-helper/kvm_helper.py`; the script warns when it doesn't (the shipped
+`host/kvm-helper.service` runs from `~/pi-zero-w-hid-kvm/host`).
+
+### GEEK: OTA over Wi-Fi (`tools/flash-geek.sh`)
+OTA (ArduinoOTA / espota, port 3232, mDNS name `kvm-geek.local`) is **off until you set an OTA
+password** in the setup portal (hold BOOT at power-on → join `KVM-GEEK-setup` →
+http://192.168.4.1 → "OTA update password", 8+ characters; tick "turn OTA off" to clear it).
+OTA uses its own password rather than the console PIN. The PIN is short and digits-only, the GEEK
+already sends it to the Zero on every poll, and OTA auth has no lockout, so a PIN could be
+brute-forced.
+
+```bash
+tools/flash-geek.sh usb                       # USB, fixed by-id port (never ttyACM*)
+tools/flash-geek.sh ota                       # Wi-Fi to kvm-geek.local, prompts for the password
+GEEK_OTA_PASS=... tools/flash-geek.sh ota --host 192.168.1.77
+# or plain PlatformIO:
+cd geek && GEEK_HOST=kvm-geek.local GEEK_OTA_PASS=... pio run -e geek_ota -t upload
+```
+Partitions: `default_8MB.csv` (two 3.25 MB OTA slots, firmware ~1 MB). It's the same layout the
+board already used, so no repartition is needed. Firmware older than this has no OTA listener,
+so the first flash of this version must be over USB. The screen shows an OTA progress panel while
+an upload runs.

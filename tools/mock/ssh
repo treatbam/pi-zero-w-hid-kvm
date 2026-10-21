@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# mock ssh: skip options, simulate a Zero. State in $MOCK_DIR.
+while [ $# -gt 0 ]; do case "$1" in -i|-o) shift 2;; -*) shift;; *) break;; esac; done
+shift   # target
+cmd="$*"; echo "$cmd" >> "$MOCK_DIR/log"
+[ -f "$MOCK_DIR/down" ] && exit 255
+ov=$(cat "$MOCK_DIR/overlay"); pend=$(cat "$MOCK_DIR/pending" 2>/dev/null || echo "$ov")
+case "$cmd" in
+  true|"sudo -n true") exit 0;;
+  *"rev-parse --git-dir"*) echo .git;;
+  *"remote get-url"*) echo git@github.com:x/y;;
+  *"rev-parse HEAD"*) echo abc1234;;
+  *"symbolic-ref -q --short"*) echo geek-ui-polish;;
+  *ls-remote*) exit 0;;
+  *"status --porcelain"*) ;;
+  "findmnt -n -o FSTYPE /") [ "$ov" = on ] && echo overlay || echo ext4;;
+  *boot_id*) cat "$MOCK_DIR/boot";;
+  *disable_overlayfs*) echo off > "$MOCK_DIR/pending";;
+  *enable_overlayfs*) echo on > "$MOCK_DIR/pending";;
+  *"systemctl reboot"*) echo "$pend" > "$MOCK_DIR/overlay"; echo $RANDOM > "$MOCK_DIR/boot";;
+  *install.sh*) [ -f "$MOCK_DIR/failinstall" ] && { echo "install boom" >&2; exit 1; }; echo installed;;
+  *"is-active"*) echo active; [ -f "$MOCK_DIR/tsdown" ] && { echo inactive; exit 3; }; echo active;;
+  *) echo "ok: $cmd";;
+esac
