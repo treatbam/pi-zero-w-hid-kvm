@@ -421,10 +421,13 @@ uint16_t mix(uint16_t a, uint16_t b, int t) {
 //   4 Mono+accent: true black, white/grey text, one cyan accent; stepped orange past warn, red past hot
 //   5 Solarized dark: base03 bg, official base/accent colours, cyan -> yellow -> orange -> red
 //   6 Light/paper: off-white bg, dark text, muted teal -> ochre -> brick
+//   7 Mono+bands (default): theme 4, but every value is one of 4 flat colours,
+//     green < yellow < orange < red, on fixed thresholds (no gradient):
+//     temps  <50 / <65 / <80 / >=80 C;  load, cpu, cores, mem, gpu  <50 / <75 / <90 / >=90 %
 // Rail rows are ZERO, LINKED, NO HOST, KEYS: gradient top, bottom, letter ink.
 // The ramp's `warn` point always lands on the 0.75 stop, so "hot" sits in the same place.
 #ifndef GEEK_THEME
-#define GEEK_THEME 0
+#define GEEK_THEME 7
 #endif
 #ifndef GEEK_RAMP_LOW_BLUE
 #define GEEK_RAMP_LOW_BLUE 0
@@ -488,6 +491,23 @@ const Rgb RAIL_C[4][3] = {{{64, 64, 64}, {30, 30, 30}, {210, 210, 210}},
                           {{0, 200, 230}, {0, 110, 130}, {0, 0, 0}},
                           {{255, 150, 0}, {150, 80, 0}, {0, 0, 0}},
                           {{210, 210, 210}, {110, 110, 110}, {0, 0, 0}}};
+#elif GEEK_THEME == 7
+#define RAMP_BANDS 1
+const uint16_t C_BG = P(0, 0, 0), C_TXT = P(255, 255, 255), C_DIM = P(140, 140, 140),
+               C_VAL = P(224, 224, 224), C_SOFT = P(190, 190, 190),
+               C_OK = P(0, 200, 230), C_WARN = P(255, 150, 0), C_BAD = P(255, 50, 40),
+               C_EDGE = P(72, 72, 72), C_HDR = P(26, 26, 26), C_TRACK = P(30, 30, 30),
+               C_LOW = P(0, 200, 230), C_WARM = P(255, 150, 0), C_HOT = P(255, 50, 40),
+               C_RX = P(0, 200, 230), C_TX = P(200, 200, 200),
+               C_RISE = P(255, 150, 0), C_FALL = P(0, 200, 230);
+// green, yellow, orange, red
+const Stop RAMP[] = {{0.f, 40, 210, 80}, {0.f, 240, 220, 40}, {0.f, 255, 140, 0}, {0.f, 255, 45, 40}};
+const float BAND_TEMP_C[3] = {50.f, 65.f, 80.f};
+const float BAND_PCT[3] = {0.50f, 0.75f, 0.90f};
+const Rgb RAIL_C[4][3] = {{{64, 64, 64}, {30, 30, 30}, {210, 210, 210}},
+                          {{0, 200, 230}, {0, 110, 130}, {0, 0, 0}},
+                          {{255, 150, 0}, {150, 80, 0}, {0, 0, 0}},
+                          {{210, 210, 210}, {110, 110, 110}, {0, 0, 0}}};
 #elif GEEK_THEME == 5
 // Solarized: base03 002b36, base02 073642, base01 586e75, base0 839496, base1 93a1a1,
 // base2 eee8d5, base3 fdf6e3; yellow b58900 orange cb4b16 red dc322f blue 268bd2 cyan 2aa198 green 859900.
@@ -546,9 +566,16 @@ inline float tempLevel(float c) { return (c - T_LO) / T_SPAN; }
 
 // The single value -> colour ramp (theme RAMP above), used by every bar, spark, core and temp.
 const int RAMP_N = sizeof RAMP / sizeof RAMP[0];
-uint16_t ramp(float t, float warn = 0.75f) {
+// isTemp: t is tempLevel(celsius); otherwise t is a 0..1 fraction (load/ncpu, cpu, mem, gpu).
+uint16_t ramp(float t, float warn = 0.75f, bool isTemp = false) {
   if (isnan(t) || t < 0.f) t = 0.f;
   if (t > 1.f) t = 1.f;
+#ifdef RAMP_BANDS
+  (void)warn;
+  int k = 0;
+  for (int i = 0; i < 3; i++) if (t >= (isTemp ? tempLevel(BAND_TEMP_C[i]) : BAND_PCT[i])) k = i + 1;
+  return rgb(RAMP[k].r, RAMP[k].g, RAMP[k].b);
+#endif
   if (!(warn > 0.05f && warn < 0.95f)) warn = 0.75f;
   float u = t < warn ? t / warn * 0.75f : 0.75f + (t - warn) / (1.f - warn) * 0.25f;
 #ifdef RAMP_STEPPED
@@ -662,7 +689,7 @@ float lastValue(const float* series, int n, int next) {
 }
 
 // Horizontal capsule filled along the shared ramp, warn notch and 60 s peak-hold pip.
-void drawCapsule(int x, int y, int w, int h, float level, float peakLevel, float warnAt, bool dim) {
+void drawCapsule(int x, int y, int w, int h, float level, float peakLevel, float warnAt, bool dim, bool isTemp = false) {
   if (isnan(level) || level < 0.f) level = 0.f;
   float shown = level > 1.f ? 1.f : level;
   fb.fillRoundRect(x, y, w, h, h / 2, C_TRACK);
@@ -670,7 +697,7 @@ void drawCapsule(int x, int y, int w, int h, float level, float peakLevel, float
   int fw = (int)(shown * inner + 0.5f);
   for (int dx = 0; dx < fw; dx++) {
     float p = inner > 1 ? (float)dx / (float)(inner - 1) : 0.f;
-    uint16_t col = dimmed(ramp(p, warnAt), dim);
+    uint16_t col = dimmed(ramp(p, warnAt, isTemp), dim);
     int topPad = (dx == 0 || dx == inner - 1) ? 2 : 1;
     int colH = h - topPad * 2;
     if (colH > 0) fb.drawFastVLine(x + 1 + dx, y + topPad, colH, col);
@@ -688,6 +715,7 @@ void drawCapsule(int x, int y, int w, int h, float level, float peakLevel, float
 // Shaded sparkline. Each segment is colored by the shared ramp of its own value, so a
 // rising temperature walks low -> warm -> hot exactly like the bars do.
 // level(v) maps a raw sample to 0..1 on the same scale the metric's bar uses.
+float lvTemp(float v, float);
 void drawSpark(int x, int y, int w, int h, const float* series, int n, int next,
                float lo, float hi, float (*level)(float, float), float k, float warnAt, bool dim) {
   fb.drawFastHLine(x, y + h - 1, w, C_TRACK);
@@ -703,10 +731,13 @@ void drawSpark(int x, int y, int w, int h, const float* series, int n, int next,
     if (t > 1.f) t = 1.f;
     int px = x + (n == 1 ? w - 1 : i * (w - 1) / (n - 1));
     int py = y + h - 1 - (int)(t * (h - 2) + 0.5f);
-    uint16_t c = dimmed(ramp(level(v, k), warnAt), dim);
+    uint16_t c = dimmed(ramp(level(v, k), warnAt, level == lvTemp), dim);
     if (prevX >= 0 && px >= prevX) {
       int span = max(1, px - prevX);
       uint16_t cTop = mix(C_BG, c, dim ? 65 : 115), cBot = mix(C_BG, c, dim ? 25 : 45);
+#ifdef RAMP_BANDS
+      cTop = cBot = mix(C_BG, c, dim ? 40 : 80);   // flat fill: no shading gradient
+#endif
       for (int cx = prevX; cx <= px; cx++) {
         int cy = prevY + (py - prevY) * (cx - prevX) / span;
         for (int sy = cy + 1; sy < y + h - 1; sy++)
@@ -808,7 +839,11 @@ void drawCoreBars(int x, int y, int w, int h, const uint8_t* cv, int cn) {
     int fh = (int)(cv[i] * (h - 2) / 100.f + 0.5f);
     fb.fillRect(bx, y, bw, h, C_TRACK);
     uint16_t col = ramp(cv[i] / 100.f, 0.6f);
+#ifdef RAMP_BANDS
+    if (fh > 0) fb.fillRect(bx, y + h - 1 - fh, bw, fh, col);
+#else
     if (fh > 0) vgrad(bx, y + h - 1 - fh, bw, fh, mix(col, C_TXT, 60), col);
+#endif
   }
   for (int q = 1; q < 4; q++) {   // 25/50/75 % guide ticks on the left edge
     int gy = y + h - 1 - q * (h - 2) / 4;
@@ -950,7 +985,7 @@ void drawBoard(const Status& s, const PcHist& h, uint32_t now) {
   for (int i = 0; i < 3; i++) {
     txtR(NUM_R, ROW_Y[i] + 2, fig[i], numC, FS_L);
     txt(LAB_X, ROW_Y[i], lab[i], C_DIM);
-    drawCapsule(SP_X, ROW_Y[i], SP_W, 7, level[i], peaks[i], warnAt[i], reconnecting);
+    drawCapsule(SP_X, ROW_Y[i], SP_W, 7, level[i], peaks[i], warnAt[i], reconnecting, i == 0);
   }
   if (showPc) {
     const float* ser[3] = {h.temp, h.load, h.mem};
@@ -1040,7 +1075,7 @@ void drawKvm(const Status& s, const PcHist& h) {
     txt(SX, y, nm[i], C_DIM);
     fmtTemp(a, sizeof a, cur[i]);
     float wl = tempLevel(warnC[i]);
-    txtR(p.r(), y, a, isnan(cur[i]) ? C_DIM : ramp(tempLevel(cur[i]), wl));
+    txtR(p.r(), y, a, isnan(cur[i]) ? C_DIM : ramp(tempLevel(cur[i]), wl, true));
     float pk = linked ? recentPeak(ser[i], h.n, h.next, HIST) : NAN;
     if (!isnan(pk)) { snprintf(b, sizeof b, "^%.0f", pk); txt(SX + 5 * CW, y, b, mix(C_BG, C_DIM, 200)); }
     float lo = 0.f, hi = 0.f;
