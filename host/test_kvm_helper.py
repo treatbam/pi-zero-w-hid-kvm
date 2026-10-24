@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Loopback test: run kvm_helper.py against one end of a pty pair and play the Zero
 on the other end (packets parsed with zero/web/hostview.py). Needs a non-root user."""
-import os, select, subprocess, sys, termios, time, tty, unittest
+import os, struct, select, subprocess, sys, termios, time, tty, unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE); sys.path.insert(0, os.path.join(HERE, "..", "zero", "web"))
 import kvm_helper, hostview
@@ -191,3 +191,21 @@ class Loopback(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class NetPickerTest(unittest.TestCase):
+    def test_follows_busiest_with_hold(self):
+        p = kvm_helper.NetPicker()
+        self.assertEqual(p.choose({"eth0": (0, 0), "wlan0": (0, 0)}, "eth0"), "eth0")
+        c = {"eth0": (100, 0), "wlan0": (0, 0)}
+        self.assertEqual(p.choose(c, "eth0"), "eth0")
+        for i, want in enumerate(["eth0", "eth0", "wlan0"], 1):
+            c = {"eth0": (100, 0), "wlan0": (10000 * i, 0)}
+            self.assertEqual(p.choose(c, "eth0"), want)
+        # idle: keep the current pick
+        self.assertEqual(p.choose(c, "eth0"), "wlan0")
+
+    def test_packs_iface_into_net(self):
+        pkt = kvm_helper.pack_net(1.0, 2.0, 4, [50], "enp5s0")
+        self.assertEqual(struct.unpack("<I", pkt[5:9])[0], 36)
+        self.assertEqual(len(kvm_helper.pack_net(1.0, 2.0, 4, [50])) - 9, 20)

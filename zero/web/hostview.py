@@ -50,6 +50,7 @@ MODE_NAMES = {0: "helper", 1: "shell"}
 STATS_LEN = 12
 NET_LEN = 20
 NET_LEGACY_LEN = 12
+NET_IFACE_LEN = 36          # NET_LEN + 16-byte NUL-padded interface name
 TRIAGE_LEN = 40
 CLIP_MAX = 1024
 FRAME_LEN = 240 * 135 * 2
@@ -72,7 +73,7 @@ def pack_stats(temp, load, mem):
     return MAGIC + bytes([TYPE_STATS]) + struct.pack("<I", len(payload)) + payload
 
 
-def pack_net(rx_bps, tx_bps, ncpu, cores=()):
+def pack_net(rx_bps, tx_bps, ncpu, cores=(), iface=""):
     cbytes = [
         min(100, max(0, int(round(c))))
         if (c is not None and math.isfinite(c) and 0 <= c <= 100)
@@ -81,6 +82,8 @@ def pack_net(rx_bps, tx_bps, ncpu, cores=()):
     ]
     cbytes += [255] * (8 - len(cbytes))
     payload = struct.pack("<fff8B", float(rx_bps), float(tx_bps), float(ncpu), *cbytes)
+    if iface:
+        payload += (iface.encode("utf-8")[:15]).ljust(16, b"\x00")
     return MAGIC + bytes([TYPE_NET]) + struct.pack("<I", len(payload)) + payload
 
 
@@ -122,6 +125,8 @@ class HostView:
         self._net_at = None
         self._ncpu = None
         self._ncpu_at = None
+        self._iface = None          # PC's busiest interface name, from the helper
+        self._iface_at = None
         self._cores = None          # [int 0..100, ...] sorted hottest-to-coolest (max 8)
         self._cores_at = None
         self._triage = None         # (disk_pct, top_cpu_pct, lan_ip, top_proc)
@@ -249,6 +254,7 @@ class HostView:
                 "pc_rx_bps": None,
                 "pc_tx_bps": None,
                 "pc_ncpu": None,
+                "pc_net_iface": None,
                 "pc_cores": None,
                 "pc_ip": None,
                 "pc_disk_pct": None,
@@ -266,6 +272,8 @@ class HostView:
                     fields["pc_rx_bps"] = round(rx, 1)
                     fields["pc_tx_bps"] = round(tx, 1)
                     fields["pc_ncpu"] = int(round(ncpu))
+                if self._iface is not None and self._fresh(self._iface_at):
+                    fields["pc_net_iface"] = self._iface
                 if self._cores is not None and self._fresh(self._cores_at):
                     fields["pc_cores"] = list(self._cores)
                 if fields["pc_ncpu"] is None and self._ncpu is not None and self._fresh(self._ncpu_at):
@@ -338,7 +346,7 @@ class HostView:
         if typ == TYPE_MODE:
             return ln == 1
         if typ == TYPE_NET:
-            return ln in (NET_LEN, NET_LEGACY_LEN)
+            return ln in (NET_LEN, NET_LEGACY_LEN, NET_IFACE_LEN)
         if typ == TYPE_TRIAGE:
             return ln == TRIAGE_LEN
         if typ == TYPE_CLIP:
@@ -360,7 +368,12 @@ class HostView:
             self._stats = (temp, load, mem)
             self._stats_at = now
         elif typ == TYPE_NET:
-            if len(payload) == NET_LEN:
+            iface = None
+            if len(payload) == NET_IFACE_LEN:
+                rx, tx, ncpu, *cbytes = struct.unpack("<fff8B", payload[:NET_LEN])
+                name = payload[NET_LEN:].split(b"\x00", 1)[0].decode("utf-8", errors="replace").strip()
+                iface = name if name and name.isprintable() else None
+            elif len(payload) == NET_LEN:
                 rx, tx, ncpu, *cbytes = struct.unpack("<fff8B", payload)
             else:
                 rx, tx, ncpu = struct.unpack("<fff", payload)
@@ -369,6 +382,9 @@ class HostView:
                 return
             self._ncpu = int(round(ncpu))
             self._ncpu_at = now
+            if iface:
+                self._iface = iface
+                self._iface_at = now
             cores = [b for b in cbytes if b <= 100]
             if cores:
                 self._cores = cores

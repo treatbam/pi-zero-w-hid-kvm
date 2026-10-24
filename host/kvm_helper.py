@@ -163,7 +163,7 @@ def pack_stats(temp, load, mem):
     return MAGIC + bytes([1]) + struct.pack("<I", len(payload)) + payload
 
 
-def pack_net(rx_bps, tx_bps, ncpu, cores=()):
+def pack_net(rx_bps, tx_bps, ncpu, cores=(), iface=""):
     cbytes = [
         min(100, max(0, int(round(c))))
         if (c is not None and math.isfinite(c) and 0 <= c <= 100)
@@ -172,6 +172,8 @@ def pack_net(rx_bps, tx_bps, ncpu, cores=()):
     ]
     cbytes += [255] * (8 - len(cbytes))
     payload = struct.pack("<fff8B", float(rx_bps), float(tx_bps), float(ncpu), *cbytes)
+    if iface:
+        payload += (iface.encode("utf-8")[:15]).ljust(16, b"\x00")
     return MAGIC + bytes([4]) + struct.pack("<I", len(payload)) + payload
 
 
@@ -232,6 +234,79 @@ def read_net_counters():
     if rx is None:
         return None
     return iface, rx, tx, float(os.cpu_count() or 1)
+
+
+_VIRTUAL_PREFIXES = ("lo", "docker", "veth", "br-", "virbr", "vmnet", "vboxnet", "cni", "flannel")
+
+
+def read_all_net_counters():
+    """{iface: (rx_bytes, tx_bytes)} for every non-virtual interface, or {}."""
+    out = {}
+    try:
+        with open("/proc/net/dev") as f:
+            rows = f.readlines()
+    except OSError:
+        return out
+    for line in rows:
+        if ":" not in line:
+            continue
+        name, rest = line.split(":", 1)
+        name = name.strip()
+        if not name or name.startswith(_VIRTUAL_PREFIXES):
+            continue
+        cols = rest.split()
+        if len(cols) < 9:
+            continue
+        out[name] = (int(cols[0]), int(cols[8]))
+    return out
+
+
+class NetPicker:
+    """Follow the interface that moved the most bytes, with a hold so the label
+    doesn't flicker: a challenger must be busiest for HOLD samples in a row to take
+    over. When everything is idle, keep the current pick (or the default route)."""
+
+    HOLD = 3
+
+    def __init__(self):
+        self.prev = None
+        self.current = None
+        self.challenger = None
+        self.streak = 0
+
+    def choose(self, counters, default=None):
+        prev, self.prev = self.prev, counters
+        if self.current not in counters:
+            self.current = default if default in counters else None
+        busiest, best = None, 0
+        if prev:
+            for name, (rx, tx) in counters.items():
+                if name not in prev:
+                    continue
+                d = (rx - prev[name][0]) + (tx - prev[name][1])
+                if d > best:
+                    busiest, best = name, d
+        if busiest is None or busiest == self.current:
+            self.challenger, self.streak = None, 0
+        elif self.current is None:
+            self.current, self.challenger, self.streak = busiest, None, 0
+        else:
+            self.streak = self.streak + 1 if busiest == self.challenger else 1
+            self.challenger = busiest
+            if self.streak >= self.HOLD:
+                self.current, self.challenger, self.streak = busiest, None, 0
+        if self.current is None and counters:
+            self.current = sorted(counters)[0]
+        return self.current
+
+    def sample(self):
+        """(iface, rx_bytes, tx_bytes, ncpu) for the picked interface, or None."""
+        counters = read_all_net_counters()
+        iface = self.choose(counters, default_iface())
+        if not iface:
+            return None
+        rx, tx = counters[iface]
+        return iface, rx, tx, float(os.cpu_count() or 1)
 
 
 def step_net(prev, sample, now):
@@ -840,6 +915,7 @@ class Shell:
 class HelperState:
     def __init__(self):
         self.net_prev = None
+        self.net_pick = NetPicker()
         self.cores_prev = None
         self.proc_prev = None
         self.prev_raw = None
@@ -858,15 +934,17 @@ def send_helper_packets(fd, display, announced, state=None, want_frame=True):
     stats = read_stats()
     if stats:
         blob += pack_stats(*stats)
-    net, state.net_prev = step_net(state.net_prev, read_net_counters(), now)
+    net_sample = state.net_pick.sample()
+    net, state.net_prev = step_net(state.net_prev, net_sample, now)
+    iface = net_sample[0] if net_sample else ""
     cores, state.cores_prev = step_cores(state.cores_prev, read_cpu_times())
     ncpu = float(os.cpu_count() or 1)
     # Always send the CPU count: it must not depend on a default route or on a second
     # counter sample. Rates of -1 mean "no rates this round".
     if net:
-        blob += pack_net(net[0], net[1], net[2], cores)
+        blob += pack_net(net[0], net[1], net[2], cores, iface)
     else:
-        blob += pack_net(-1.0, -1.0, ncpu, cores)
+        blob += pack_net(-1.0, -1.0, ncpu, cores, iface)
     disk_pct = read_disk_pct("/")
     (top_proc, top_cpu), state.proc_prev = step_top_proc(state.proc_prev, read_proc_ticks(), now)
     lan_ip = read_lan_ip()

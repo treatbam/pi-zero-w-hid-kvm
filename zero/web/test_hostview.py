@@ -348,3 +348,11 @@ class HostViewTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NetIfaceTest(unittest.TestCase):
+    def test_iface_reaches_status(self):
+        v = hostview.HostView()
+        v.feed(hostview.pack_stats(50, 1, 30))
+        self.assertEqual(v.feed(hostview.pack_net(1000, 20, 4, [50], "wlp3s0")), b"")
+        self.assertEqual(v.status_fields(True)["pc_net_iface"], "wlp3s0")

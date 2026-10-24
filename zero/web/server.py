@@ -4,7 +4,7 @@ API:
   GET  /api/status              -> {"hid_ready","host_connected","udc_state","leds","ip",
                                       "temp_c","load1","mem_pct","uptime_s",
                                       "link","pc_temp_c","pc_load1","pc_mem_pct",
-                                      "pc_rx_bps","pc_tx_bps","pc_ncpu","pc_cores",
+                                      "pc_rx_bps","pc_tx_bps","pc_ncpu","pc_cores","pc_net_iface",
                                       "pc_ip","pc_disk_pct","pc_top_proc","pc_top_cpu_pct",
                                       "pc_age_s","frame_fresh",
                                       "pc_cores_all","pc_gpu_pct","pc_cpu_temp_c","pc_gpu_temp_c","pc_nvme_temp_c","pc_uptime_s",
