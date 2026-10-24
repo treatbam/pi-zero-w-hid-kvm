@@ -1261,54 +1261,59 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
   pageDots(2);
 }
 
-// v2 page 2: per-core bars on the left, the PC's busiest processes on the right.
-// Bars are a fixed 6 px each, so the bar block is as wide as the core count needs
-// (8 cores = half of 16) and the list widens into the rest. Above 16 cores neighbours
-// average, so each bar always covers the same cores. List rows spread to fill the height.
+// v2 page 2: a short strip of per-core bars over the PC's busiest processes.
+// Bars follow the PC's real core count; above 16 neighbours average so each bar always
+// covers the same cores. The list fills the space: one column up to 4 rows, else two.
 void drawCores(const Status& s, uint32_t now) {
   fb.fillScreen(V_BG);
   bool stale = isStale(s, now);
   bool linked = s.api && strcmp(s.link, "LINKED") == 0;
   int n = linked ? s.coresAllN : 0;
   char a[24];
-  const int X = 4, TOP = 13, BOT = 113, BWID = 6, GAP = 2;
-  int per = n ? (n + 15) / 16 : 1, bars = n ? (n + per - 1) / per : 8;
-  int cw = bars * (BWID + GAP) - GAP;
+  const int X = 4, BW = W - 8, TOP = 13, BOT = 44;
   txt(X, 1, "CORES", V_LAB);
-  snprintf(a, sizeof a, "%d", n); txt(X + 36, 1, n ? a : "--", n && !stale ? V_WHITE : V_GREY);
   if (n) {
     int sum = 0; for (int i = 0; i < n; i++) sum += s.coresAll[i];
     int avg = (sum + n / 2) / n;
+    snprintf(a, sizeof a, "%d", n); txt(X + 36, 1, a, stale ? V_GREY : V_WHITE);
+    int nx = X + 36 + 6 * (int)strlen(a) + 6;
+    snprintf(a, sizeof a, "avg %d%%", avg); txt(nx, 1, a, stale ? V_GREY : vHeat(avg / 100.f));
+    int per = (n + 15) / 16, bars = (n + per - 1) / per, gap = bars > 24 ? 1 : 2;
+    float bw = (BW - gap * (bars - 1)) / (float)bars;
     for (int b = 0; b < bars; b++) {
       int lo = b * per, hi = min(n, lo + per), acc = 0;
       for (int i = lo; i < hi; i++) acc += s.coresAll[i];
       float v = acc / (float)(hi - lo) / 100.f;
-      int x0 = X + b * (BWID + GAP);
-      fb.fillRect(x0, TOP, BWID, BOT - TOP + 1, V_DIV);
+      int x0 = X + (int)(b * (bw + gap)), x1 = X + (int)(b * (bw + gap) + bw) - 1;
+      fb.fillRect(x0, TOP, x1 - x0 + 1, BOT - TOP + 1, V_DIV);
       int ht = (int)((BOT - TOP) * v + 0.5f);
       for (int y = BOT - ht; y <= BOT; y++) {
         uint16_t c = vHeat((BOT - y) / (float)(BOT - TOP));
-        fb.drawFastHLine(x0, y, BWID, stale ? mix(V_BG, c, 110) : c);
+        fb.drawFastHLine(x0, y, x1 - x0 + 1, stale ? mix(V_BG, c, 110) : c);
       }
     }
     int ay = BOT - (int)((BOT - TOP) * avg / 100.f + 0.5f);
-    fb.drawFastHLine(X, ay, cw, stale ? V_GREY : V_WHITE);
-  } else fb.drawRect(X, TOP, cw, BOT - TOP + 1, V_DIV);
-  const int LX = X + cw + 8, R = W - 4;
-  fb.drawFastVLine(LX - 4, TOP, BOT - TOP + 1, V_DIV);
-  txt(LX, 1, "PROCESSES", V_LAB);
+    fb.drawFastHLine(X, ay, BW, stale ? V_GREY : V_WHITE);
+  } else {
+    txt(X + 36, 1, "--", V_GREY);
+    fb.drawRect(X, TOP, BW, BOT - TOP + 1, V_DIV);
+  }
+  txt(X, 49, "PROCESSES", V_LAB);
   int pn = linked ? s.procCount : 0;
-  if (!pn) txt(LX, 16, linked ? "idle" : "--", V_GREY);
+  if (!pn) txt(X, 62, linked ? "idle" : "--", V_GREY);
   else {
-    int rh = min(16, (BOT - TOP + 2) / pn);   // fewer rows get more room each
+    const int LT = 60, LB = 116;
+    int cols = pn > 4 ? 2 : 1, rows = (pn + cols - 1) / cols;
+    int cw = cols == 2 ? (BW - 6) / 2 : BW, rh = min(16, (LB - LT) / rows);
+    if (cols == 2) fb.drawFastVLine(X + cw + 3, LT, rows * rh - 4, V_DIV);
     for (int i = 0; i < pn; i++) {
-      int y = TOP + 2 + i * rh;
+      int cx = X + (i / rows) * (cw + 6), y = LT + (i % rows) * rh;
       float p = s.procP[i];
       snprintf(a, sizeof a, p >= 9.5f || p == 0.f ? "%.0f%%" : "%.1f%%", p);
-      int pw = 6 * strlen(a), maxc = (R - LX - pw - 6) / 6;
-      char nm[24]; strlcpy(nm, s.procN[i], max(1, min((int)sizeof nm, maxc + 1)));
-      txt(LX, y, nm, stale ? V_GREY : V_WHITE);
-      txtR(R, y, a, stale ? V_GREY : vHeat(min(1.f, p / 100.f)));
+      int pw = 6 * strlen(a), maxc = (cw - pw - 6) / 6;
+      char nm[24]; strlcpy(nm, s.procN[i], min((int)sizeof nm, maxc + 1));
+      txt(cx, y, nm, stale ? V_GREY : V_WHITE);
+      txtR(cx + cw, y, a, stale ? V_GREY : vHeat(min(1.f, p / 100.f)));
     }
   }
   char hid[4] = "HID", age[12], rs[8];
