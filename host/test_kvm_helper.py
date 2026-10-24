@@ -209,3 +209,11 @@ class NetPickerTest(unittest.TestCase):
         pkt = kvm_helper.pack_net(1.0, 2.0, 4, [50], "enp5s0")
         self.assertEqual(struct.unpack("<I", pkt[5:9])[0], 36)
         self.assertEqual(len(kvm_helper.pack_net(1.0, 2.0, 4, [50])) - 9, 20)
+
+
+class TopProcsTest(unittest.TestCase):
+    def test_top_procs_merged_and_sorted(self):
+        prev = (10, {1: ("a", 0), 2: ("b", 0), 3: ("b", 0), 4: ("c", 0)})
+        now = {1: ("a", 50), 2: ("b", 40), 3: ("b", 40), 4: ("c", 0), 5: ("new", 9)}
+        self.assertEqual(kvm_helper.top_procs(prev, now, 11, clk_tck=100), [["b", 80.0], ["a", 50.0]])
+        self.assertEqual(kvm_helper.top_procs(None, now, 11), [])

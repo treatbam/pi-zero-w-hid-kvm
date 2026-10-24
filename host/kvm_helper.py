@@ -446,6 +446,29 @@ def step_top_proc(prev, sample, now, clk_tck=None):
     return (best_comm, pct), new
 
 
+def top_procs(prev, sample, now, n=5, clk_tck=None):
+    """Top `n` processes by CPU since `prev` (as kept by step_top_proc), merged by
+    name: [[comm, pct], ...] busiest first. [] on the first sample."""
+    if not sample or prev is None or now <= prev[0]:
+        return []
+    if clk_tck is None:
+        try:
+            clk_tck = int(os.sysconf("SC_CLK_TCK"))
+        except (OSError, ValueError):
+            clk_tck = 100
+    if clk_tck <= 0:
+        return []
+    dt = now - prev[0]
+    by_name = {}
+    for pid, (comm, ticks) in sample.items():
+        old = prev[1].get(pid)
+        if old is None or ticks < old[1]:
+            continue
+        by_name[comm] = by_name.get(comm, 0) + ticks - old[1]
+    rows = sorted(by_name.items(), key=lambda kv: kv[1], reverse=True)[:n]
+    return [[c, round(min(6400.0, 100.0 * (d / clk_tck) / dt), 1)] for c, d in rows if d > 0]
+
+
 PREFERRED_TEMP = frozenset((
     "x86_pkg_temp", "cpu-thermal", "soc_thermal",       # thermal zone types
     "coretemp", "k10temp", "zenpower", "cpu_thermal",   # hwmon chip names
@@ -946,7 +969,9 @@ def send_helper_packets(fd, display, announced, state=None, want_frame=True):
     else:
         blob += pack_net(-1.0, -1.0, ncpu, cores, iface)
     disk_pct = read_disk_pct("/")
-    (top_proc, top_cpu), state.proc_prev = step_top_proc(state.proc_prev, read_proc_ticks(), now)
+    proc_sample = read_proc_ticks()
+    procs = top_procs(state.proc_prev, proc_sample, now)
+    (top_proc, top_cpu), state.proc_prev = step_top_proc(state.proc_prev, proc_sample, now)
     lan_ip = read_lan_ip()
     if disk_pct >= 0 or lan_ip or top_proc:
         blob += pack_triage(disk_pct, top_cpu, lan_ip, top_proc)
@@ -960,6 +985,8 @@ def send_helper_packets(fd, display, announced, state=None, want_frame=True):
     # Type 8 every tick (2 s) while stats:on, or while a browser preview level is set.
     if STATS_STATE["on"] or q not in (None, "off"):
         more = state.ext.sample()
+        if procs:
+            more["procs"] = procs
         if len(more) > 1:
             blob += kvm_stats.pack_ext(more)
     blob += pack_mode(b"helper")

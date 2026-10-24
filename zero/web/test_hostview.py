@@ -356,3 +356,9 @@ class NetIfaceTest(unittest.TestCase):
         v.feed(hostview.pack_stats(50, 1, 30))
         self.assertEqual(v.feed(hostview.pack_net(1000, 20, 4, [50], "wlp3s0")), b"")
         self.assertEqual(v.status_fields(True)["pc_net_iface"], "wlp3s0")
+
+
+class ProcsExtTest(unittest.TestCase):
+    def test_procs_validated(self):
+        d = hostview._parse_ext(b'{"v":1,"procs":[["firefox",42.5],["bad",-1],[1,2],["x\\n",3]]}')
+        self.assertEqual(d["procs"], [["firefox", 42.5]])
