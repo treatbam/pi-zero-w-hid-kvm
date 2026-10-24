@@ -446,7 +446,7 @@ def step_top_proc(prev, sample, now, clk_tck=None):
     return (best_comm, pct), new
 
 
-def top_procs(prev, sample, now, n=5, clk_tck=None):
+def top_procs(prev, sample, now, n=7, clk_tck=None):
     """Top `n` processes by CPU since `prev` (as kept by step_top_proc), merged by
     name: [[comm, pct], ...] busiest first. [] on the first sample."""
     if not sample or prev is None or now <= prev[0]:
