@@ -17,6 +17,7 @@
 #include <Preferences.h>
 #include <WebServer.h>
 #include <ArduinoOTA.h>
+#include <esp_memory_utils.h>
 #include <ESPmDNS.h>
 #if __has_include("secrets.h")
 #include "secrets.h"
@@ -143,15 +144,17 @@ struct Status {
   float pcGpu = NAN, pcCpuT = NAN, pcGpuT = NAN, pcNvmeT = NAN;
   long upS = -1, pcUpS = -1;
   uint32_t latencyMs = 0, stampMs = 0, polls = 0, fails = 0;
+  uint32_t lastOkMs = 0;         // millis() of the last good /api/status, 0 = never
 };
 Status gStat;
 // One sample per /api/status poll (2 s). Gaps are NAN so a quiet helper breaks the line
 // instead of drawing across the outage. last* is the last live PC reading.
-static const int HIST = 60;
+static const int HIST = 240;   // 240 x 2 s = 8 min, one sample per pixel column at full width
 static const uint32_t RECONNECT_MS = 60000;
 struct PcHist {
   float temp[HIST], load[HIST], mem[HIST], rx[HIST], tx[HIST];
   float cpuT[HIST], gpuT[HIST], nvT[HIST];   // type-8 sensor temps, NAN when absent
+  float piLoad[HIST];                        // the Zero's own load1, NAN when the poll failed
   int n = 0, next = 0;
   uint32_t lastMs = 0;
   bool had = false;
@@ -179,6 +182,7 @@ static void pushHist(const Status& s, bool live) {
   gHist.cpuT[gHist.next] = live ? s.pcCpuT : NAN;
   gHist.gpuT[gHist.next] = live ? s.pcGpuT : NAN;
   gHist.nvT[gHist.next] = live ? s.pcNvmeT : NAN;
+  gHist.piLoad[gHist.next] = s.api ? s.load1 : NAN;
   gHist.next = (gHist.next + 1) % HIST;
   if (gHist.n < HIST) gHist.n++;
   if (live) {
@@ -288,6 +292,7 @@ void pollOnce() {
   }
   xSemaphoreTake(gLock, portMAX_DELAY);
   s.polls = gStat.polls + 1; s.fails = gStat.fails + (s.api ? 0 : 1); s.stampMs = millis();
+  s.lastOkMs = s.api ? s.stampMs : gStat.lastOkMs;
   gStat = s;
   bool live = s.api && strcmp(s.link, "LINKED") == 0
               && !isnan(s.pcTemp) && !isnan(s.pcLoad) && s.pcMem >= 0;
@@ -962,7 +967,93 @@ void drawGeekPanel(int x, int y, int w, int h, const Status& s, int rows) {
   if (s.polls) { snprintf(c, sizeof c, "%u/%u", (unsigned)s.fails, (unsigned)s.polls); txtR(b.r(), ly, c, C_DIM); }
 }
 
-enum Page { P_BOARD, P_KVM, P_DESK, P_TERM, NPAGES };
+// ---- v2 display primitives (groundwork for the next skin) -------------------------------
+// Stale: no good /api/status for STALE_MS. The backlight dims and pages show a stale badge;
+// both recover on the next good poll.
+static const uint32_t STALE_MS = 6000;
+static const uint8_t BL_FULL = 255, BL_DIM = 60;
+bool isStale(const Status& s, uint32_t now) { return !s.lastOkMs || now - s.lastOkMs > STALE_MS; }
+void fmtAge(char* b, size_t n, const Status& s, uint32_t now) {
+  if (!s.lastOkMs) snprintf(b, n, "never");
+  else { uint32_t a = (now - s.lastOkMs) / 1000; if (a < 120) snprintf(b, n, "%us", (unsigned)a); else snprintf(b, n, "%um", (unsigned)(a / 60)); }
+}
+
+// Heat colour, t in 0..1: green -> yellow -> red, smooth, RGB565.
+uint16_t heatC(float t) {
+  if (isnan(t) || t < 0.f) t = 0.f;
+  if (t > 1.f) t = 1.f;
+  if (t < 0.5f) return rgb((uint8_t)(40 + 215 * t * 2.f), 220, 60);
+  return rgb(255, (uint8_t)(220 - 170 * (t - 0.5f) * 2.f), (uint8_t)(60 - 20 * (t - 0.5f) * 2.f));
+}
+
+// Filled history graph: one column per sample (newest at the right), each column in the heat
+// colour of its own value (lv maps value -> 0..1), fading toward the bottom, brighter top pixel.
+// NAN samples leave a gap. Uses the last min(n, w) samples.
+void drawHeatGraph(int x, int y, int w, int h, const float* series, int n, int next,
+                   float (*lv)(float, float), float k, bool dim) {
+  if (n <= 0 || w <= 0 || h <= 1) return;
+  int start = (n < HIST) ? 0 : next;
+  int cols = min(n, w);
+  for (int i = 0; i < cols; i++) {
+    float v = series[(start + n - cols + i) % HIST];
+    if (isnan(v)) continue;
+    float t = lv(v, k);
+    if (t < 0.f) t = 0.f;
+    if (t > 1.f) t = 1.f;
+    int ch = max(1, (int)(t * (h - 1) + 0.5f));
+    int cx = x + w - cols + i, top = y + h - ch;
+    uint16_t c = dimmed(heatC(t), dim);
+    for (int yy = top + 1; yy < y + h; yy++) fb.drawPixel(cx, yy, mix(c, C_BG, (yy - top) * 200 / h));
+    fb.drawPixel(cx, top, mix(c, 0xFFFF, dim ? 0 : 70));
+  }
+}
+
+// Beveled dark card: lit top/left edge, shaded bottom/right, soft vertical gradient, 3 px corners.
+void bevelCard(int x, int y, int w, int h, uint16_t base = 0) {
+  if (!base) base = rgb(34, 38, 46);
+  uint16_t hi = mix(base, 0xFFFF, 70), lo = mix(base, 0x0000, 150);
+  fb.fillRoundRect(x, y, w, h, RADIUS, lo);                        // bottom/right shade
+  fb.fillRoundRect(x, y, w - 1, h - 1, RADIUS, hi);                // top/left light
+  for (int i = 1; i < h - 2; i++)                                  // face
+    fb.drawFastHLine(x + (i < RADIUS ? RADIUS - i + 1 : 1), y + i,
+                     w - 3 - 2 * (i < RADIUS ? RADIUS - i : 0), mix(mix(base, 0xFFFF, 18), mix(base, 0x0000, 60), i * 255 / h));
+}
+
+// Placeholder v2 page: four beveled cards with heat graphs (PC load, temp, net down, Pi load)
+// and a GEEK footer. Every missing value reads "--". The final skin replaces this layout.
+void drawV2(const Status& s, const PcHist& h, uint32_t now) {
+  bool stale = isStale(s, now);
+  bool linked = s.api && strcmp(s.link, "LINKED") == 0;
+  float ncpu = s.pcNcpu >= 1.f ? s.pcNcpu : (h.lastNcpu >= 1.f ? h.lastNcpu : 4.f);
+  char v[16];
+  struct Card { const char* lab; const float* ser; float cur; float (*lv)(float, float); float k; int kind; };
+  Card cards[4] = {
+    {"PC LOAD", h.load, linked ? s.pcLoad : NAN, lvFrac, ncpu, 0},
+    {"PC TEMP", h.temp, linked ? s.pcTemp : NAN, lvTemp, 0, 1},
+    {"NET DN",  h.rx,   linked ? s.pcRx : NAN,   [](float b, float) { return logRate(b); }, 0, 2},
+    {"PI LOAD", h.piLoad, s.api ? s.load1 : NAN, lvFrac, 1.f, 0},
+  };
+  const int CWD = (W - 3 * GAP) / 2, CHT = 56;
+  for (int i = 0; i < 4; i++) {
+    int x = (i % 2) * (CWD + GAP) + GAP / 2, y = (i / 2) * (CHT + GAP);
+    bevelCard(x, y, CWD, CHT);
+    txt(x + PAD, y + 3, cards[i].lab, C_DIM);
+    float c = cards[i].cur;
+    if (cards[i].kind == 1) fmtTemp(v, sizeof v, c); else if (cards[i].kind == 2) fmtRate(v, sizeof v, c); else fmtLoad(v, sizeof v, c);
+    txtR(x + CWD - PAD, y + 13, v, isnan(c) || stale ? C_DIM : C_TXT, FS_L);
+    drawHeatGraph(x + 2, y + 31, CWD - 5, CHT - 34, cards[i].ser, h.n, h.next, cards[i].lv, cards[i].k, stale);
+  }
+  int fy = 2 * (CHT + GAP) + 2;
+  char a[16], b[16], c[16], line[48];
+  fmtDbm(a, sizeof a, s.rssi); fmtUptime(b, sizeof b, (long)(millis() / 1000));
+  snprintf(c, sizeof c, "%uK", (unsigned)(ESP.getFreeHeap() / 1024));
+  snprintf(line, sizeof line, "GEEK %s heap %s up %s", a, c, b);
+  txt(PAD, fy, line, C_DIM);
+  if (stale) { fmtAge(a, sizeof a, s, now); snprintf(line, sizeof line, "STALE %s", a); txtR(W - PAD, fy, line, C_WARN); }
+  else txtR(W - PAD, fy, s.link[0] ? s.link : "--", statusC(linked ? ST_LINKED : ST_KEYS));
+}
+
+enum Page { P_BOARD, P_KVM, P_DESK, P_TERM, P_V2, NPAGES };   // P_V2: v2 groundwork preview
 int page = P_BOARD;
 
 // Page 1, the scoreboard. Status rail | PC panel (3 metric rows + net) over ZERO | GEEK.
@@ -1186,11 +1277,15 @@ void paint() {
     tft.drawRGBBitmap(0, 0, fb.getBuffer(), W, H);
     return;
   }
-  static Status s; static PcHist h;   // static: PcHist is ~2 KB, keep it off the loop stack
+  static Status s; static PcHist h;   // static: PcHist is ~9 KB, keep it off the loop stack
   xSemaphoreTake(gLock, portMAX_DELAY); s = gStat; h = gHist; xSemaphoreGive(gLock);
+  // Stale dims the backlight (PWM) and recovers on the next good poll.
+  static int bl = -1; int want = isStale(s, millis()) && s.polls > 2 ? BL_DIM : BL_FULL;
+  if (want != bl) { analogWrite(LCD_BL, want); bl = want; }
   fb.fillScreen(C_BG);
   if (page == P_TERM) drawTerm();
   else if (page == P_KVM) drawKvm(s, h);
+  else if (page == P_V2) drawV2(s, h, millis());
   else drawBoard(s, h, millis());
   tft.drawRGBBitmap(0, 0, fb.getBuffer(), W, H);
 }
@@ -1222,6 +1317,9 @@ void setup() {
     tft.setCursor(6, 50); tft.print("no RAM for UI"); Serial.println("framebuffer alloc failed");
     for (;;) delay(1000);
   }
+  Serial.printf("fb %dx%d in %s; free heap %u, largest block %u, psram %u\n", W, H,
+                esp_ptr_external_ram(fb.getBuffer()) ? "PSRAM" : "internal RAM",
+                (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap(), (unsigned)ESP.getPsramSize());
   loadCfg();
   bool bootHeld = digitalRead(BTN_BACK) == LOW;
 #ifdef KVM_PLACEHOLDER_SECRETS
