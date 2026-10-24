@@ -145,6 +145,7 @@ struct Status {
   // type-8 extended stats (absent -> NAN / 0)
   uint8_t coresAll[64] = {0};   // every core the helper sends (it caps at 64)
   char procN[8][16] = {}; float procP[8] = {}; int procCount = 0;   // pc_procs, busiest first
+  char netpN[4][16] = {}; float netpB[4] = {}; int netpCount = 0;   // pc_net_procs (TCP bytes/s up+down), top 4 kept
   int coresAllN = 0, coresTotal = 0;
   float pcGpu = NAN, pcCpuT = NAN, pcGpuT = NAN, pcNvmeT = NAN;
   long upS = -1, pcUpS = -1;
@@ -300,6 +301,17 @@ void pollOnce() {
             s.procP[pi++] = r[1] | 0.f;
           }
           s.procCount = pi;
+        }
+        if (d["pc_net_procs"].is<JsonArray>()) {
+          int ni = 0;
+          for (JsonVariant v : d["pc_net_procs"].as<JsonArray>()) {
+            if (ni >= 4) break;
+            JsonArray r = v.as<JsonArray>();
+            if (r.size() < 2 || !r[0].is<const char*>()) continue;
+            copyStr(s.netpN[ni], sizeof s.netpN[ni], r[0] | "");
+            s.netpB[ni++] = r[1] | 0.f;
+          }
+          s.netpCount = ni;
         }
         if (!d["pc_gpu_pct"].isNull()) s.pcGpu = d["pc_gpu_pct"].as<float>();
         if (!d["pc_cpu_temp_c"].isNull()) s.pcCpuT = d["pc_cpu_temp_c"].as<float>();
@@ -1298,22 +1310,29 @@ void drawCores(const Status& s, uint32_t now) {
     txt(X + 36, 1, "--", V_GREY);
     fb.drawRect(X, TOP, BW, BOT - TOP + 1, V_DIV);
   }
-  txt(X, 49, "PROCESSES", V_LAB);
-  int pn = linked ? s.procCount : 0;
-  if (!pn) txt(X, 62, linked ? "idle" : "--", V_GREY);
-  else {
-    const int LT = 60, LB = 116;
-    int cols = pn > 4 ? 2 : 1, rows = (pn + cols - 1) / cols;
-    int cw = cols == 2 ? (BW - 6) / 2 : BW, rh = min(16, (LB - LT) / rows);
-    if (cols == 2) fb.drawFastVLine(X + cw + 3, LT, rows * rh - 4, V_DIV);
-    for (int i = 0; i < pn; i++) {
-      int cx = X + (i / rows) * (cw + 6), y = LT + (i % rows) * rh;
-      float p = s.procP[i];
-      snprintf(a, sizeof a, p >= 9.5f || p == 0.f ? "%.0f%%" : "%.1f%%", p);
-      int pw = 6 * strlen(a), maxc = (cw - pw - 6) / 6;
-      char nm[24]; strlcpy(nm, s.procN[i], min((int)sizeof nm, maxc + 1));
+  // Lower half: left column = top 4 by CPU, right column = top 4 by TCP traffic (bandwhich-style).
+  const int LT = 60, LB = 116, CW = (BW - 6) / 2, RX = X + CW + 6;
+  txt(X, 49, "CPU", V_LAB); txt(RX, 49, "NETWORK", V_LAB);
+  fb.drawFastVLine(X + CW + 3, LT, LB - LT - 2, V_DIV);
+  for (int col = 0; col < 2; col++) {
+    int cx = col ? RX : X, cnt = linked ? min(4, col ? s.netpCount : s.procCount) : 0;
+    if (!cnt) { txt(cx, LT + 2, linked ? "idle" : "--", V_GREY); continue; }
+    int rh = min(16, (LB - LT) / cnt);
+    for (int i = 0; i < cnt; i++) {
+      int y = LT + i * rh;
+      const char* name; uint16_t vc;
+      if (col) {
+        vFmtRate(a, sizeof a, s.netpB[i]); name = s.netpN[i];
+        vc = stale ? V_GREY : V_WHITE;
+      } else {
+        float p = s.procP[i]; name = s.procN[i];
+        snprintf(a, sizeof a, p >= 9.5f || p == 0.f ? "%.0f%%" : "%.1f%%", p);
+        vc = stale ? V_GREY : vHeat(min(1.f, p / 100.f));
+      }
+      int maxc = (CW - 6 * (int)strlen(a) - 6) / 6;
+      char nm[24]; strlcpy(nm, name, max(1, min((int)sizeof nm, maxc + 1)));
       txt(cx, y, nm, stale ? V_GREY : V_WHITE);
-      txtR(cx + cw, y, a, stale ? V_GREY : vHeat(min(1.f, p / 100.f)));
+      txtR(cx + CW, y, a, vc);
     }
   }
   char hid[4] = "HID", age[12], rs[8];
