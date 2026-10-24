@@ -1371,7 +1371,7 @@ void drawNet(const Status& s, uint32_t now) {
 }
 
 // Shared status bar, drawn on every page (stats, desktop, terminal) so it never changes:
-// ZERO + HID state, a colour-only LINK block in the middle, GEEK + Wi-Fi dBm.
+// ZERO + HID state, a colour-coded LINK block in the middle, GEEK + Wi-Fi dBm.
 // LINK block: green = polls coming back clean, yellow = recent misses or PC not linked, red = Zero gone.
 void statusBar(const Status& s, const PcHist& h, uint32_t now) {
   const int Y = 121;
@@ -1386,7 +1386,8 @@ void statusBar(const Status& s, const PcHist& h, uint32_t now) {
   // ZERO (left)
   vDot(6, ty + 3, hidC(s)); txt(11, ty, "ZERO", V_LAB); txt(11 + 5 * CW, ty, s.api ? "HID" : "--", hidC(s));
   // LINK block (centre)
-  const int BW = 30, BH = 9; fb.fillRoundRect((W - BW) / 2, ty - 1, BW, BH, 2, lc);
+  const int BW = 32, BH = 10; fb.fillRoundRect((W - BW) / 2, ty - 2, BW, BH, 2, lc);
+  txt((W - 4 * CW) / 2, ty, "LINK", V_BG);   // word stays; the fill colour carries the state
   // GEEK (right): "GEEK -52dBm"
   char rs[12]; if (s.wifi && s.rssi) snprintf(rs, sizeof rs, "%ddBm", s.rssi); else strcpy(rs, "--");
   uint16_t gc = rssiC(s.wifi, s.rssi);
