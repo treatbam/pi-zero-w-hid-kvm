@@ -1,4 +1,4 @@
-// ESP32-S3-GEEK KVM panel. Four pages (scoreboard, KVM, desktop, terminal); every page uses
+// ESP32-S3-GEEK KVM panel. Four pages (PC, ZERO|GEEK, desktop, terminal); every page uses
 // the shared design system below (palette, ramp(), panel()). Formerly: three pages, one short press to advance:
 //   scoreboard → desktop still → terminal → scoreboard.
 // A long press does nothing, and two quick presses are just two page steps. There is no menu.
@@ -133,7 +133,7 @@ struct Status {
   bool ledNum = false, ledCaps = false, ledScroll = false;
   int httpCode = 0, rssi = 0;
   char udc[16] = "?", ip[16] = "--", geekIp[16] = "--", link[12] = "";
-  char pcIp[16] = "", pcTopProc[16] = "", tsIp[16] = "";   // tsIp: tailscale_ip, "" when null
+  char pcIp[16] = "", pcTopProc[16] = "", tsIp[16] = "", netIf[12] = "";   // netIf: net_iface, "" until the helper sends it   // tsIp: tailscale_ip, "" when null
   float temp = NAN, load1 = NAN, pcTemp = NAN, pcLoad = NAN;
   float pcRx = NAN, pcTx = NAN, pcNcpu = NAN, pcTopCpu = NAN;
   int mem = -1, pcMem = -1, pcDisk = -1, pcCoreCount = 0;
@@ -270,6 +270,7 @@ void pollOnce() {
           s.pcCoreCount = ci;
         }
         if (!d["pc_ip"].isNull()) copyStr(s.pcIp, sizeof s.pcIp, d["pc_ip"] | "");
+        if (!d["net_iface"].isNull()) copyStr(s.netIf, sizeof s.netIf, d["net_iface"] | "");
         if (!d["pc_disk_pct"].isNull()) s.pcDisk = d["pc_disk_pct"].as<int>();
         if (!d["pc_top_proc"].isNull()) copyStr(s.pcTopProc, sizeof s.pcTopProc, d["pc_top_proc"] | "");
         if (!d["pc_top_cpu_pct"].isNull()) s.pcTopCpu = d["pc_top_cpu_pct"].as<float>();
@@ -1174,7 +1175,7 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   fmtMem(a, sizeof a, mem); ft(4, 84, a, mem < 0 || stale ? V_GREY : vHeat(vPct(mem)), &FreeSansBold12pt7b);
   fmtMem(a, sizeof a, disk); ft(4, 111, a, disk < 0 || stale ? V_GREY : vHeat(vPct(disk)), &FreeSansBold12pt7b);
   // net rows
-  const char* ifn = "eth0";   // /api/status has no interface name field
+  const char* ifn = s.netIf[0] ? s.netIf : "NET";   // busiest NIC from the helper (net_iface)
   const int NX = 54, NW = W - 4 - NX;
   for (int r = 0; r < 2; r++) {
     int y = 58 + r * 32; uint16_t c = r ? V_TX : V_RX;
@@ -1248,177 +1249,8 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
   pageDots(1);
 }
 
-enum Page { P_BOARD, P_KVM, P_DESK, P_TERM, P_PC, P_ZG, NPAGES };   // P_PC / P_ZG: v2 skin
+enum Page { P_PC, P_ZG, P_DESK, P_TERM, NPAGES };
 int page = P_PC;   // boot into the v2 PC page
-
-// Page 1, the scoreboard. Status rail | PC panel (3 metric rows + net) over ZERO | GEEK.
-void drawBoard(const Status& s, const PcHist& h, uint32_t now) {
-  bool nums = !isnan(s.pcTemp) && !isnan(s.pcLoad) && s.pcMem >= 0;
-  bool linked = s.api && strcmp(s.link, "LINKED") == 0 && nums;
-  bool nohost = s.api && strcmp(s.link, "NO HOST") == 0;
-  // Cable still in, helper quiet: hold the last PC figures. Green stays off; the
-  // reading is not live. Unplugging the cable skips this and shows NO HOST at once.
-  bool reconnecting = s.api && !linked && !nohost && h.had
-                      && (uint32_t)(now - h.lastMs) < RECONNECT_MS;
-  bool showPc = linked || reconnecting;
-  uint16_t top, bot, ink;
-  const char* word;
-  int st = !s.api ? 0 : linked ? 1 : nohost ? 2 : 3;
-  const char* words[4] = {"ZERO", "LINKED", "NO HOST", "KEYS"};
-  word = words[st]; top = statusC(st); bot = railC(st, 1); ink = railC(st, 2);
-  // Thin state rail: colour carries the state, one letter names it (L/N/K/Z).
-  const int RAIL = 14, PX = RAIL + GAP, PW = W - PX, PH = 100, BY = PH + GAP, BH = H - BY;
-  vgrad(0, 0, RAIL, H, top, bot);
-  // Full state word, stacked 6x8 letters on a 10 px pitch; a space is a 5 px gap.
-  // Longest (NO HOST) ends at y=67, the lock dots start at y=106.
-  for (int i = 0, yy = 4; word[i]; i++) {
-    if (word[i] == ' ') { yy += 5; continue; }
-    char ch[2] = {word[i], 0};
-    txt((RAIL - CW) / 2 + 1, yy, ch, ink);
-    yy += 10;
-  }
-  drawRailLeds(RAIL, s, ink);
-
-  // Main panel: the PC when linked / held, otherwise the Zero's own figures.
-  Box p = panel(PX, 0, PW, PH, showPc ? "PC" : "ZERO", statusC(reconnecting ? ST_NOHOST : st));
-  if (showPc) {
-    int pDisk = linked ? s.pcDisk : h.lastDisk;
-    const char* pProc = linked ? s.pcTopProc : h.lastTopProc;
-    float pCpu = linked ? s.pcTopCpu : h.lastTopCpu;
-    char hdr[40] = "", tmp[24] = "";
-    if (pDisk >= 0) snprintf(hdr, sizeof hdr, "/:%d%% ", pDisk);
-    if (pProc && pProc[0]) {
-      if (!isnan(pCpu) && pCpu >= 1.f) snprintf(tmp, sizeof tmp, "%s %.0f%%", pProc, pCpu);
-      else snprintf(tmp, sizeof tmp, "%s", pProc);
-      strlcat(hdr, tmp, sizeof hdr);
-    }
-    hdr[(p.w - 4 * CW) / CW] = 0;
-    if (hdr[0]) panelNote(p, hdr, dimmed(pDisk >= 90 ? C_WARN : C_DIM, reconnecting));
-  }
-
-  const int NUM_R = PX + 62, LAB_X = NUM_R + 5, SP_X = LAB_X + 34, SP_W = p.r() - SP_X;
-  const int ROW_Y[3] = {p.top() + 1, p.top() + 25, p.top() + 49};
-  float ft, fl; int fm;
-  uint16_t numC = C_TXT;
-  if (showPc && linked) { ft = s.pcTemp; fl = s.pcLoad; fm = s.pcMem; }
-  else if (showPc) { ft = h.lastT; fl = h.lastL; fm = isnan(h.lastM) ? -1 : (int)(h.lastM + 0.5f); numC = C_SOFT; }
-  else { ft = s.temp; fl = s.load1; fm = s.mem; }
-  char fig[3][16];
-  fmtTemp(fig[0], sizeof fig[0], ft); fmtLoad(fig[1], sizeof fig[1], fl); fmtMem(fig[2], sizeof fig[2], fm);
-  const char* lab[3] = {"temp", "load", "mem"};
-  float ncpu = showPc ? (linked ? s.pcNcpu : h.lastNcpu) : 1.f;
-  if (!(ncpu >= 1.f)) ncpu = showPc ? 4.f : 1.f;
-  float level[3] = {tempLevel(ft), fl / ncpu, fm < 0 ? NAN : (float)fm / 100.f};
-  float warnAt[3] = {tempLevel(80.f), 0.75f, 0.85f};
-  float peaks[3] = {showPc ? tempLevel(recentPeak(h.temp, h.n, h.next, 30)) : NAN,
-                    showPc ? recentPeak(h.load, h.n, h.next, 30) / ncpu : NAN,
-                    showPc ? recentPeak(h.mem, h.n, h.next, 30) / 100.f : NAN};
-  for (int i = 0; i < 3; i++) {
-    txtR(NUM_R, ROW_Y[i] + 2, fig[i], numC, FS_L);
-    txt(LAB_X, ROW_Y[i], lab[i], C_DIM);
-    drawCapsule(SP_X, ROW_Y[i], SP_W, 7, level[i], peaks[i], warnAt[i], reconnecting, i == 0);
-  }
-  if (showPc) {
-    const float* ser[3] = {h.temp, h.load, h.mem};
-    float minSpan[3] = {8.f, 0.5f, 10.f};
-    for (int i = 0; i < 3; i++) {
-      drawDeltaBadge(LAB_X, ROW_Y[i] + 9, ser[i], h.n, h.next, i, reconnecting);
-      float lo = 0.f, hi = 0.f;
-      if (!seriesRange(ser[i], h.n, h.next, minSpan[i], lo, hi)) continue;
-      if (i == 0) drawSpark(SP_X, ROW_Y[i] + 9, SP_W, 13, ser[i], h.n, h.next, lo, hi, lvTemp, 0, warnAt[i], reconnecting);
-      else drawSpark(SP_X, ROW_Y[i] + 9, SP_W, 13, ser[i], h.n, h.next, lo, hi, lvFrac, i == 1 ? ncpu : 100.f, warnAt[i], reconnecting);
-    }
-  }
-
-  // Net strip along the bottom of the main panel.
-  int ny = p.bot() - 12;
-  fb.drawFastHLine(p.x + 1, ny - 2, p.w - 2, C_EDGE);
-  if (reconnecting) {
-    fb.fillRoundRect(p.l(), ny, p.w - 2 * PAD, 11, RADIUS, mix(C_BG, C_WARN, 70));
-    uint16_t toastC = ((now / 400) & 1) ? C_WARM : mix(C_BG, C_WARM, 150);
-    txt(p.x + (p.w - 12 * CW) / 2, ny + 2, "reconnecting", toastC);
-  } else if (linked) {
-    char dn[8], up[8];
-    fmtRate(dn, sizeof dn, s.pcRx); fmtRate(up, sizeof up, s.pcTx);
-    int x = p.l();
-    txt(x, ny + 2, "dn", C_RX); txtR(x + 42, ny + 2, dn, C_RX);
-    txt(x + 46, ny + 2, "up", C_TX); txtR(x + 88, ny + 2, up, C_TX);
-    drawDuplexWaterfall(SP_X, ny - 1, SP_W, 13, h.rx, h.tx, h.n, h.next, false);
-  } else {
-    char l1[40];
-    if (!s.api) snprintf(l1, sizeof l1, "%s", s.wifi ? "no zero" : "wifi down");
-    else if (nohost) snprintf(l1, sizeof l1, "no host  zero %s", s.ip);
-    else snprintf(l1, sizeof l1, "searching for helper");
-    txt(p.l(), ny + 2, l1, C_SOFT);
-  }
-
-  int zw = (PW - GAP) / 2;
-  drawZeroPanel(PX, BY, zw, BH, s, 2);
-  drawGeekPanel(PX + zw + GAP, BY, PW - zw - GAP, BH, s, 2);
-}
-
-// Page 2: the KVM. PC panel (big per-core bars + temp sparklines + gpu/uptime) on top,
-// ZERO and GEEK detail panels underneath. Every missing field shows "--".
-void drawKvm(const Status& s, const PcHist& h) {
-  char a[24], b[24];
-  bool linked = s.api && strcmp(s.link, "LINKED") == 0;
-  bool nohost = s.api && strcmp(s.link, "NO HOST") == 0;
-  const char* lw = !s.api ? "NO ZERO" : linked ? "LINKED" : nohost ? "NO HOST" : "waiting";
-  uint16_t lc = statusC(!s.api ? ST_ZERO : linked ? ST_LINKED : nohost ? ST_NOHOST : ST_KEYS);
-  const int PH = 82, BY = PH + GAP, BH = H - BY;
-  Box p = panel(0, 0, W, PH, "PC", lc);
-  txt(p.l() + 3 * CW, p.y + 1, lw, lc);
-  if (s.pcIp[0]) panelNote(p, s.pcIp, C_VAL);
-
-  // left: per-core bars (type 8: every core; else main's top-8, hottest first)
-  const int CX = p.l() + 3, CWID = 128, DIV = CX + CWID + 4, CY = p.top() + 1, CH = 44;
-  const uint8_t* cv = s.coresAllN ? s.coresAll : s.pcCores;
-  int cn = s.coresAllN ? s.coresAllN : s.pcCoreCount;
-  if (!linked || cn == 0) {
-    fb.drawRect(CX, CY, CWID, CH, C_TRACK);
-    txt(CX + (CWID - 12 * CW) / 2, CY + CH / 2 - 4, linked ? "no core data" : "--", C_DIM);
-  } else drawCoreBars(CX, CY, CWID, CH, cv, cn);
-  int ty = CY + CH + 4;
-  if (linked && cn) {
-    if (s.coresTotal > cn) snprintf(a, sizeof a, "%dc +%d", cn, s.coresTotal - cn);
-    else snprintf(a, sizeof a, s.coresAllN ? "%d cores" : "top %d", cn);
-  } else snprintf(a, sizeof a, "cores --");
-  txt(p.l(), ty, a, C_DIM);
-  txt(p.l() + 66, ty, "gpu", C_DIM);
-  if (linked && !isnan(s.pcGpu)) { snprintf(b, sizeof b, "%.0f%%", s.pcGpu); txt(p.l() + 66 + 4 * CW, ty, b, ramp(s.pcGpu / 100.f, 0.75f)); }
-  else txt(p.l() + 66 + 4 * CW, ty, "--", C_DIM);
-  ty += LINE;
-  fmtUptime(a, sizeof a, linked ? s.pcUpS : -1);
-  txt(p.l(), ty, "up", C_DIM); txt(p.l() + 3 * CW, ty, a, linked && s.pcUpS >= 0 ? C_VAL : C_DIM);
-  fmtLoad(b, sizeof b, linked ? s.pcLoad : NAN);
-  txt(p.l() + 66, ty, "ld", C_DIM); txt(p.l() + 66 + 3 * CW, ty, b, linked && !isnan(s.pcLoad) ? C_VAL : C_DIM);
-  fb.drawFastVLine(DIV, p.top(), p.bot() - p.top(), C_EDGE);
-
-  // right: temperature sparklines (rolling 2 min). CPU falls back to the type-1 temp.
-  const int SX = DIV + PAD, SW = p.r() - SX;
-  bool cpuSensor = linked && !isnan(s.pcCpuT);
-  const float* ser[3] = {cpuSensor ? h.cpuT : h.temp, h.gpuT, h.nvT};
-  float cur[3] = {linked ? (cpuSensor ? s.pcCpuT : s.pcTemp) : NAN, linked ? s.pcGpuT : NAN, linked ? s.pcNvmeT : NAN};
-  float warnC[3] = {85.f, 85.f, 70.f};
-  const char* nm[3] = {"cpu", "gpu", "nvme"};
-  for (int i = 0; i < 3; i++) {
-    int y = p.top() + i * 22;
-    txt(SX, y, nm[i], C_DIM);
-    fmtTemp(a, sizeof a, cur[i]);
-    float wl = tempLevel(warnC[i]);
-    txtR(p.r(), y, a, isnan(cur[i]) ? C_DIM : ramp(tempLevel(cur[i]), wl, true));
-    float pk = linked ? recentPeak(ser[i], h.n, h.next, HIST) : NAN;
-    if (!isnan(pk)) { snprintf(b, sizeof b, "^%.0f", pk); txt(SX + 5 * CW, y, b, mix(C_BG, C_DIM, 200)); }
-    float lo = 0.f, hi = 0.f;
-    if (linked && seriesRange(ser[i], h.n, h.next, 6.f, lo, hi))
-      drawSpark(SX, y + 9, SW, 11, ser[i], h.n, h.next, lo, hi, lvTemp, 0, wl, false);
-    else fb.drawFastHLine(SX, y + 19, SW, C_TRACK);
-  }
-
-  int zw = (W - GAP) / 2;
-  drawZeroPanel(0, BY, zw, BH, s, 4);
-  drawGeekPanel(zw + GAP, BY, W - zw - GAP, BH, s, 4);
-}
 
 void drawWaiting() {
   vgrad(0, 0, W, H, railC(3, 0), railC(3, 1));
@@ -1479,10 +1311,8 @@ void paint() {
   if (want != bl) { analogWrite(LCD_BL, want); bl = want; }
   fb.fillScreen(C_BG);
   if (page == P_TERM) drawTerm();
-  else if (page == P_KVM) drawKvm(s, h);
-  else if (page == P_PC) drawPc(s, h, millis());
   else if (page == P_ZG) drawZg(s, h, millis());
-  else drawBoard(s, h, millis());
+  else drawPc(s, h, millis());
   tft.drawRGBBitmap(0, 0, fb.getBuffer(), W, H);
 }
 
