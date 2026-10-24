@@ -10,8 +10,9 @@ API:
                                       "pc_cores_all","pc_gpu_pct","pc_cpu_temp_c","pc_gpu_temp_c","pc_nvme_temp_c","pc_uptime_s",
                                       "serial_mode","serial_mode_age_s","serial_mode_requested",
                                       "preview_quality","preview_quality_requested",
-                                      "zero_wifi_rssi","tailscale"}
-                                    zero_wifi_rssi (dBm) / tailscale ("up"/"down"/null) are PIN-only
+                                      "zero_wifi_rssi","tailscale","tailscale_ip"}
+                                    zero_wifi_rssi (dBm) / tailscale ("up"/"down"/null) /
+                                    tailscale_ip (tailscale0 IPv4 or null) are PIN-only
                                     too; the GEEK sends its KVM_PIN on the status poll.
                                     pc_cores_all etc. (type 8) are null when the PC can't report them.
                                     serial_* and preview_* only with a valid X-KVM-PIN header;
@@ -49,7 +50,7 @@ A custom header also forces a CORS preflight, so other web pages can't send thes
 GET /api/status stays open (read-only; the GEEK and the console poll it).
 GET /api/term needs the X-KVM-PIN header too (host terminal output can hold secrets).
 """
-import argparse, hmac, json, os, socket, subprocess, threading, time
+import argparse, fcntl, hmac, json, os, socket, struct, subprocess, threading, time
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import hid, hostview, term
 from urllib.parse import urlsplit, parse_qs
@@ -161,6 +162,26 @@ def validate(path, body):
 
 NET_ROOT = os.environ.get("KVM_NET_ROOT", "/")   # tests point this at a fake /proc + /sys
 
+TS_IP_TTL = 30.0
+_TS_IP = {"at": -1e9, "ip": None}
+
+def _ifaddr(name):
+    """IPv4 of a local interface via one SIOCGIFADDR ioctl (no subprocess); None if it has none."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            r = fcntl.ioctl(s.fileno(), 0x8915, struct.pack("256s", name.encode()[:15]))
+        return socket.inet_ntoa(r[20:24])
+    except OSError:
+        return None
+
+def tailscale_ip(up):
+    """tailscale0's IPv4, cached for TS_IP_TTL s so the 2 s GEEK poll costs nothing."""
+    if not up: return None
+    now = time.monotonic()
+    if now - _TS_IP["at"] >= TS_IP_TTL:
+        _TS_IP["ip"], _TS_IP["at"] = _ifaddr("tailscale0"), now
+    return _TS_IP["ip"]
+
 def zero_link():
     """Zero Wi-Fi RSSI (dBm) and Tailscale state for the GEEK's KVM page. Two tiny file
     reads, no subprocess. tailscale: "up" (tailscale0 exists and is IFF_UP), "down"
@@ -180,6 +201,7 @@ def zero_link():
         installed = any(os.path.exists(os.path.join(NET_ROOT, p)) for p in
                         ("usr/sbin/tailscaled", "usr/bin/tailscaled", "usr/bin/tailscale"))
         out["tailscale"] = "down" if installed else None
+    out["tailscale_ip"] = tailscale_ip(out["tailscale"] == "up")
     return out
 
 def sysstats():

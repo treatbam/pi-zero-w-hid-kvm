@@ -58,6 +58,7 @@ try:
     check("zero link fields with PIN", st0.get("zero_wifi_rssi") == -61 and st0.get("tailscale") == "up", st0)
     np0 = req("/api/status", pin=None)[1]
     check("zero link fields hidden without PIN", "zero_wifi_rssi" not in np0 and "tailscale" not in np0)
+    check("tailscale_ip key with PIN, hidden without", "tailscale_ip" in st0 and "tailscale_ip" not in np0, st0)
     open(f"{tmp}/net/sys/class/net/tailscale0/flags", "w").write("0x1090\n")
     check("tailscale down when the interface is not up", req("/api/status")[1].get("tailscale") == "down")
     for t in ("\x1e", "a\x1fb", "\x1e\x1fKVMCTL:helper", "\x1e\x1fKVMCTL:q:high"):
