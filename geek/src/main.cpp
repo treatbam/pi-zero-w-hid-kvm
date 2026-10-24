@@ -19,6 +19,10 @@
 #include <ArduinoOTA.h>
 #include <esp_memory_utils.h>
 #include <ESPmDNS.h>
+#include <Fonts/FreeSansBold9pt7b.h>
+#include <Fonts/FreeSansBold12pt7b.h>
+#include <Fonts/FreeSansBold18pt7b.h>
+#include <Fonts/FreeSansBold24pt7b.h>
 #if __has_include("secrets.h")
 #include "secrets.h"
 #else
@@ -129,7 +133,7 @@ struct Status {
   bool ledNum = false, ledCaps = false, ledScroll = false;
   int httpCode = 0, rssi = 0;
   char udc[16] = "?", ip[16] = "--", geekIp[16] = "--", link[12] = "";
-  char pcIp[16] = "", pcTopProc[16] = "";
+  char pcIp[16] = "", pcTopProc[16] = "", tsIp[16] = "";   // tsIp: tailscale_ip, "" when null
   float temp = NAN, load1 = NAN, pcTemp = NAN, pcLoad = NAN;
   float pcRx = NAN, pcTx = NAN, pcNcpu = NAN, pcTopCpu = NAN;
   int mem = -1, pcMem = -1, pcDisk = -1, pcCoreCount = 0;
@@ -155,6 +159,7 @@ struct PcHist {
   float temp[HIST], load[HIST], mem[HIST], rx[HIST], tx[HIST];
   float cpuT[HIST], gpuT[HIST], nvT[HIST];   // type-8 sensor temps, NAN when absent
   float piLoad[HIST];                        // the Zero's own load1, NAN when the poll failed
+  float geekRssi[HIST];                      // GEEK Wi-Fi dBm, NAN when Wi-Fi is down
   int n = 0, next = 0;
   uint32_t lastMs = 0;
   bool had = false;
@@ -183,6 +188,7 @@ static void pushHist(const Status& s, bool live) {
   gHist.gpuT[gHist.next] = live ? s.pcGpuT : NAN;
   gHist.nvT[gHist.next] = live ? s.pcNvmeT : NAN;
   gHist.piLoad[gHist.next] = s.api ? s.load1 : NAN;
+  gHist.geekRssi[gHist.next] = s.wifi && s.rssi ? (float)s.rssi : NAN;
   gHist.next = (gHist.next + 1) % HIST;
   if (gHist.n < HIST) gHist.n++;
   if (live) {
@@ -269,6 +275,7 @@ void pollOnce() {
         if (!d["pc_top_cpu_pct"].isNull()) s.pcTopCpu = d["pc_top_cpu_pct"].as<float>();
         if (d["pin_ok"].is<bool>() && !(d["pin_ok"] | true)) pinFailed();
         if (!d["zero_wifi_rssi"].isNull()) s.zRssi = d["zero_wifi_rssi"].as<int>();
+        if (d["tailscale_ip"].is<const char*>()) copyStr(s.tsIp, sizeof s.tsIp, d["tailscale_ip"] | "");
         if (d["tailscale"].is<const char*>()) s.ts = strcmp(d["tailscale"] | "", "up") == 0 ? 1 : 0;
         copyStr(s.serialMode, sizeof s.serialMode, d["serial_mode"] | "");
         if (d["pc_cores_all"].is<JsonArray>()) {
@@ -1019,42 +1026,227 @@ void bevelCard(int x, int y, int w, int h, uint16_t base = 0) {
                      w - 3 - 2 * (i < RADIUS ? RADIUS - i : 0), mix(mix(base, 0xFFFF, 18), mix(base, 0x0000, 60), i * 255 / h));
 }
 
-// Placeholder v2 page: four beveled cards with heat graphs (PC load, temp, net down, Pi load)
-// and a GEEK footer. Every missing value reads "--". The final skin replaces this layout.
-void drawV2(const Status& s, const PcHist& h, uint32_t now) {
-  bool stale = isStale(s, now);
-  bool linked = s.api && strcmp(s.link, "LINKED") == 0;
-  float ncpu = s.pcNcpu >= 1.f ? s.pcNcpu : (h.lastNcpu >= 1.f ? h.lastNcpu : 4.f);
-  char v[16];
-  struct Card { const char* lab; const float* ser; float cur; float (*lv)(float, float); float k; int kind; };
-  Card cards[4] = {
-    {"PC LOAD", h.load, linked ? s.pcLoad : NAN, lvFrac, ncpu, 0},
-    {"PC TEMP", h.temp, linked ? s.pcTemp : NAN, lvTemp, 0, 1},
-    {"NET DN",  h.rx,   linked ? s.pcRx : NAN,   [](float b, float) { return logRate(b); }, 0, 2},
-    {"PI LOAD", h.piLoad, s.api ? s.load1 : NAN, lvFrac, 1.f, 0},
-  };
-  const int CWD = (W - 3 * GAP) / 2, CHT = 56;
-  for (int i = 0; i < 4; i++) {
-    int x = (i % 2) * (CWD + GAP) + GAP / 2, y = (i / 2) * (CHT + GAP);
-    bevelCard(x, y, CWD, CHT);
-    txt(x + PAD, y + 3, cards[i].lab, C_DIM);
-    float c = cards[i].cur;
-    if (cards[i].kind == 1) fmtTemp(v, sizeof v, c); else if (cards[i].kind == 2) fmtRate(v, sizeof v, c); else fmtLoad(v, sizeof v, c);
-    txtR(x + CWD - PAD, y + 13, v, isnan(c) || stale ? C_DIM : C_TXT, FS_L);
-    drawHeatGraph(x + 2, y + 31, CWD - 5, CHT - 34, cards[i].ser, h.n, h.next, cards[i].lv, cards[i].k, stale);
+// ---- v2 skin: page 1 (target PC) and page 2 (ZERO | GEEK) ---------------------------------
+// Own near-black background and heat scale; FreeSansBold for the values (baseline y), the
+// built-in 6x8 font for labels and the bottom row.
+const uint16_t V_BG = 0x0021 /* ~#06060A */, V_LAB = 0xC6BD /* 200,215,235 */, V_WHITE = 0xFFFF,
+               V_GREY = 0x8C71, V_DIMG = 0x4208, V_DIV = 0x2945;
+uint16_t vHeat(float t) {   // green(40,210,90) -> yellow(250,210,40) -> red(240,50,40)
+  if (isnan(t) || t < 0.f) t = 0.f;
+  if (t > 1.f) t = 1.f;
+  if (t < 0.5f) { float u = t * 2.f; return rgb(40 + 210 * u, 210, 90 - 50 * u); }
+  float u = (t - 0.5f) * 2.f; return rgb(250 - 10 * u, 210 - 160 * u, 40);
+}
+const uint16_t V_OK = 0x2E8B /* green */, V_WARN = 0xFE85 /* yellow */, V_BAD = 0xF185 /* red */;
+const uint16_t V_RX = 0x3C9F /* 60,150,255 */, V_TX = 0xAADF /* 170,90,255 */;
+float vT(float c) { return (c - 45.f) / 45.f; }          // 45 C green .. 90 C red
+float vPct(int p) { return (p - 50) / 45.f; }            // 50 % green .. 95 % red
+int ftW(const GFXfont* f, const char* s) {
+  int16_t x1, y1; uint16_t w, h; fb.setFont(f); fb.setTextSize(1); fb.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
+  fb.setFont(nullptr); return f ? (int)w + x1 : (int)strlen(s) * CW;
+}
+void ft(int x, int y, const char* s, uint16_t c, const GFXfont* f) {   // y = baseline (top for nullptr)
+  fb.setFont(f); fb.setTextSize(1); fb.setTextColor(c); fb.setCursor(x, y); fb.print(s); fb.setFont(nullptr);
+}
+void ftR(int right, int y, const char* s, uint16_t c, const GFXfont* f) { ft(right - ftW(f, s), y, s, c, f); }
+void vDot(int x, int y, uint16_t c) { fb.fillCircle(x, y, 2, c); }
+void pageDots(int cur) {   // two tiny dots, top-right, current lit
+  for (int i = 0; i < 2; i++) fb.fillCircle(W - 11 + i * 6, 3, 1, i == cur ? V_WHITE : V_DIMG);
+}
+// Filled sparkline in one colour: bright top pixel, fill fading to the background.
+void vSpark(int x, int y, int w, int h, const float* ser, int n, int next, float lo, float hi, uint16_t c, bool dim,
+            bool logScale = false) {
+  if (n <= 0) return;
+  if (dim) c = mix(V_BG, c, 110);
+  int start = (n < HIST) ? 0 : next, cols = min(n, w);
+  for (int i = 0; i < cols; i++) {
+    float v = ser[(start + n - cols + i) % HIST];
+    if (isnan(v)) continue;
+    float t = logScale ? logRate(v) : (v - lo) / (hi - lo);
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    int ch = max(1, (int)(t * (h - 1) + 0.5f)), cx = x + w - cols + i, top = y + h - ch;
+    for (int yy = top + 1; yy < y + h; yy++) fb.drawPixel(cx, yy, mix(mix(V_BG, c, 150), V_BG, (yy - top) * 180 / h));
+    fb.drawPixel(cx, top, mix(c, V_WHITE, dim ? 0 : 60));
   }
-  int fy = 2 * (CHT + GAP) + 2;
-  char a[16], b[16], c[16], line[48];
-  fmtDbm(a, sizeof a, s.rssi); fmtUptime(b, sizeof b, (long)(millis() / 1000));
-  snprintf(c, sizeof c, "%uK", (unsigned)(ESP.getFreeHeap() / 1024));
-  snprintf(line, sizeof line, "GEEK %s heap %s up %s", a, c, b);
-  txt(PAD, fy, line, C_DIM);
-  if (stale) { fmtAge(a, sizeof a, s, now); snprintf(line, sizeof line, "STALE %s", a); txtR(W - PAD, fy, line, C_WARN); }
-  else txtR(W - PAD, fy, s.link[0] ? s.link : "--", statusC(linked ? ST_LINKED : ST_KEYS));
+}
+// Faint heat-coloured fill behind the page 1 hero.
+void vHeatBg(int x, int y, int w, int h, const float* ser, int n, int next, float (*lv)(float), bool dim) {
+  if (n <= 0) return;
+  int start = (n < HIST) ? 0 : next, cols = min(n, w);
+  for (int i = 0; i < cols; i++) {
+    float v = ser[(start + n - cols + i) % HIST];
+    if (isnan(v)) continue;
+    float t = lv(v); t = t < 0 ? 0 : t > 1 ? 1 : t;
+    int ch = max(2, (int)((0.25f + 0.75f * t) * (h - 1))), cx = x + w - cols + i, top = y + h - ch;
+    uint16_t c = vHeat(t);
+    for (int yy = top + 1; yy < y + h; yy++) fb.drawPixel(cx, yy, mix(V_BG, c, (dim ? 40 : 90) - (yy - top) * 50 / h));
+    fb.drawPixel(cx, top, mix(V_BG, c, dim ? 90 : 200));
+  }
+}
+void vFmtRate(char* b, size_t n, float bps) {
+  if (isnan(bps)) snprintf(b, n, "--");
+  else if (bps >= 1e6f) snprintf(b, n, "%.1fM/s", bps / 1e6f);
+  else if (bps >= 1e3f) snprintf(b, n, "%.0fK/s", bps / 1e3f);
+  else snprintf(b, n, "%.0fB/s", bps);
+}
+void vFmtUp(char* b, size_t n, long s) {
+  if (s < 0) snprintf(b, n, "--");
+  else if (s < 3600) snprintf(b, n, "%ldm", s / 60);
+  else if (s < 86400) snprintf(b, n, "%ldh %ldm", s / 3600, (s % 3600) / 60);
+  else snprintf(b, n, "%ldd %ldh", s / 86400, (s % 86400) / 3600);
+}
+// HID: green ready + host + configured, yellow ready but not enumerated, red not ready, grey unknown.
+uint16_t hidC(const Status& s) {
+  if (!s.api) return V_GREY;
+  if (!s.hid) return V_BAD;
+  return s.host && strcmp(s.udc, "configured") == 0 ? V_OK : V_WARN;
+}
+uint16_t rssiC(bool up, int dbm) { return !up || !dbm ? V_BAD : dbm >= -65 ? V_OK : dbm >= -78 ? V_WARN : V_BAD; }
+uint16_t ageC(const Status& s, uint32_t now) {
+  if (!s.lastOkMs) return V_BAD;
+  uint32_t a = now - s.lastOkMs; return a < 4000 ? V_OK : a <= STALE_MS ? V_WARN : V_BAD;
+}
+// Bottom row: three evenly spaced "dot LABEL value" items, centred in thirds.
+struct Item { const char* lab; const char* val; uint16_t dot, valC; const char* tail; };
+void vBottom(int y, const Item* it, bool dim) {
+  fb.drawFastHLine(4, y - 3, W - 8, V_DIV);
+  int lw[3], vw[3], tw[3], tot[3], sum = 0;
+  for (int i = 0; i < 3; i++) {
+    lw[i] = strlen(it[i].lab) * CW; vw[i] = strlen(it[i].val) * CW; tw[i] = it[i].tail ? strlen(it[i].tail) * CW : 0;
+    tot[i] = 6 + lw[i] + 3 + vw[i] + tw[i]; sum += tot[i];
+  }
+  int gap = max(4, (W - 8 - sum) / 4), x = 4 + gap;   // even gaps, outer ones included
+  if (sum + 4 * gap > W - 8) { gap = max(4, (W - 8 - sum) / 2); x = 4; }
+  for (int i = 0; i < 3; i++) {
+    vDot(x + 2, y + 3, dimmed(it[i].dot, dim));
+    txt(x + 6, y, it[i].lab, V_LAB);
+    txt(x + 6 + lw[i] + 3, y, it[i].val, dim ? V_GREY : it[i].valC);
+    if (tw[i]) txt(x + 6 + lw[i] + 3 + vw[i], y, it[i].tail, V_GREY);
+    x += tot[i] + gap;
+  }
 }
 
-enum Page { P_BOARD, P_KVM, P_DESK, P_TERM, P_V2, NPAGES };   // P_V2: v2 groundwork preview
-int page = P_BOARD;
+void drawPc(const Status& s, const PcHist& h, uint32_t now) {
+  fb.fillScreen(V_BG);
+  bool stale = isStale(s, now);
+  bool linked = s.api && strcmp(s.link, "LINKED") == 0;
+  float t = !isnan(s.pcCpuT) ? s.pcCpuT : s.pcTemp;
+  bool have = linked && !isnan(t);
+  const float* ts = h.n && !isnan(lastValue(h.cpuT, h.n, h.next)) ? h.cpuT : h.temp;
+  vHeatBg(0, 0, W, 54, ts, h.n, h.next, vT, stale || !have);
+  char a[24], b[24];
+  if (have) {
+    snprintf(a, sizeof a, "%.0f", t);
+    uint16_t c = stale ? V_GREY : vHeat(vT(t));
+    ft(4, 46, a, c, &FreeSansBold24pt7b);
+    int dx = 4 + ftW(&FreeSansBold24pt7b, a) + 4;
+    fb.drawCircle(dx + 4, 14, 4, c); fb.drawCircle(dx + 4, 14, 3, c);
+  } else {
+    ft(6, 30, "OFFLINE", V_GREY, &FreeSansBold12pt7b);
+    uint32_t ago = h.had ? (now - h.lastMs) / 1000 : 0;
+    if (h.had) snprintf(b, sizeof b, "pc data %us ago", (unsigned)ago); else snprintf(b, sizeof b, "no pc data yet");
+    if (h.had && ago >= 120) snprintf(b, sizeof b, "pc data %um ago", (unsigned)(ago / 60));
+    txt(6, 38, b, V_GREY);
+  }
+  const int RX = have ? 102 : 134;
+  if (have) {
+    ft(RX, 14, "CPU", V_LAB, &FreeSansBold9pt7b);
+    fmtLoad(a, sizeof a, s.pcLoad); snprintf(b, sizeof b, "%s load", a);
+    ft(RX, 33, b, stale ? V_GREY : V_WHITE, &FreeSansBold12pt7b);
+    if (s.pcTopProc[0]) {
+      char pct[8] = "";
+      if (!isnan(s.pcTopCpu)) snprintf(pct, sizeof pct, " %.0f%%", s.pcTopCpu);
+      int avail = W - 4 - RX - ftW(&FreeSansBold9pt7b, pct);
+      char nm[20]; strlcpy(nm, s.pcTopProc, sizeof nm);
+      if (ftW(&FreeSansBold9pt7b, nm) > avail) {
+        int L = strlen(nm);
+        while (L > 1) { nm[--L] = 0; char tmp[24]; snprintf(tmp, sizeof tmp, "%s..", nm); if (ftW(&FreeSansBold9pt7b, tmp) <= avail) break; }
+        strlcat(nm, "..", sizeof nm);
+      }
+      ft(RX, 50, nm, V_LAB, &FreeSansBold9pt7b);
+      ft(RX + ftW(&FreeSansBold9pt7b, nm), 50, pct, stale ? V_GREY : vHeat(s.pcTopCpu / 100.f), &FreeSansBold9pt7b);
+    }
+  }
+  // left column
+  txt(4, 59, "MEMORY", V_LAB); txt(4, 86, "DISK", V_LAB);
+  int mem = linked ? s.pcMem : -1, disk = linked ? s.pcDisk : -1;
+  fmtMem(a, sizeof a, mem); ft(4, 84, a, mem < 0 || stale ? V_GREY : vHeat(vPct(mem)), &FreeSansBold12pt7b);
+  fmtMem(a, sizeof a, disk); ft(4, 111, a, disk < 0 || stale ? V_GREY : vHeat(vPct(disk)), &FreeSansBold12pt7b);
+  // net rows
+  const char* ifn = "eth0";   // /api/status has no interface name field
+  const int NX = 54, NW = W - 4 - NX;
+  for (int r = 0; r < 2; r++) {
+    int y = 58 + r * 32; uint16_t c = r ? V_TX : V_RX;
+    float v = linked ? (r ? s.pcTx : s.pcRx) : NAN;
+    // arrow glyph (not in the font): 5 px stem + head
+    int ax = NX + 2;
+    fb.drawFastVLine(ax, y, 7, c);
+    if (!r) { fb.drawLine(ax - 2, y + 4, ax, y + 6, c); fb.drawLine(ax + 2, y + 4, ax, y + 6, c); }
+    else { fb.drawLine(ax - 2, y + 2, ax, y, c); fb.drawLine(ax + 2, y + 2, ax, y, c); }
+    txt(NX + 7, y, ifn, c);
+    vFmtRate(a, sizeof a, v); txtR(W - 4, y, a, stale || isnan(v) ? V_GREY : V_WHITE);
+    vSpark(NX, y + 10, NW, 19, r ? h.tx : h.rx, h.n, h.next, 0, 1, c, stale, true);
+  }
+  char hid[4] = "HID", age[12], rs[8];
+  fmtAge(age, sizeof age, s, now); if (!s.lastOkMs) strcpy(age, "--");
+  if (s.wifi && s.rssi) snprintf(rs, sizeof rs, "%d", s.rssi); else strcpy(rs, "--");
+  Item it[3] = {{"ZERO", s.api ? hid : "--", hidC(s), hidC(s), nullptr},
+                {"LINK", age, ageC(s, now), ageC(s, now), nullptr},
+                {"GEEK", rs, rssiC(s.wifi, s.rssi), rssiC(s.wifi, s.rssi), nullptr}};
+  vBottom(126, it, false);
+  pageDots(0);
+}
+
+void drawZg(const Status& s, const PcHist& h, uint32_t now) {
+  fb.fillScreen(V_BG);
+  bool stale = isStale(s, now);
+  char a[24], b[24];
+  const int MID = 120;
+  fb.drawFastVLine(MID, 4, 112, V_DIV);
+  // ZERO half
+  int L = 4, R = MID - 5;
+  ft(L, 13, "ZERO", V_LAB, &FreeSansBold9pt7b);
+  ft(L, 40, s.api ? "HID" : "--", stale ? V_GREY : hidC(s), &FreeSansBold18pt7b);
+  uint16_t val = stale ? V_GREY : V_WHITE;
+  txt(L, 48, "load", V_LAB); fmtLoad(a, sizeof a, s.api ? s.load1 : NAN); txtR(R, 48, a, val);
+  txt(L, 60, "temp", V_LAB); fmtTemp(a, sizeof a, s.api ? s.temp : NAN);
+  txtR(R, 60, a, stale || !s.api || isnan(s.temp) ? V_GREY : vHeat(vT(s.temp)));
+  txt(L, 72, "up", V_LAB); vFmtUp(a, sizeof a, s.api ? s.upS : -1); txtR(R, 72, a, val);
+  txt(L, 85, "load history", V_RX);
+  vSpark(L, 95, R - L, 21, h.piLoad, h.n, h.next, 0, 1.5f, V_RX, stale);
+  // GEEK half
+  L = MID + 5; R = W - 4;
+  ft(L, 13, "GEEK", V_LAB, &FreeSansBold9pt7b);
+  if (s.wifi && s.rssi) snprintf(a, sizeof a, "%d", s.rssi); else strcpy(a, "--");
+  ft(L, 40, a, rssiC(s.wifi, s.rssi), &FreeSansBold18pt7b);
+  txt(L + ftW(&FreeSansBold18pt7b, a) + 3, 33, "dBm", V_LAB);
+  txt(L, 48, "heap", V_LAB); snprintf(a, sizeof a, "%uK", (unsigned)(ESP.getFreeHeap() / 1024)); txtR(R, 48, a, V_WHITE);
+  txt(L, 60, "ping", V_LAB);
+  if (s.api) snprintf(a, sizeof a, "%ums", (unsigned)s.latencyMs); else strcpy(a, "--");
+  txtR(R, 60, a, s.api ? V_WHITE : V_GREY);
+  txt(L, 72, "up", V_LAB); vFmtUp(a, sizeof a, (long)(millis() / 1000)); txtR(R, 72, a, V_WHITE);
+  txt(L, 85, "wifi history", V_TX);
+  vSpark(L, 95, R - L, 21, h.geekRssi, h.n, h.next, -90, -40, V_TX, false);
+  // bottom row
+  bool linked = s.api && strcmp(s.link, "LINKED") == 0;
+  uint16_t lc = !s.api ? V_GREY : linked ? V_OK : V_WARN;
+  int bad = 0, win = min(h.n, 30), st = (h.n < HIST) ? 0 : h.next;   // failed polls leave NAN Pi load
+  for (int i = h.n - win; i < h.n; i++) if (isnan(h.piLoad[(st + i) % HIST])) bad++;
+  uint16_t hc = stale ? V_BAD : bad == 0 ? V_OK : bad < 3 ? V_WARN : V_BAD;
+  uint32_t ok = s.polls - s.fails;
+  auto k = [](char* o, size_t n, uint32_t v) { if (v >= 10000) snprintf(o, n, "%.1fk", v / 1000.f); else snprintf(o, n, "%u", (unsigned)v); };
+  char okS[10], totS[12]; k(okS, sizeof okS, ok); k(b, sizeof b, s.polls); snprintf(totS, sizeof totS, "/%s", b);
+  const char* ip = s.tsIp[0] ? s.tsIp : s.ip;
+  uint16_t tc = s.ts == 1 ? V_OK : s.ts == 0 ? V_BAD : V_DIMG;
+  Item it[3] = {{"PC", s.link[0] ? s.link : "--", lc, lc, nullptr},
+                {"LINK", s.polls ? okS : "--", hc, V_WHITE, s.polls ? totS : nullptr},
+                {"IP", ip[0] ? ip : "--", tc, V_WHITE, nullptr}};
+  vBottom(126, it, false);
+  pageDots(1);
+}
+
+enum Page { P_BOARD, P_KVM, P_DESK, P_TERM, P_PC, P_ZG, NPAGES };   // P_PC / P_ZG: v2 skin
+int page = P_PC;   // boot into the v2 PC page
 
 // Page 1, the scoreboard. Status rail | PC panel (3 metric rows + net) over ZERO | GEEK.
 void drawBoard(const Status& s, const PcHist& h, uint32_t now) {
@@ -1285,7 +1477,8 @@ void paint() {
   fb.fillScreen(C_BG);
   if (page == P_TERM) drawTerm();
   else if (page == P_KVM) drawKvm(s, h);
-  else if (page == P_V2) drawV2(s, h, millis());
+  else if (page == P_PC) drawPc(s, h, millis());
+  else if (page == P_ZG) drawZg(s, h, millis());
   else drawBoard(s, h, millis());
   tft.drawRGBBitmap(0, 0, fb.getBuffer(), W, H);
 }
