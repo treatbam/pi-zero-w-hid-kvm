@@ -133,7 +133,7 @@ struct Status {
   bool ledNum = false, ledCaps = false, ledScroll = false;
   int httpCode = 0, rssi = 0;
   char udc[16] = "?", ip[16] = "--", geekIp[16] = "--", link[12] = "";
-  char pcIp[16] = "", pcTopProc[16] = "", tsIp[16] = "", netIf[12] = "";   // netIf: net_iface, "" until the helper sends it   // tsIp: tailscale_ip, "" when null
+  char pcIp[16] = "", pcTopProc[16] = "", tsIp[16] = "", netIf[12] = "";   // netIf: pc_net_iface, "" until the helper sends it   // tsIp: tailscale_ip, "" when null
   float temp = NAN, load1 = NAN, pcTemp = NAN, pcLoad = NAN;
   float pcRx = NAN, pcTx = NAN, pcNcpu = NAN, pcTopCpu = NAN;
   int mem = -1, pcMem = -1, pcDisk = -1, pcCoreCount = 0;
@@ -270,7 +270,7 @@ void pollOnce() {
           s.pcCoreCount = ci;
         }
         if (!d["pc_ip"].isNull()) copyStr(s.pcIp, sizeof s.pcIp, d["pc_ip"] | "");
-        if (!d["net_iface"].isNull()) copyStr(s.netIf, sizeof s.netIf, d["net_iface"] | "");
+        if (!d["pc_net_iface"].isNull()) copyStr(s.netIf, sizeof s.netIf, d["pc_net_iface"] | "");
         if (!d["pc_disk_pct"].isNull()) s.pcDisk = d["pc_disk_pct"].as<int>();
         if (!d["pc_top_proc"].isNull()) copyStr(s.pcTopProc, sizeof s.pcTopProc, d["pc_top_proc"] | "");
         if (!d["pc_top_cpu_pct"].isNull()) s.pcTopCpu = d["pc_top_cpu_pct"].as<float>();
@@ -1175,7 +1175,7 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   fmtMem(a, sizeof a, mem); ft(4, 84, a, mem < 0 || stale ? V_GREY : vHeat(vPct(mem)), &FreeSansBold12pt7b);
   fmtMem(a, sizeof a, disk); ft(4, 111, a, disk < 0 || stale ? V_GREY : vHeat(vPct(disk)), &FreeSansBold12pt7b);
   // net rows
-  const char* ifn = s.netIf[0] ? s.netIf : "NET";   // busiest NIC from the helper (net_iface)
+  const char* ifn = s.netIf[0] ? s.netIf : "NET";   // busiest NIC from the helper (pc_net_iface)
   const int NX = 54, NW = W - 4 - NX;
   for (int r = 0; r < 2; r++) {
     int y = 58 + r * 32; uint16_t c = r ? V_TX : V_RX;
