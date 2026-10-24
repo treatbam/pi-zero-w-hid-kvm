@@ -1,4 +1,4 @@
-// ESP32-S3-GEEK KVM panel. Four pages (PC, ZERO|GEEK, desktop, terminal); every page uses
+// ESP32-S3-GEEK KVM panel. Five pages (PC, cores+processes, ZERO|GEEK, desktop, terminal); every page uses
 // the shared design system below (palette, ramp(), panel()). Formerly: three pages, one short press to advance:
 //   scoreboard → desktop still → terminal → scoreboard.
 // A long press does nothing, and two quick presses are just two page steps. There is no menu.
@@ -143,7 +143,8 @@ struct Status {
   int8_t ts = -1;                // tailscale: -1 n/a, 0 down, 1 up
   char serialMode[8] = "";
   // type-8 extended stats (absent -> NAN / 0)
-  uint8_t coresAll[16] = {0};
+  uint8_t coresAll[64] = {0};   // every core the helper sends (it caps at 64)
+  char procN[8][16] = {}; float procP[8] = {}; int procCount = 0;   // pc_procs, busiest first
   int coresAllN = 0, coresTotal = 0;
   float pcGpu = NAN, pcCpuT = NAN, pcGpuT = NAN, pcNvmeT = NAN;
   long upS = -1, pcUpS = -1;
@@ -283,11 +284,22 @@ void pollOnce() {
           int ci = 0, tot = 0;
           for (JsonVariant v : d["pc_cores_all"].as<JsonArray>()) {
             tot++;
-            if (ci >= 16) continue;
-            float cv = v | -1.f;
-            if (cv >= 0.f && cv <= 100.f) s.coresAll[ci++] = (uint8_t)(cv + 0.5f);
+            if (ci >= 64) continue;
+            float cv = v | 0.f;   // keep slot order: a bad entry reads 0, never shifts later cores
+            s.coresAll[ci++] = (uint8_t)(constrain(cv, 0.f, 100.f) + 0.5f);
           }
           s.coresAllN = ci; s.coresTotal = tot;
+        }
+        if (d["pc_procs"].is<JsonArray>()) {
+          int pi = 0;
+          for (JsonVariant v : d["pc_procs"].as<JsonArray>()) {
+            if (pi >= 8) break;
+            JsonArray r = v.as<JsonArray>();
+            if (r.size() < 2 || !r[0].is<const char*>()) continue;
+            copyStr(s.procN[pi], sizeof s.procN[pi], r[0] | "");
+            s.procP[pi++] = r[1] | 0.f;
+          }
+          s.procCount = pi;
         }
         if (!d["pc_gpu_pct"].isNull()) s.pcGpu = d["pc_gpu_pct"].as<float>();
         if (!d["pc_cpu_temp_c"].isNull()) s.pcCpuT = d["pc_cpu_temp_c"].as<float>();
@@ -1051,8 +1063,8 @@ void ft(int x, int y, const char* s, uint16_t c, const GFXfont* f) {   // y = ba
 }
 void ftR(int right, int y, const char* s, uint16_t c, const GFXfont* f) { ft(right - ftW(f, s), y, s, c, f); }
 void vDot(int x, int y, uint16_t c) { fb.fillCircle(x, y, 2, c); }
-void pageDots(int cur) {   // two tiny dots, top-right, current lit
-  for (int i = 0; i < 2; i++) fb.fillCircle(W - 11 + i * 6, 3, 1, i == cur ? V_WHITE : V_DIMG);
+void pageDots(int cur) {   // three tiny dots (PC, cores, ZERO|GEEK), top-right, current lit
+  for (int i = 0; i < 3; i++) fb.fillCircle(W - 17 + i * 6, 3, 1, i == cur ? V_WHITE : V_DIMG);
 }
 // Filled sparkline in one colour: bright top pixel, fill fading to the background.
 void vSpark(int x, int y, int w, int h, const float* ser, int n, int next, float lo, float hi, uint16_t c, bool dim,
@@ -1246,10 +1258,75 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
                 {"LINK", s.polls ? okS : "--", hc, V_WHITE, s.polls ? totS : nullptr},
                 {strlen(ip) >= 13 ? "" : "IP", ip[0] ? ip : "--", tc, V_WHITE, nullptr}};
   vBottom(126, it, false);
+  pageDots(2);
+}
+
+// v2 page 2: a short strip of per-core bars over the PC's busiest processes.
+// Bars follow the PC's real core count; above 16 neighbours average so each bar always
+// covers the same cores. The list fills the space: one column up to 4 rows, else two.
+void drawCores(const Status& s, uint32_t now) {
+  fb.fillScreen(V_BG);
+  bool stale = isStale(s, now);
+  bool linked = s.api && strcmp(s.link, "LINKED") == 0;
+  int n = linked ? s.coresAllN : 0;
+  char a[24];
+  const int X = 4, BW = W - 8, TOP = 13, BOT = 44;
+  txt(X, 1, "CORES", V_LAB);
+  if (n) {
+    int sum = 0; for (int i = 0; i < n; i++) sum += s.coresAll[i];
+    int avg = (sum + n / 2) / n;
+    snprintf(a, sizeof a, "%d", n); txt(X + 36, 1, a, stale ? V_GREY : V_WHITE);
+    int nx = X + 36 + 6 * (int)strlen(a) + 6;
+    snprintf(a, sizeof a, "avg %d%%", avg); txt(nx, 1, a, stale ? V_GREY : vHeat(avg / 100.f));
+    int per = (n + 15) / 16, bars = (n + per - 1) / per, gap = bars > 24 ? 1 : 2;
+    float bw = (BW - gap * (bars - 1)) / (float)bars;
+    for (int b = 0; b < bars; b++) {
+      int lo = b * per, hi = min(n, lo + per), acc = 0;
+      for (int i = lo; i < hi; i++) acc += s.coresAll[i];
+      float v = acc / (float)(hi - lo) / 100.f;
+      int x0 = X + (int)(b * (bw + gap)), x1 = X + (int)(b * (bw + gap) + bw) - 1;
+      fb.fillRect(x0, TOP, x1 - x0 + 1, BOT - TOP + 1, V_DIV);
+      int ht = (int)((BOT - TOP) * v + 0.5f);
+      for (int y = BOT - ht; y <= BOT; y++) {
+        uint16_t c = vHeat((BOT - y) / (float)(BOT - TOP));
+        fb.drawFastHLine(x0, y, x1 - x0 + 1, stale ? mix(V_BG, c, 110) : c);
+      }
+    }
+    int ay = BOT - (int)((BOT - TOP) * avg / 100.f + 0.5f);
+    fb.drawFastHLine(X, ay, BW, stale ? V_GREY : V_WHITE);
+  } else {
+    txt(X + 36, 1, "--", V_GREY);
+    fb.drawRect(X, TOP, BW, BOT - TOP + 1, V_DIV);
+  }
+  txt(X, 49, "PROCESSES", V_LAB);
+  int pn = linked ? s.procCount : 0;
+  if (!pn) txt(X, 62, linked ? "idle" : "--", V_GREY);
+  else {
+    const int LT = 60, LB = 116;
+    int cols = pn > 4 ? 2 : 1, rows = (pn + cols - 1) / cols;
+    int cw = cols == 2 ? (BW - 6) / 2 : BW, rh = min(16, (LB - LT) / rows);
+    if (cols == 2) fb.drawFastVLine(X + cw + 3, LT, rows * rh - 4, V_DIV);
+    for (int i = 0; i < pn; i++) {
+      int cx = X + (i / rows) * (cw + 6), y = LT + (i % rows) * rh;
+      float p = s.procP[i];
+      snprintf(a, sizeof a, p >= 9.5f || p == 0.f ? "%.0f%%" : "%.1f%%", p);
+      int pw = 6 * strlen(a), maxc = (cw - pw - 6) / 6;
+      char nm[24]; strlcpy(nm, s.procN[i], min((int)sizeof nm, maxc + 1));
+      txt(cx, y, nm, stale ? V_GREY : V_WHITE);
+      txtR(cx + cw, y, a, stale ? V_GREY : vHeat(min(1.f, p / 100.f)));
+    }
+  }
+  char hid[4] = "HID", age[12], rs[8];
+  fmtAge(age, sizeof age, s, now); if (!s.lastOkMs) strcpy(age, "--");
+  if (s.wifi && s.rssi) snprintf(rs, sizeof rs, "%d", s.rssi); else strcpy(rs, "--");
+  Item it[3] = {{"ZERO", s.api ? hid : "--", hidC(s), hidC(s), nullptr},
+                {"LINK", age, ageC(s, now), ageC(s, now), nullptr},
+                {"GEEK", rs, rssiC(s.wifi, s.rssi), rssiC(s.wifi, s.rssi), nullptr}};
+  vBottom(126, it, false);
   pageDots(1);
 }
 
-enum Page { P_PC, P_ZG, P_DESK, P_TERM, NPAGES };
+enum Page { P_PC, P_CORES, P_ZG, P_DESK, P_TERM, NPAGES };
 int page = P_PC;   // boot into the v2 PC page
 
 void drawWaiting() {
@@ -1312,6 +1389,7 @@ void paint() {
   fb.fillScreen(C_BG);
   if (page == P_TERM) drawTerm();
   else if (page == P_ZG) drawZg(s, h, millis());
+  else if (page == P_CORES) drawCores(s, millis());
   else drawPc(s, h, millis());
   tft.drawRGBBitmap(0, 0, fb.getBuffer(), W, H);
 }
