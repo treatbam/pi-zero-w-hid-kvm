@@ -291,7 +291,7 @@ class HostView:
             fields.update({"pc_cores_all": ext.get("cores"), "pc_gpu_pct": ext.get("gpu_pct"),
                            "pc_cpu_temp_c": temps.get("cpu"), "pc_gpu_temp_c": temps.get("gpu"),
                            "pc_nvme_temp_c": temps.get("nvme"), "pc_uptime_s": ext.get("uptime_s"),
-                           "pc_procs": ext.get("procs")})
+                           "pc_procs": ext.get("procs"), "pc_net_procs": ext.get("netprocs")})
             return fields
 
     def frame_bytes(self, host_connected):
@@ -547,6 +547,13 @@ def _parse_ext(payload):
                 and r[0].isprintable() and r[0] and _num(r[1], 0, 6400)]
         if rows:
             out["procs"] = rows
+    npr = d.get("netprocs")
+    if isinstance(npr, list) and len(npr) <= 8:
+        rows = [[str(r[0])[:15], round(float(r[1]), 1)] for r in npr
+                if isinstance(r, list) and len(r) == 2 and isinstance(r[0], str)
+                and r[0].isprintable() and r[0] and _num(r[1], 0, 1e11)]
+        if rows:
+            out["netprocs"] = rows
     if _num(d.get("uptime_s"), 0, 10 ** 9):
         out["uptime_s"] = int(d["uptime_s"])
     return out

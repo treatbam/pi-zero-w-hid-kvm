@@ -217,3 +217,20 @@ class TopProcsTest(unittest.TestCase):
         now = {1: ("a", 50), 2: ("b", 40), 3: ("b", 40), 4: ("c", 0), 5: ("new", 9)}
         self.assertEqual(kvm_helper.top_procs(prev, now, 11, clk_tck=100), [["b", 80.0], ["a", 50.0]])
         self.assertEqual(kvm_helper.top_procs(None, now, 11), [])
+
+
+class NetProcsTest(unittest.TestCase):
+    SS = ('ESTAB 0 0 10.0.0.2:1 1.1.1.1:443 users:(("firefox",pid=5,fd=3))\n'
+          '\t cubic bytes_sent:10 bytes_acked:100 bytes_received:900 segs_out:1\n'
+          'ESTAB 0 0 10.0.0.2:2 1.1.1.1:443\n'
+          '\t cubic bytes_acked:50 bytes_received:0\n')
+
+    def test_parse_and_rates(self):
+        a = kvm_helper.parse_ss(self.SS)
+        self.assertEqual(a[("10.0.0.2:1", "1.1.1.1:443")], ("firefox", 1000))
+        self.assertEqual(a[("10.0.0.2:2", "1.1.1.1:443")], ("other", 50))
+        rows, prev = kvm_helper.top_net_procs(None, a, 10)
+        self.assertEqual(rows, [])
+        b = dict(a); b[("10.0.0.2:1", "1.1.1.1:443")] = ("firefox", 3000)
+        rows, _ = kvm_helper.top_net_procs(prev, b, 12)
+        self.assertEqual(rows, [["firefox", 1000.0]])

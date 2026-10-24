@@ -469,6 +469,60 @@ def top_procs(prev, sample, now, n=8, clk_tck=None):
     return [[c, round(min(6400.0, 100.0 * (d / clk_tck) / dt), 1)] for c, d in rows if d > 0]
 
 
+_SS_USER = re.compile(r'\(\("([^"]+)",pid=\d+')
+_SS_BYTES = re.compile(r"\b(bytes_acked|bytes_received):(\d+)")
+
+
+def parse_ss(text):
+    """{(local, peer): (comm or "other", bytes_acked + bytes_received)} from
+    `ss -tinpH` output. Sockets of other users have no pid and land in "other"."""
+    out, key, comm = {}, None, None
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        if not line[0].isspace():
+            cols = line.split()
+            key = (cols[3], cols[4]) if len(cols) >= 5 else None
+            if key and any(a.startswith(("127.", "[::1]", "[::ffff:127.")) for a in key):
+                key = None          # loopback isn't network activity
+            m = _SS_USER.search(line)
+            comm = m.group(1)[:15] if m else "other"
+            continue
+        if key is None:
+            continue
+        total = sum(int(v) for _, v in _SS_BYTES.findall(line))
+        out[key] = (comm, total)
+        key = None
+    return out
+
+
+def read_tcp_sockets():
+    try:
+        r = subprocess.run(["ss", "-tinpH"], capture_output=True, text=True, timeout=1.5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return parse_ss(r.stdout) if r.returncode == 0 else None
+
+
+def top_net_procs(prev, sample, now, n=8):
+    """(rows, new_prev). rows: [[comm, bytes/s up+down], ...] busiest first, TCP only,
+    like bandwhich but without root. Sockets new since the last sample count in full."""
+    if sample is None:
+        return [], None
+    new = (now, sample)
+    if prev is None or now <= prev[0]:
+        return [], new
+    dt = now - prev[0]
+    by = {}
+    for k, (comm, b) in sample.items():
+        old = prev[1].get(k)
+        d = b - old[1] if old else b
+        if d > 0:
+            by[comm] = by.get(comm, 0) + d
+    rows = sorted(by.items(), key=lambda kv: kv[1], reverse=True)[:n]
+    return [[c, round(d / dt, 1)] for c, d in rows], new
+
+
 PREFERRED_TEMP = frozenset((
     "x86_pkg_temp", "cpu-thermal", "soc_thermal",       # thermal zone types
     "coretemp", "k10temp", "zenpower", "cpu_thermal",   # hwmon chip names
@@ -941,6 +995,7 @@ class HelperState:
         self.net_pick = NetPicker()
         self.cores_prev = None
         self.proc_prev = None
+        self.sock_prev = None
         self.prev_raw = None
         self.crop_mode = "full"
         self.frame_until = time.monotonic() + FRAME_LEASE_S
@@ -987,6 +1042,9 @@ def send_helper_packets(fd, display, announced, state=None, want_frame=True):
         more = state.ext.sample()
         if procs:
             more["procs"] = procs
+        netprocs, state.sock_prev = top_net_procs(state.sock_prev, read_tcp_sockets(), now)
+        if netprocs:
+            more["netprocs"] = netprocs
         if len(more) > 1:
             blob += kvm_stats.pack_ext(more)
     blob += pack_mode(b"helper")
