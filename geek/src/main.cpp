@@ -228,7 +228,7 @@ volatile bool gTermOn = false;
 volatile bool gDeskOn = false;
 volatile bool gFramePull = false;
 
-static const int TCOLS = 39, TROWS = 16;
+static const int TCOLS = 39, TROWS = 14;   // 14 rows clear the shared status bar
 struct Term { char row[TROWS][TCOLS + 1]; int n = 0, code = 0; bool open = false; uint32_t seq = 0, stampMs = 0; };
 Term gTerm;
 
@@ -1132,25 +1132,6 @@ uint16_t ageC(const Status& s, uint32_t now) {
   uint32_t a = now - s.lastOkMs; return a < 4000 ? V_OK : a <= STALE_MS ? V_WARN : V_BAD;
 }
 // Bottom row: three evenly spaced "dot LABEL value" items, centred in thirds.
-struct Item { const char* lab; const char* val; uint16_t dot, valC; const char* tail; };
-void vBottom(int y, const Item* it, bool dim) {
-  fb.drawFastHLine(4, y - 3, W - 8, V_DIV);
-  int lw[3], vw[3], tw[3], tot[3], sum = 0;
-  for (int i = 0; i < 3; i++) {
-    lw[i] = strlen(it[i].lab) * CW; vw[i] = strlen(it[i].val) * CW; tw[i] = it[i].tail ? strlen(it[i].tail) * CW : 0;
-    tot[i] = 5 + lw[i] + (lw[i] ? 2 : 0) + vw[i] + tw[i]; sum += tot[i];
-  }
-  int gap = max(4, (W - 8 - sum) / 4), x = 4 + gap;   // even gaps, outer ones included
-  if (sum + 4 * gap > W - 8) { gap = max(4, (W - 8 - sum) / 2); x = 4; }
-  for (int i = 0; i < 3; i++) {
-    vDot(x + 2, y + 3, dimmed(it[i].dot, dim));
-    int vx = x + 5 + lw[i] + (lw[i] ? 2 : 0);
-    if (lw[i]) txt(x + 5, y, it[i].lab, V_LAB);
-    txt(vx, y, it[i].val, dim ? V_GREY : it[i].valC);
-    if (tw[i]) txt(vx + vw[i], y, it[i].tail, V_GREY);
-    x += tot[i] + gap;
-  }
-}
 
 void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   fb.fillScreen(V_BG);
@@ -1213,13 +1194,6 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
     vFmtRate(a, sizeof a, v); txtR(W - 4, y, a, stale || isnan(v) ? V_GREY : V_WHITE);
     vSpark(NX, y + 10, NW, 19, r ? h.tx : h.rx, h.n, h.next, 0, 1, c, stale, true);
   }
-  char hid[4] = "HID", age[12], rs[8];
-  fmtAge(age, sizeof age, s, now); if (!s.lastOkMs) strcpy(age, "--");
-  if (s.wifi && s.rssi) snprintf(rs, sizeof rs, "%d", s.rssi); else strcpy(rs, "--");
-  Item it[3] = {{"ZERO", s.api ? hid : "--", hidC(s), hidC(s), nullptr},
-                {"LINK", age, ageC(s, now), ageC(s, now), nullptr},
-                {"GEEK", rs, rssiC(s.wifi, s.rssi), rssiC(s.wifi, s.rssi), nullptr}};
-  vBottom(126, it, false);
   pageDots(0);
 }
 
@@ -1228,48 +1202,41 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
   bool stale = isStale(s, now);
   char a[24], b[24];
   const int MID = 120;
-  fb.drawFastVLine(MID, 4, 112, V_DIV);
+  fb.drawFastVLine(MID, 4, 112, V_DIV);   // IPs and link counts live in each half; the shared bar is below
   // ZERO half
   int L = 4, R = MID - 5;
   ft(L, 13, "ZERO", V_LAB, &FreeSansBold9pt7b);
   ft(L, 40, s.api ? "HID" : "--", stale ? V_GREY : hidC(s), &FreeSansBold18pt7b);
   uint16_t val = stale ? V_GREY : V_WHITE;
-  txt(L, 48, "load", V_LAB); fmtLoad(a, sizeof a, s.api ? s.load1 : NAN); txtR(R, 48, a, val);
-  txt(L, 60, "temp", V_LAB); fmtTemp(a, sizeof a, s.api ? s.temp : NAN);
-  txtR(R, 60, a, stale || !s.api || isnan(s.temp) ? V_GREY : vHeat(vT(s.temp)));
-  txt(L, 72, "up", V_LAB); vFmtUp(a, sizeof a, s.api ? s.upS : -1); txtR(R, 72, a, val);
-  txt(L, 85, "load history", V_RX);
-  vSpark(L, 95, R - L, 21, h.piLoad, h.n, h.next, 0, 1.5f, V_RX, stale);
+  const char* zip = s.tsIp[0] ? s.tsIp : s.ip;   // Tailscale first, LAN as fallback
+  txt(L, 46, "load", V_LAB); fmtLoad(a, sizeof a, s.api ? s.load1 : NAN); txtR(R, 46, a, val);
+  txt(L, 56, "temp", V_LAB); fmtTemp(a, sizeof a, s.api ? s.temp : NAN);
+  txtR(R, 56, a, stale || !s.api || isnan(s.temp) ? V_GREY : vHeat(vT(s.temp)));
+  txt(L, 66, "up", V_LAB); vFmtUp(a, sizeof a, s.api ? s.upS : -1); txtR(R, 66, a, val);
+  txt(L, 76, "ip", V_LAB); txtR(R, 76, s.api && zip[0] ? zip : "--", s.api && zip[0] ? V_WHITE : V_GREY);
+  if (s.ts >= 0) vDot(L + 16, 79, s.ts == 1 ? V_OK : V_BAD);   // dot: Tailscale up / down
+  txt(L, 90, "load history", V_RX);
+  vSpark(L, 100, R - L, 16, h.piLoad, h.n, h.next, 0, 1.5f, V_RX, stale);
   // GEEK half
   L = MID + 5; R = W - 4;
   ft(L, 13, "GEEK", V_LAB, &FreeSansBold9pt7b);
   if (s.wifi && s.rssi) snprintf(a, sizeof a, "%d", s.rssi); else strcpy(a, "--");
   ft(L, 40, a, rssiC(s.wifi, s.rssi), &FreeSansBold18pt7b);
   txt(L + ftW(&FreeSansBold18pt7b, a) + 3, 33, "dBm", V_LAB);
-  txt(L, 48, "heap", V_LAB); snprintf(a, sizeof a, "%uK", (unsigned)(ESP.getFreeHeap() / 1024)); txtR(R, 48, a, V_WHITE);
-  txt(L, 60, "ping", V_LAB);
+  txt(L, 46, "ping", V_LAB);
   if (s.api) snprintf(a, sizeof a, "%ums", (unsigned)s.latencyMs); else strcpy(a, "--");
-  txtR(R, 60, a, s.api ? V_WHITE : V_GREY);
-  txt(L, 72, "up", V_LAB); vFmtUp(a, sizeof a, (long)(millis() / 1000)); txtR(R, 72, a, V_WHITE);
-  txt(L, 85, "wifi history", V_TX);
-  vSpark(L, 95, R - L, 21, h.geekRssi, h.n, h.next, -90, -40, V_TX, false);
-  // bottom row
-  bool linked = s.api && strcmp(s.link, "LINKED") == 0;
-  uint16_t lc = !s.api ? V_GREY : linked ? V_OK : V_WARN;
-  int bad = 0, win = min(h.n, 30), st = (h.n < HIST) ? 0 : h.next;   // failed polls leave NAN Pi load
-  for (int i = h.n - win; i < h.n; i++) if (isnan(h.piLoad[(st + i) % HIST])) bad++;
-  uint16_t hc = stale ? V_BAD : bad == 0 ? V_OK : bad < 3 ? V_WARN : V_BAD;
-  uint32_t ok = s.polls - s.fails;
+  txtR(R, 46, a, s.api ? V_WHITE : V_GREY);
+  // link: polls that came back / polls sent
   auto k = [](char* o, size_t n, uint32_t v) { if (v >= 10000) snprintf(o, n, "%.1fk", v / 1000.f); else snprintf(o, n, "%u", (unsigned)v); };
-  char okS[10], totS[12]; k(okS, sizeof okS, ok); k(b, sizeof b, s.polls); snprintf(totS, sizeof totS, "/%s", b);
-  const char* ip = s.tsIp[0] ? s.tsIp : s.ip;
-  uint16_t tc = s.ts == 1 ? V_OK : s.ts == 0 ? V_BAD : V_DIMG;
-  // Worst case "PC ok" 31 + "LINK 12.4k/12.5k" 97 + 15-char IP: the IP label drops at >= 13 chars
-  // (dot + address read on their own) so the row stays within 232 px.
-  Item it[3] = {{"PC", !s.api ? "--" : linked ? "ok" : "off", lc, lc, nullptr},
-                {"LINK", s.polls ? okS : "--", hc, V_WHITE, s.polls ? totS : nullptr},
-                {strlen(ip) >= 13 ? "" : "IP", ip[0] ? ip : "--", tc, V_WHITE, nullptr}};
-  vBottom(126, it, false);
+  txt(L, 56, "link", V_LAB);
+  if (s.polls) {
+    k(a, sizeof a, s.polls - s.fails); k(b, sizeof b, s.polls);
+    int bw = CW * (1 + strlen(b)); txtR(R, 56, b, V_WHITE); txtR(R - CW * strlen(b), 56, "/", V_GREY); txtR(R - bw, 56, a, V_WHITE);
+  } else txtR(R, 56, "--", V_GREY);
+  txt(L, 66, "up", V_LAB); vFmtUp(a, sizeof a, (long)(millis() / 1000)); txtR(R, 66, a, V_WHITE);
+  txt(L, 76, "ip", V_LAB); txtR(R, 76, s.wifi ? s.geekIp : "--", s.wifi ? V_WHITE : V_GREY);
+  txt(L, 90, "wifi history", V_TX);
+  vSpark(L, 100, R - L, 16, h.geekRssi, h.n, h.next, -90, -40, V_TX, false);
   pageDots(3);
 }
 
@@ -1323,13 +1290,6 @@ void drawCores(const Status& s, uint32_t now) {
       txtR(R, y, a, stale ? V_GREY : vHeat(min(1.f, p / 100.f)));
     }
   }
-  char hid[4] = "HID", age[12], rs[8];
-  fmtAge(age, sizeof age, s, now); if (!s.lastOkMs) strcpy(age, "--");
-  if (s.wifi && s.rssi) snprintf(rs, sizeof rs, "%d", s.rssi); else strcpy(rs, "--");
-  Item it[3] = {{"ZERO", s.api ? hid : "--", hidC(s), hidC(s), nullptr},
-                {"LINK", age, ageC(s, now), ageC(s, now), nullptr},
-                {"GEEK", rs, rssiC(s.wifi, s.rssi), rssiC(s.wifi, s.rssi), nullptr}};
-  vBottom(126, it, false);
   pageDots(1);
 }
 
@@ -1369,14 +1329,31 @@ void drawNet(const Status& s, uint32_t now) {
       for (int x = 0; x < len; x++) fb.drawPixel(X + x, y + 9, stale ? V_GREY : mix(V_RX, V_TX, 255 * x / max(1, R - X)));
     }
   }
-  char hid[4] = "HID", age[12], rs[8];
-  fmtAge(age, sizeof age, s, now); if (!s.lastOkMs) strcpy(age, "--");
-  if (s.wifi && s.rssi) snprintf(rs, sizeof rs, "%d", s.rssi); else strcpy(rs, "--");
-  Item it[3] = {{"ZERO", s.api ? hid : "--", hidC(s), hidC(s), nullptr},
-                {"LINK", age, ageC(s, now), ageC(s, now), nullptr},
-                {"GEEK", rs, rssiC(s.wifi, s.rssi), rssiC(s.wifi, s.rssi), nullptr}};
-  vBottom(126, it, false);
   pageDots(2);
+}
+
+// Shared status bar, drawn on every page (stats, desktop, terminal) so it never changes:
+// ZERO + HID state, a colour-only LINK block in the middle, GEEK + Wi-Fi dBm.
+// LINK block: green = polls coming back clean, yellow = recent misses or PC not linked, red = Zero gone.
+void statusBar(const Status& s, const PcHist& h, uint32_t now) {
+  const int Y = 121;
+  fb.fillRect(0, Y - 3, W, H - Y + 3, V_BG);
+  fb.drawFastHLine(4, Y - 3, W - 8, V_DIV);
+  bool stale = isStale(s, now);
+  int bad = 0, win = min(h.n, 30), st = (h.n < HIST) ? 0 : h.next;   // failed polls leave NAN Pi load
+  for (int i = h.n - win; i < h.n; i++) if (isnan(h.piLoad[(st + i) % HIST])) bad++;
+  bool linked = s.api && strcmp(s.link, "LINKED") == 0;
+  uint16_t lc = !s.api || stale || bad >= 3 ? V_BAD : bad || !linked ? V_WARN : V_OK;
+  const int ty = Y + 3;
+  // ZERO (left)
+  vDot(6, ty + 3, hidC(s)); txt(11, ty, "ZERO", V_LAB); txt(11 + 5 * CW, ty, s.api ? "HID" : "--", hidC(s));
+  // LINK block (centre)
+  const int BW = 30, BH = 9; fb.fillRoundRect((W - BW) / 2, ty - 1, BW, BH, 2, lc);
+  // GEEK (right): "GEEK -52dBm"
+  char rs[12]; if (s.wifi && s.rssi) snprintf(rs, sizeof rs, "%ddBm", s.rssi); else strcpy(rs, "--");
+  uint16_t gc = rssiC(s.wifi, s.rssi);
+  int rw = strlen(rs) * CW, gx = W - 4 - rw - 5 * CW - 5;
+  vDot(gx + 2, ty + 3, gc); txt(gx + 5, ty, "GEEK", V_LAB); txtR(W - 4, ty, rs, gc);
 }
 
 enum Page { P_PC, P_CORES, P_NET, P_ZG, P_DESK, P_TERM, NPAGES };
@@ -1385,8 +1362,8 @@ int page = P_PC;   // boot into the v2 PC page
 void drawWaiting() {
   vgrad(0, 0, W, H, railC(3, 0), railC(3, 1));
   vword((W - 72) / 2, 0, 72, H, "KEYS", railC(3, 2));
-  if (gPinBad) txt(78, 120, "bad PIN (portal)", rgb(120, 10, 10), 1);
-  else txt(99, 120, "waiting", rgb(4, 20, 32), 1);
+  if (gPinBad) txt(78, 106, "bad PIN (portal)", rgb(120, 10, 10), 1);
+  else txt(99, 106, "waiting", rgb(4, 20, 32), 1);
 }
 
 void drawTerm() {
@@ -1419,6 +1396,8 @@ void drawOta() {
 void paint() {
   fb.setTextWrap(false);
   if (gOtaPct >= 0) { drawOta(); tft.drawRGBBitmap(0, 0, fb.getBuffer(), W, H); return; }
+  static Status s; static PcHist h;   // static: PcHist is ~9 KB, keep it off the loop stack
+  xSemaphoreTake(gLock, portMAX_DELAY); s = gStat; h = gHist; xSemaphoreGive(gLock);
   if (page == P_DESK) {
     bool show = false;
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) == pdTRUE) {
@@ -1431,11 +1410,10 @@ void paint() {
       xSemaphoreGive(gLock);
     } else show = gShown;
     if (!show) drawWaiting();
+    statusBar(s, h, millis());
     tft.drawRGBBitmap(0, 0, fb.getBuffer(), W, H);
     return;
   }
-  static Status s; static PcHist h;   // static: PcHist is ~9 KB, keep it off the loop stack
-  xSemaphoreTake(gLock, portMAX_DELAY); s = gStat; h = gHist; xSemaphoreGive(gLock);
   // Stale dims the backlight (PWM) and recovers on the next good poll.
   static int bl = -1; int want = isStale(s, millis()) && s.polls > 2 ? BL_DIM : BL_FULL;
   if (want != bl) { analogWrite(LCD_BL, want); bl = want; }
@@ -1445,6 +1423,7 @@ void paint() {
   else if (page == P_CORES) drawCores(s, millis());
   else if (page == P_NET) drawNet(s, millis());
   else drawPc(s, h, millis());
+  statusBar(s, h, millis());
   tft.drawRGBBitmap(0, 0, fb.getBuffer(), W, H);
 }
 
