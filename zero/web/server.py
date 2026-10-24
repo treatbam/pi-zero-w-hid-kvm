@@ -7,7 +7,7 @@ API:
                                       "pc_rx_bps","pc_tx_bps","pc_ncpu","pc_cores","pc_net_iface",
                                       "pc_ip","pc_disk_pct","pc_top_proc","pc_top_cpu_pct",
                                       "pc_age_s","frame_fresh",
-                                      "pc_cores_all","pc_gpu_pct","pc_cpu_temp_c","pc_gpu_temp_c","pc_nvme_temp_c","pc_uptime_s","pc_procs","pc_net_procs",
+                                      "pc_cores_all","pc_gpu_pct","pc_cpu_temp_c","pc_gpu_temp_c","pc_nvme_temp_c","pc_uptime_s","pc_procs","pc_net_procs","pc_mem_used","pc_mem_total","pc_disk_used","pc_disk_total","pc_disk_dev",
                                       "serial_mode","serial_mode_age_s","serial_mode_requested",
                                       "preview_quality","preview_quality_requested",
                                       "zero_wifi_rssi","tailscale","tailscale_ip"}

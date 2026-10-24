@@ -362,3 +362,11 @@ class ProcsExtTest(unittest.TestCase):
     def test_procs_validated(self):
         d = hostview._parse_ext(b'{"v":1,"procs":[["firefox",42.5],["bad",-1],[1,2],["x\\n",3]]}')
         self.assertEqual(d["procs"], [["firefox", 42.5]])
+
+
+class MemDiskExtTest(unittest.TestCase):
+    def test_mem_disk(self):
+        d = hostview._parse_ext(b'{"v":1,"mem":[4,16],"disk":[100,500,"nvme0n1p2"]}')
+        self.assertEqual(d["mem"], [4, 16])
+        self.assertEqual(d["disk"], [100, 500, "nvme0n1p2"])
+        self.assertNotIn("mem", hostview._parse_ext(b'{"v":1,"mem":[20,16]}'))

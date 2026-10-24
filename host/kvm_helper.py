@@ -523,6 +523,44 @@ def top_net_procs(prev, sample, now, n=8):
     return [[c, round(d / dt, 1)] for c, d in rows], new
 
 
+def read_mem_bytes():
+    """(used, total) bytes from /proc/meminfo (used = total - available), or None."""
+    try:
+        info = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                k, _, v = line.partition(":")
+                info[k] = int(v.split()[0]) * 1024
+        total, avail = info["MemTotal"], info["MemAvailable"]
+    except (OSError, KeyError, ValueError, IndexError):
+        return None
+    return (total - avail, total) if total > 0 else None
+
+
+def read_disk_info(path="/"):
+    """(used, total, device name like "nvme0n1p2") for `path`, or None."""
+    try:
+        st = os.statvfs(path)
+    except OSError:
+        return None
+    if st.f_blocks <= 0:
+        return None
+    total = st.f_blocks * st.f_frsize
+    used = (st.f_blocks - st.f_bavail) * st.f_frsize
+    dev = ""
+    try:
+        best = -1
+        with open("/proc/self/mounts") as f:
+            for line in f:
+                cols = line.split()
+                if len(cols) >= 2 and path.startswith(cols[1]) and len(cols[1]) > best \
+                        and cols[0].startswith("/dev/"):
+                    best, dev = len(cols[1]), os.path.basename(os.path.realpath(cols[0]))
+    except OSError:
+        pass
+    return used, total, dev[:15]
+
+
 PREFERRED_TEMP = frozenset((
     "x86_pkg_temp", "cpu-thermal", "soc_thermal",       # thermal zone types
     "coretemp", "k10temp", "zenpower", "cpu_thermal",   # hwmon chip names
@@ -1042,6 +1080,12 @@ def send_helper_packets(fd, display, announced, state=None, want_frame=True):
         more = state.ext.sample()
         if procs:
             more["procs"] = procs
+        mem = read_mem_bytes()
+        if mem:
+            more["mem"] = list(mem)
+        disk = read_disk_info("/")
+        if disk:
+            more["disk"] = list(disk)
         netprocs, state.sock_prev = top_net_procs(state.sock_prev, read_tcp_sockets(), now)
         if netprocs:
             more["netprocs"] = netprocs

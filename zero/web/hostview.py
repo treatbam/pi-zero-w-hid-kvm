@@ -291,7 +291,12 @@ class HostView:
             fields.update({"pc_cores_all": ext.get("cores"), "pc_gpu_pct": ext.get("gpu_pct"),
                            "pc_cpu_temp_c": temps.get("cpu"), "pc_gpu_temp_c": temps.get("gpu"),
                            "pc_nvme_temp_c": temps.get("nvme"), "pc_uptime_s": ext.get("uptime_s"),
-                           "pc_procs": ext.get("procs"), "pc_net_procs": ext.get("netprocs")})
+                           "pc_procs": ext.get("procs"), "pc_net_procs": ext.get("netprocs"),
+                           "pc_mem_used": (ext.get("mem") or [None, None])[0],
+                           "pc_mem_total": (ext.get("mem") or [None, None])[1],
+                           "pc_disk_used": (ext.get("disk") or [None] * 3)[0],
+                           "pc_disk_total": (ext.get("disk") or [None] * 3)[1],
+                           "pc_disk_dev": (ext.get("disk") or [None] * 3)[2]})
             return fields
 
     def frame_bytes(self, host_connected):
@@ -554,6 +559,13 @@ def _parse_ext(payload):
                 and r[0].isprintable() and r[0] and _num(r[1], 0, 1e11)]
         if rows:
             out["netprocs"] = rows
+    m = d.get("mem")
+    if isinstance(m, list) and len(m) == 2 and all(_num(x, 0, 2 ** 50) for x in m) and 0 <= m[0] <= m[1] and m[1] > 0:
+        out["mem"] = [int(m[0]), int(m[1])]
+    dk = d.get("disk")
+    if isinstance(dk, list) and len(dk) == 3 and _num(dk[0], 0, 2 ** 60) and _num(dk[1], 1, 2 ** 60) \
+            and dk[0] <= dk[1] and isinstance(dk[2], str) and dk[2].isprintable():
+        out["disk"] = [int(dk[0]), int(dk[1]), dk[2][:15] or None]
     if _num(d.get("uptime_s"), 0, 10 ** 9):
         out["uptime_s"] = int(d["uptime_s"])
     return out
