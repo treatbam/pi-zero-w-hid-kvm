@@ -1113,15 +1113,16 @@ void vBottom(int y, const Item* it, bool dim) {
   int lw[3], vw[3], tw[3], tot[3], sum = 0;
   for (int i = 0; i < 3; i++) {
     lw[i] = strlen(it[i].lab) * CW; vw[i] = strlen(it[i].val) * CW; tw[i] = it[i].tail ? strlen(it[i].tail) * CW : 0;
-    tot[i] = 6 + lw[i] + 3 + vw[i] + tw[i]; sum += tot[i];
+    tot[i] = 5 + lw[i] + (lw[i] ? 2 : 0) + vw[i] + tw[i]; sum += tot[i];
   }
   int gap = max(4, (W - 8 - sum) / 4), x = 4 + gap;   // even gaps, outer ones included
   if (sum + 4 * gap > W - 8) { gap = max(4, (W - 8 - sum) / 2); x = 4; }
   for (int i = 0; i < 3; i++) {
     vDot(x + 2, y + 3, dimmed(it[i].dot, dim));
-    txt(x + 6, y, it[i].lab, V_LAB);
-    txt(x + 6 + lw[i] + 3, y, it[i].val, dim ? V_GREY : it[i].valC);
-    if (tw[i]) txt(x + 6 + lw[i] + 3 + vw[i], y, it[i].tail, V_GREY);
+    int vx = x + 5 + lw[i] + (lw[i] ? 2 : 0);
+    if (lw[i]) txt(x + 5, y, it[i].lab, V_LAB);
+    txt(vx, y, it[i].val, dim ? V_GREY : it[i].valC);
+    if (tw[i]) txt(vx + vw[i], y, it[i].tail, V_GREY);
     x += tot[i] + gap;
   }
 }
@@ -1238,9 +1239,11 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
   char okS[10], totS[12]; k(okS, sizeof okS, ok); k(b, sizeof b, s.polls); snprintf(totS, sizeof totS, "/%s", b);
   const char* ip = s.tsIp[0] ? s.tsIp : s.ip;
   uint16_t tc = s.ts == 1 ? V_OK : s.ts == 0 ? V_BAD : V_DIMG;
-  Item it[3] = {{"PC", s.link[0] ? s.link : "--", lc, lc, nullptr},
+  // Worst case "PC ok" 31 + "LINK 12.4k/12.5k" 97 + 15-char IP: the IP label drops at >= 13 chars
+  // (dot + address read on their own) so the row stays within 232 px.
+  Item it[3] = {{"PC", !s.api ? "--" : linked ? "ok" : "off", lc, lc, nullptr},
                 {"LINK", s.polls ? okS : "--", hc, V_WHITE, s.polls ? totS : nullptr},
-                {"IP", ip[0] ? ip : "--", tc, V_WHITE, nullptr}};
+                {strlen(ip) >= 13 ? "" : "IP", ip[0] ? ip : "--", tc, V_WHITE, nullptr}};
   vBottom(126, it, false);
   pageDots(1);
 }
