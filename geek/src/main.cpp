@@ -137,6 +137,8 @@ struct Status {
   float temp = NAN, load1 = NAN, pcTemp = NAN, pcLoad = NAN;
   float pcRx = NAN, pcTx = NAN, pcNcpu = NAN, pcTopCpu = NAN;
   int mem = -1, pcMem = -1, pcDisk = -1, pcCoreCount = 0;
+  double pcMemUsed = NAN, pcMemTot = NAN, pcDiskUsed = NAN, pcDiskTot = NAN;
+  char pcDiskDev[16] = "";
   uint8_t pcCores[8] = {0};
   // KVM page (PIN-gated fields: the status GET sends X-KVM-PIN)
   int zRssi = 0;                 // Zero wlan0 dBm, 0 = unknown
@@ -274,6 +276,11 @@ void pollOnce() {
         if (!d["pc_ip"].isNull()) copyStr(s.pcIp, sizeof s.pcIp, d["pc_ip"] | "");
         if (!d["pc_net_iface"].isNull()) copyStr(s.netIf, sizeof s.netIf, d["pc_net_iface"] | "");
         if (!d["pc_disk_pct"].isNull()) s.pcDisk = d["pc_disk_pct"].as<int>();
+        if (!d["pc_mem_used"].isNull()) s.pcMemUsed = d["pc_mem_used"].as<double>();
+        if (!d["pc_mem_total"].isNull()) s.pcMemTot = d["pc_mem_total"].as<double>();
+        if (!d["pc_disk_used"].isNull()) s.pcDiskUsed = d["pc_disk_used"].as<double>();
+        if (!d["pc_disk_total"].isNull()) s.pcDiskTot = d["pc_disk_total"].as<double>();
+        if (d["pc_disk_dev"].is<const char*>()) copyStr(s.pcDiskDev, sizeof s.pcDiskDev, d["pc_disk_dev"] | "");
         if (!d["pc_top_proc"].isNull()) copyStr(s.pcTopProc, sizeof s.pcTopProc, d["pc_top_proc"] | "");
         if (!d["pc_top_cpu_pct"].isNull()) s.pcTopCpu = d["pc_top_cpu_pct"].as<float>();
         if (d["pin_ok"].is<bool>() && !(d["pin_ok"] | true)) pinFailed();
@@ -1054,8 +1061,8 @@ void bevelCard(int x, int y, int w, int h, uint16_t base = 0) {
 // ---- v2 skin: page 1 (target PC) and page 2 (ZERO | GEEK) ---------------------------------
 // Own near-black background and heat scale; FreeSansBold for the values (baseline y), the
 // built-in 6x8 font for labels and the bottom row.
-const uint16_t V_BG = 0x0021 /* ~#06060A */, V_LAB = 0xC6BD /* 200,215,235 */, V_WHITE = 0xFFFF,
-               V_GREY = 0x8C71, V_DIMG = 0x4208, V_DIV = 0x2945;
+const uint16_t V_BG = 0x0000 /* black */, V_LAB = 0xCF1D /* 200,225,235 light steel */, V_WHITE = 0xFFFF,
+               V_GREY = 0x8C71, V_DIMG = 0x4208, V_DIV = 0x2987 /* 45,50,58 */;
 uint16_t vHeat(float t) {   // green(40,210,90) -> yellow(250,210,40) -> red(240,50,40)
   if (isnan(t) || t < 0.f) t = 0.f;
   if (t > 1.f) t = 1.f;
@@ -1063,7 +1070,7 @@ uint16_t vHeat(float t) {   // green(40,210,90) -> yellow(250,210,40) -> red(240
   float u = (t - 0.5f) * 2.f; return rgb(250 - 10 * u, 210 - 160 * u, 40);
 }
 const uint16_t V_OK = 0x2E8B /* green */, V_WARN = 0xFE85 /* yellow */, V_BAD = 0xF185 /* red */;
-const uint16_t V_RX = 0x3C9F /* 60,150,255 */, V_TX = 0xAADF /* 170,90,255 */;
+const uint16_t V_RX = 0x06FF /* 0,220,255 cyan */, V_TX = 0xF9FA /* 255,60,210 magenta */;
 float vT(float c) { return (c - 45.f) / 45.f; }          // 45 C green .. 90 C red
 float vPct(int p) { return (p - 50) / 45.f; }            // 50 % green .. 95 % red
 int ftW(const GFXfont* f, const char* s) {
@@ -1093,6 +1100,28 @@ void vSpark(int x, int y, int w, int h, const float* ser, int n, int next, float
     for (int yy = top + 1; yy < y + h; yy++) fb.drawPixel(cx, yy, mix(mix(V_BG, c, 150), V_BG, (yy - top) * 180 / h));
     fb.drawPixel(cx, top, mix(c, V_WHITE, dim ? 0 : 60));
   }
+}
+// Same as vSpark but hanging from the top edge (page 1 mirrored net graph: RX down from the top).
+void vHang(int x, int y, int w, int h, const float* ser, int n, int next, uint16_t c, bool dim) {
+  if (n <= 0) return;
+  if (dim) c = mix(V_BG, c, 110);
+  int start = (n < HIST) ? 0 : next, cols = min(n, w);
+  for (int i = 0; i < cols; i++) {
+    float v = ser[(start + n - cols + i) % HIST];
+    if (isnan(v)) continue;
+    float t = logRate(v); t = t < 0 ? 0 : t > 1 ? 1 : t;
+    int ch = max(1, (int)(t * (h - 1) + 0.5f)), cx = x + w - cols + i, bot = y + ch - 1;
+    for (int yy = y; yy < bot; yy++) fb.drawPixel(cx, yy, mix(mix(V_BG, c, 150), V_BG, (bot - yy) * 180 / h));
+    fb.drawPixel(cx, bot, mix(c, V_WHITE, dim ? 0 : 60));
+  }
+}
+// Bytes as a short size: used 22.7 / 412, totals 32G / 931G / 1.8T.
+void vFmtSize(char* b, size_t n, double v, bool unit) {
+  const char* u = "G"; double g = v / 1073741824.0;
+  if (g >= 1000.0) { g /= 1024.0; u = "T"; }
+  // used (unit=false) keeps a decimal below 100; totals keep one only below 10 so "12.6/16G" fits the column
+  if (unit ? g < 10.0 : g < 100.0) snprintf(b, n, "%.1f%s", g, unit ? u : "");
+  else snprintf(b, n, "%.0f%s", g, unit ? u : "");
 }
 // Faint heat-coloured fill behind the page 1 hero.
 void vHeatBg(int x, int y, int w, int h, const float* ser, int n, int next, float (*lv)(float), bool dim) {
@@ -1174,26 +1203,35 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
       ft(RX + ftW(&FreeSansBold9pt7b, nm), 50, pct, stale ? V_GREY : vHeat(s.pcTopCpu / 100.f), &FreeSansBold9pt7b);
     }
   }
-  // left column
-  txt(4, 59, "MEMORY", V_LAB); txt(4, 86, "DISK", V_LAB);
-  int mem = linked ? s.pcMem : -1, disk = linked ? s.pcDisk : -1;
-  fmtMem(a, sizeof a, mem); ft(4, 84, a, mem < 0 || stale ? V_GREY : vHeat(vPct(mem)), &FreeSansBold12pt7b);
-  fmtMem(a, sizeof a, disk); ft(4, 111, a, disk < 0 || stale ? V_GREY : vHeat(vPct(disk)), &FreeSansBold12pt7b);
-  // net rows
-  const char* ifn = s.netIf[0] ? s.netIf : "NET";   // busiest NIC from the helper (pc_net_iface)
-  const int NX = 54, NW = W - 4 - NX;
+  // left column: used/total as text (pc_mem_used/total, pc_disk_used/total/dev); % until the helper sends bytes
+  const int NX = 66;
   for (int r = 0; r < 2; r++) {
-    int y = 58 + r * 32; uint16_t c = r ? V_TX : V_RX;
-    float v = linked ? (r ? s.pcTx : s.pcRx) : NAN;
-    // arrow glyph (not in the font): 5 px stem + head
-    int ax = NX + 2;
-    fb.drawFastVLine(ax, y, 7, c);
-    if (!r) { fb.drawLine(ax - 2, y + 4, ax, y + 6, c); fb.drawLine(ax + 2, y + 4, ax, y + 6, c); }
-    else { fb.drawLine(ax - 2, y + 2, ax, y, c); fb.drawLine(ax + 2, y + 2, ax, y, c); }
-    txt(NX + 7, y, ifn, c);
-    vFmtRate(a, sizeof a, v); txtR(W - 4, y, a, stale || isnan(v) ? V_GREY : V_WHITE);
-    vSpark(NX, y + 10, NW, 19, r ? h.tx : h.rx, h.n, h.next, 0, 1, c, stale, true);
+    int y = r ? 86 : 59;
+    double u = r ? s.pcDiskUsed : s.pcMemUsed, tot = r ? s.pcDiskTot : s.pcMemTot;
+    int pct = linked ? (r ? s.pcDisk : s.pcMem) : -1;
+    char lab[12]; strlcpy(lab, r ? (s.pcDiskDev[0] ? s.pcDiskDev : "DISK") : "RAM", sizeof lab);
+    if (strlen(lab) > (NX - 6) / CW) lab[(NX - 6) / CW] = 0;
+    txt(4, y, lab, V_LAB);
+    bool bytes = linked && !isnan(u) && !isnan(tot) && tot > 0;
+    if (bytes) {
+      float f = (float)(u / tot); char t2[12];
+      vFmtSize(a, sizeof a, u, false); snprintf(t2, sizeof t2, "/"); vFmtSize(t2 + 1, sizeof t2 - 1, tot, true);
+      ft(4, y + 24, a, stale ? V_GREY : vHeat(vPct((int)(f * 100))), &FreeSansBold9pt7b);
+      txt(4 + ftW(&FreeSansBold9pt7b, a) + 1, y + 17, t2, V_LAB);
+    } else { fmtMem(a, sizeof a, pct); ft(4, y + 25, a, pct < 0 || stale ? V_GREY : vHeat(vPct(pct)), &FreeSansBold12pt7b); }
   }
+  // mirrored net graph: one header (iface, down rate, up rate); RX hangs from the top, TX rises from the bottom
+  const char* ifn = s.netIf[0] ? s.netIf : "NET";
+  const int NW = W - 4 - NX, GT = 70, GB = 115, GH = 29;
+  char ifb[10]; strlcpy(ifb, ifn, sizeof ifb); txt(NX, 59, ifb, V_LAB);
+  float rx = linked ? s.pcRx : NAN, tx = linked ? s.pcTx : NAN;
+  vFmtRate(b, sizeof b, tx); int x2 = W - 4 - strlen(b) * CW; txt(x2, 59, b, stale || isnan(tx) ? V_GREY : V_WHITE);
+  int ax = x2 - 5; fb.drawFastVLine(ax, 59, 7, V_TX); fb.drawLine(ax - 2, 61, ax, 59, V_TX); fb.drawLine(ax + 2, 61, ax, 59, V_TX);
+  vFmtRate(a, sizeof a, rx); int x1 = ax - 6 - strlen(a) * CW; txt(x1, 59, a, stale || isnan(rx) ? V_GREY : V_WHITE);
+  ax = x1 - 5; fb.drawFastVLine(ax, 59, 7, V_RX); fb.drawLine(ax - 2, 63, ax, 65, V_RX); fb.drawLine(ax + 2, 63, ax, 65, V_RX);
+  fb.drawFastHLine(NX, GT - 1, NW, V_DIV); fb.drawFastHLine(NX, GB + 1, NW, V_DIV);
+  vHang(NX, GT, NW, GH, h.rx, h.n, h.next, V_RX, stale);
+  vSpark(NX, GB - GH + 1, NW, GH, h.tx, h.n, h.next, 0, 1, V_TX, stale, true);
   pageDots(0);
 }
 
