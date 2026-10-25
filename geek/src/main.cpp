@@ -1061,16 +1061,18 @@ void bevelCard(int x, int y, int w, int h, uint16_t base = 0) {
 // ---- v2 skin: page 1 (target PC) and page 2 (ZERO | GEEK) ---------------------------------
 // Own near-black background and heat scale; FreeSansBold for the values (baseline y), the
 // built-in 6x8 font for labels and the bottom row.
-const uint16_t V_BG = 0x0000 /* black */, V_LAB = 0xCF1D /* 200,225,235 light steel */, V_WHITE = 0xFFFF,
+const uint16_t V_BG = 0x0000 /* black */, V_LAB = 0xCE59 /* 200,200,200 light grey */, V_WHITE = 0xFFFF,
                V_GREY = 0x8C71, V_DIMG = 0x4208, V_DIV = 0x2987 /* 45,50,58 */;
-uint16_t vHeat(float t) {   // green(40,210,90) -> yellow(250,210,40) -> red(240,50,40)
+uint16_t vHeat(float t) {   // white until 55 %, then a quick yellow(250,210,40) -> dark red(140,0,0)
   if (isnan(t) || t < 0.f) t = 0.f;
   if (t > 1.f) t = 1.f;
-  if (t < 0.5f) { float u = t * 2.f; return rgb(40 + 210 * u, 210, 90 - 50 * u); }
-  float u = (t - 0.5f) * 2.f; return rgb(250 - 10 * u, 210 - 160 * u, 40);
+  if (t < 0.55f) return rgb(225, 225, 225);
+  if (t < 0.7f) { float u = (t - 0.55f) / 0.15f; return rgb(225 + 25 * u, 225 - 15 * u, 225 - 185 * u); }
+  float u = (t - 0.7f) / 0.3f; return rgb(250 - 110 * u, 210 - 210 * u, 40 - 40 * u);
 }
 const uint16_t V_OK = 0x2E8B /* green */, V_WARN = 0xFE85 /* yellow */, V_BAD = 0xF185 /* red */;
-const uint16_t V_RX = 0x06FF /* 0,220,255 cyan */, V_TX = 0xF9FA /* 255,60,210 magenta */;
+// Mono: RX/TX are two greys; the only colour on the stats pages is the vHeat high end.
+const uint16_t V_RX = 0xD69A /* 210,210,210 */, V_TX = 0x8C71 /* 140,140,140 */;
 float vT(float c) { return (c - 45.f) / 45.f; }          // 45 C green .. 90 C red
 float vPct(int p) { return (p - 50) / 45.f; }            // 50 % green .. 95 % red
 int ftW(const GFXfont* f, const char* s) {
@@ -1098,7 +1100,7 @@ void vSpark(int x, int y, int w, int h, const float* ser, int n, int next, float
     t = t < 0 ? 0 : t > 1 ? 1 : t;
     int ch = max(1, (int)(t * (h - 1) + 0.5f)), cx = x + w - cols + i, top = y + h - ch;
     for (int yy = top + 1; yy < y + h; yy++) fb.drawPixel(cx, yy, mix(mix(V_BG, c, 150), V_BG, (yy - top) * 180 / h));
-    fb.drawPixel(cx, top, mix(c, V_WHITE, dim ? 0 : 60));
+    fb.drawPixel(cx, top, dim ? c : t >= 0.55f ? vHeat(t) : mix(c, V_WHITE, 60));
   }
 }
 // Same as vSpark but hanging from the top edge (page 1 mirrored net graph: RX down from the top).
@@ -1112,7 +1114,7 @@ void vHang(int x, int y, int w, int h, const float* ser, int n, int next, uint16
     float t = logRate(v); t = t < 0 ? 0 : t > 1 ? 1 : t;
     int ch = max(1, (int)(t * (h - 1) + 0.5f)), cx = x + w - cols + i, bot = y + ch - 1;
     for (int yy = y; yy < bot; yy++) fb.drawPixel(cx, yy, mix(mix(V_BG, c, 150), V_BG, (bot - yy) * 180 / h));
-    fb.drawPixel(cx, bot, mix(c, V_WHITE, dim ? 0 : 60));
+    fb.drawPixel(cx, bot, dim ? c : t >= 0.55f ? vHeat(t) : mix(c, V_WHITE, 60));
   }
 }
 // Bytes as a short size: used 22.7 / 412, totals 32G / 931G / 1.8T.
@@ -1244,7 +1246,7 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
   // ZERO half
   int L = 4, R = MID - 5;
   ft(L, 13, "ZERO", V_LAB, &FreeSansBold9pt7b);
-  ft(L, 40, s.api ? "HID" : "--", stale ? V_GREY : hidC(s), &FreeSansBold18pt7b);
+  ft(L, 40, s.api ? "HID" : "--", stale || !s.api ? V_GREY : V_WHITE, &FreeSansBold18pt7b);   // state colour lives in the bar
   uint16_t val = stale ? V_GREY : V_WHITE;
   const char* zip = s.tsIp[0] ? s.tsIp : s.ip;   // Tailscale first, LAN as fallback
   txt(L, 46, "load", V_LAB); fmtLoad(a, sizeof a, s.api ? s.load1 : NAN); txtR(R, 46, a, val);
@@ -1252,14 +1254,14 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
   txtR(R, 56, a, stale || !s.api || isnan(s.temp) ? V_GREY : vHeat(vT(s.temp)));
   txt(L, 66, "up", V_LAB); vFmtUp(a, sizeof a, s.api ? s.upS : -1); txtR(R, 66, a, val);
   txt(L, 76, "ip", V_LAB); txtR(R, 76, s.api && zip[0] ? zip : "--", s.api && zip[0] ? V_WHITE : V_GREY);
-  if (s.ts >= 0) vDot(L + 16, 79, s.ts == 1 ? V_OK : V_BAD);   // dot: Tailscale up / down
+  if (s.ts >= 0) vDot(L + 16, 79, s.ts == 1 ? V_WHITE : V_DIMG);   // dot: Tailscale up / down
   txt(L, 90, "load history", V_RX);
   vSpark(L, 100, R - L, 16, h.piLoad, h.n, h.next, 0, 1.5f, V_RX, stale);
   // GEEK half
   L = MID + 5; R = W - 4;
   ft(L, 13, "GEEK", V_LAB, &FreeSansBold9pt7b);
   if (s.wifi && s.rssi) snprintf(a, sizeof a, "%d", s.rssi); else strcpy(a, "--");
-  ft(L, 40, a, rssiC(s.wifi, s.rssi), &FreeSansBold18pt7b);
+  ft(L, 40, a, s.wifi ? V_WHITE : V_GREY, &FreeSansBold18pt7b);
   txt(L + ftW(&FreeSansBold18pt7b, a) + 3, 33, "dBm", V_LAB);
   txt(L, 46, "ping", V_LAB);
   if (s.api) snprintf(a, sizeof a, "%ums", (unsigned)s.latencyMs); else strcpy(a, "--");
