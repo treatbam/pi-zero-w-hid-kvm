@@ -1099,7 +1099,8 @@ void vSpark(int x, int y, int w, int h, const float* ser, int n, int next, float
     float t = logScale ? logRate(v) : (v - lo) / (hi - lo);
     t = t < 0 ? 0 : t > 1 ? 1 : t;
     int ch = max(1, (int)(t * (h - 1) + 0.5f)), cx = x + w - cols + i, top = y + h - ch;
-    for (int yy = top + 1; yy < y + h; yy++) fb.drawPixel(cx, yy, mix(mix(V_BG, c, 150), V_BG, (yy - top) * 180 / h));
+    uint16_t cc = !dim && t >= 0.55f ? vHeat(t) : c;   // a peak column takes the heat ramp, whole height
+    for (int yy = top + 1; yy < y + h; yy++) fb.drawPixel(cx, yy, mix(mix(V_BG, cc, 150), V_BG, (yy - top) * 180 / h));
     fb.drawPixel(cx, top, dim ? c : t >= 0.55f ? vHeat(t) : mix(c, V_WHITE, 60));
   }
 }
@@ -1113,7 +1114,8 @@ void vHang(int x, int y, int w, int h, const float* ser, int n, int next, uint16
     if (isnan(v)) continue;
     float t = logRate(v); t = t < 0 ? 0 : t > 1 ? 1 : t;
     int ch = max(1, (int)(t * (h - 1) + 0.5f)), cx = x + w - cols + i, bot = y + ch - 1;
-    for (int yy = y; yy < bot; yy++) fb.drawPixel(cx, yy, mix(mix(V_BG, c, 150), V_BG, (bot - yy) * 180 / h));
+    uint16_t cc = !dim && t >= 0.55f ? vHeat(t) : c;
+    for (int yy = y; yy < bot; yy++) fb.drawPixel(cx, yy, mix(mix(V_BG, cc, 150), V_BG, (bot - yy) * 180 / h));
     fb.drawPixel(cx, bot, dim ? c : t >= 0.55f ? vHeat(t) : mix(c, V_WHITE, 60));
   }
 }
