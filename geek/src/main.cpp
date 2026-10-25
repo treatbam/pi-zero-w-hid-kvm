@@ -1061,20 +1061,25 @@ void bevelCard(int x, int y, int w, int h, uint16_t base = 0) {
 // ---- v2 skin: page 1 (target PC) and page 2 (ZERO | GEEK) ---------------------------------
 // Own near-black background and heat scale; FreeSansBold for the values (baseline y), the
 // built-in 6x8 font for labels and the bottom row.
-const uint16_t V_BG = 0x0000 /* black */, V_LAB = 0xCE59 /* 200,200,200 light grey */, V_WHITE = 0xFFFF,
+// Graphite: warm off-white text on near-black; the only colour is vHeat's orange->red high end.
+const uint16_t V_BG = 0x1082 /* 16,16,18 */, V_LAB = 0xBDF6 /* 190,188,182 */, V_WHITE = 0xF77D /* 240,238,232 */,
                V_GREY = 0x8C71, V_DIMG = 0x4208, V_DIV = 0x2987 /* 45,50,58 */;
-uint16_t vHeat(float t) {   // white until 55 %, then a quick yellow(250,210,40) -> dark red(140,0,0)
+uint16_t vHeat(float t) {   // off-white until 0.55, then a quick orange(255,150,30) -> red(200,20,20)
   if (isnan(t) || t < 0.f) t = 0.f;
   if (t > 1.f) t = 1.f;
-  if (t < 0.55f) return rgb(225, 225, 225);
-  if (t < 0.7f) { float u = (t - 0.55f) / 0.15f; return rgb(225 + 25 * u, 225 - 15 * u, 225 - 185 * u); }
-  float u = (t - 0.7f) / 0.3f; return rgb(250 - 110 * u, 210 - 210 * u, 40 - 40 * u);
+  if (t < 0.55f) return rgb(225, 222, 215);
+  if (t < 0.7f) { float u = (t - 0.55f) / 0.15f; return rgb(225 + 30 * u, 222 - 72 * u, 215 - 185 * u); }
+  float u = (t - 0.7f) / 0.3f; return rgb(255 - 55 * u, 150 - 130 * u, 30 - 10 * u);
 }
 const uint16_t V_OK = 0x2E8B /* green */, V_WARN = 0xFE85 /* yellow */, V_BAD = 0xF185 /* red */;
 // Mono: RX/TX are two greys; the only colour on the stats pages is the vHeat high end.
-const uint16_t V_RX = 0xD69A /* 210,210,210 */, V_TX = 0x8C71 /* 140,140,140 */;
-float vT(float c) { return (c - 45.f) / 45.f; }          // 45 C green .. 90 C red
-float vPct(int p) { return (p - 50) / 45.f; }            // 50 % green .. 95 % red
+const uint16_t V_RX = 0xCE58 /* 205,203,198 */, V_TX = 0x840F /* 130,128,124 */;
+// Each value's warm point lands on t = 0.55 (where vHeat leaves off-white), red at 1.
+float vWarm(float v, float warm, float hot) { return 0.55f + 0.45f * (v - warm) / (hot - warm); }
+float vT(float c) { return vWarm(c, 70.f, 90.f); }          // CPU/GPU/NVMe: warm 70 C, red 90 C
+float vPct(int p) { return vWarm(p, 75.f, 98.f); }        // generic %: warm 75
+float vMemP(int p) { return vWarm(p, 80.f, 97.f); }      // RAM: warm 80 %
+float vDiskP(int p) { return vWarm(p, 90.f, 99.f); }     // disk: warm 90 %
 int ftW(const GFXfont* f, const char* s) {
   int16_t x1, y1; uint16_t w, h; fb.setFont(f); fb.setTextSize(1); fb.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
   fb.setFont(nullptr); return f ? (int)w + x1 : (int)strlen(s) * CW;
@@ -1191,6 +1196,14 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   const int RX = have ? 102 : 134;
   if (have) {
     ft(RX, 14, "CPU", V_LAB, &FreeSansBold9pt7b);
+    // GPU and NVMe temps (pc_gpu_temp_c, pc_nvme_temp_c) on the CPU label line, off-white until warm
+    int gx = RX + ftW(&FreeSansBold9pt7b, "CPU") + 6;
+    for (int k = 0; k < 2; k++) {
+      float tv = k ? s.pcNvmeT : s.pcGpuT;
+      if (isnan(tv)) continue;
+      const char* lb = k ? "NV" : "GPU"; txt(gx, 5, lb, V_LAB); gx += strlen(lb) * CW + 2;
+      snprintf(b, sizeof b, "%.0f", tv); txt(gx, 5, b, stale ? V_GREY : vHeat(vT(tv))); gx += strlen(b) * CW + 6;
+    }
     fmtLoad(a, sizeof a, s.pcLoad); snprintf(b, sizeof b, "%s load", a);
     ft(RX, 33, b, stale ? V_GREY : V_WHITE, &FreeSansBold12pt7b);
     if (s.pcTopProc[0]) {
@@ -1220,9 +1233,9 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
     if (bytes) {
       float f = (float)(u / tot); char t2[12];
       vFmtSize(a, sizeof a, u, false); snprintf(t2, sizeof t2, "/"); vFmtSize(t2 + 1, sizeof t2 - 1, tot, true);
-      ft(4, y + 24, a, stale ? V_GREY : vHeat(vPct((int)(f * 100))), &FreeSansBold9pt7b);
+      ft(4, y + 24, a, stale ? V_GREY : vHeat(r ? vDiskP((int)(f * 100)) : vMemP((int)(f * 100))), &FreeSansBold9pt7b);
       txt(4 + ftW(&FreeSansBold9pt7b, a) + 1, y + 17, t2, V_LAB);
-    } else { fmtMem(a, sizeof a, pct); ft(4, y + 25, a, pct < 0 || stale ? V_GREY : vHeat(vPct(pct)), &FreeSansBold12pt7b); }
+    } else { fmtMem(a, sizeof a, pct); ft(4, y + 25, a, pct < 0 || stale ? V_GREY : vHeat(r ? vDiskP(pct) : vMemP(pct)), &FreeSansBold12pt7b); }
   }
   // mirrored net graph: one header (iface, down rate, up rate); RX hangs from the top, TX rises from the bottom
   const char* ifn = s.netIf[0] ? s.netIf : "NET";
@@ -1374,6 +1387,14 @@ void drawNet(const Status& s, uint32_t now) {
   pageDots(2);
 }
 
+// Page control. Short press: next page (and acknowledges an alert). Long press: auto-rotate the
+// 4 stats pages every 10 s, on/off. Something going red jumps to the page that shows it and
+// returns once it clears; the PC going offline drops to the dimmed ZERO|GEEK page until it's back.
+bool gAuto = false;
+uint32_t gAutoMs = 0;
+int gHome = -1;          // page to return to after an alert/offline jump (-1 = not jumped)
+int gAck = -1;           // alert page the user dismissed with a press; stays quiet until it clears
+const uint32_t AUTO_MS = 10000, OFFLINE_MS = 10000;
 // Shared status bar, drawn on every page (stats, desktop, terminal) so it never changes:
 // ZERO + HID state, a colour-coded LINK block in the middle, GEEK + Wi-Fi dBm.
 // LINK block: green = polls coming back clean, yellow = recent misses or PC not linked, red = Zero gone.
@@ -1392,6 +1413,7 @@ void statusBar(const Status& s, const PcHist& h, uint32_t now) {
   // LINK block (centre)
   const int BW = 32, BH = 10; fb.fillRoundRect((W - BW) / 2, ty - 2, BW, BH, 2, lc);
   txt((W - 4 * CW) / 2, ty, "LINK", V_BG);   // word stays; the fill colour carries the state
+  if (gAuto) { fb.drawCircle((W + BW) / 2 + 6, ty + 3, 2, V_LAB); fb.drawPixel((W + BW) / 2 + 6, ty + 3, V_LAB); }   // auto-rotate on
   // GEEK (right): "GEEK -52dBm"
   char rs[12]; if (s.wifi && s.rssi) snprintf(rs, sizeof rs, "%ddBm", s.rssi); else strcpy(rs, "--");
   uint16_t gc = rssiC(s.wifi, s.rssi);
@@ -1436,6 +1458,31 @@ void drawOta() {
   txt(b.l(), b.top() + 44, "do not power off", C_DIM);
 }
 
+int alertPage(const Status& s, uint32_t now, bool* offline) {
+  static uint32_t unlinkedSince = 0;
+  bool linked = s.api && !isStale(s, now) && strcmp(s.link, "LINKED") == 0;
+  if (linked) unlinkedSince = 0; else if (!unlinkedSince) unlinkedSince = now;
+  *offline = unlinkedSince && now - unlinkedSince >= OFFLINE_MS && s.polls > 2;
+  if (*offline || (s.api && !s.hid)) return P_ZG;
+  if (!linked) return -1;
+  float t = !isnan(s.pcCpuT) ? s.pcCpuT : s.pcTemp;
+  if ((!isnan(t) && t >= 90.f) || (!isnan(s.pcGpuT) && s.pcGpuT >= 90.f) || (!isnan(s.pcNvmeT) && s.pcNvmeT >= 90.f)
+      || s.pcMem >= 97 || s.pcDisk >= 99) return P_PC;
+  if (!isnan(s.pcTopCpu) && s.pcTopCpu >= 95.f) return P_CORES;
+  return -1;
+}
+void go(int n);
+void pageLogic(const Status& s, uint32_t now, bool* offline) {
+  int a = alertPage(s, now, offline);
+  if (a < 0) gAck = -1;
+  if (a >= 0 && a != gAck && page != P_DESK && page != P_TERM) {
+    if (gHome < 0) gHome = page;
+    if (page != a) go(a);
+    return;
+  }
+  if (a < 0 && gHome >= 0) { int h = gHome; gHome = -1; go(h); gAutoMs = now; return; }
+  if (gAuto && gHome < 0 && page <= P_ZG && now - gAutoMs >= AUTO_MS) { gAutoMs = now; go((page + 1) % (P_ZG + 1)); }
+}
 void paint() {
   fb.setTextWrap(false);
   if (gOtaPct >= 0) { drawOta(); tft.drawRGBBitmap(0, 0, fb.getBuffer(), W, H); return; }
@@ -1458,7 +1505,8 @@ void paint() {
     return;
   }
   // Stale dims the backlight (PWM) and recovers on the next good poll.
-  static int bl = -1; int want = isStale(s, millis()) && s.polls > 2 ? BL_DIM : BL_FULL;
+  bool offline = false; pageLogic(s, millis(), &offline);
+  static int bl = -1; int want = (isStale(s, millis()) && s.polls > 2) || (offline && page == P_ZG) ? BL_DIM : BL_FULL;
   if (want != bl) { analogWrite(LCD_BL, want); bl = want; }
   fb.fillScreen(C_BG);
   if (page == P_TERM) drawTerm();
@@ -1519,7 +1567,14 @@ void setup() {
 void loop() {
   uint32_t now = millis();
   Btn* btns[] = {&bBack, &bUp, &bDown, &bSel};
-  for (Btn* b : btns) if (b->poll(now) == EV_SHORT) go(page + 1);
+  for (Btn* b : btns) {
+    Ev e = b->poll(now);
+    if (e == EV_SHORT) {
+      if (gHome >= 0) { gAck = page; int h = gHome; gHome = -1; go(h); }   // dismiss the alert jump
+      else go(page + 1);
+      gAutoMs = now;
+    } else if (e == EV_LONG) { gAuto = !gAuto; gAutoMs = now; }
+  }
   static uint32_t lastPaint = 0;
   if (now - lastPaint >= 200) { lastPaint = now; paint(); }
   delay(2);
