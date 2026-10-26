@@ -1371,11 +1371,16 @@ void drawNet(const Status& s, uint32_t now) {
   const int X = 4, R = W - 4;
   txt(X, 1, "NETWORK", V_LAB);
   vFmtRate(a, sizeof a, linked ? s.pcRx : NAN); vFmtRate(b, sizeof b, linked ? s.pcTx : NAN);
-  int bw = 6 * strlen(b), aw = 6 * strlen(a), bx = R - 30 - bw, ax = bx - 14 - aw;
   // title rotates iface <-> IPv4 every NET_TITLE_MS; stays on iface when no IP
   const uint32_t NET_TITLE_MS = 5000;
   bool showIp = linked && s.netIp[0] && (now / NET_TITLE_MS) % 2;
-  char ifn[16]; strlcpy(ifn, showIp ? s.netIp : (linked && s.netIf[0] ? s.netIf : "NET"), max(1, min((int)sizeof ifn, (ax - 10 - (X + 48)) / 6 + 1)));
+  char ifn[16]; strlcpy(ifn, showIp ? s.netIp : (linked && s.netIf[0] ? s.netIf : "NET"), sizeof ifn);
+  // rates sit right-aligned after the title; if they'd collide, drop the "/s" suffix, then trim the title
+  const int TX0 = X + 48;
+  auto fit = [&]() { int bw = 6 * strlen(b), aw = 6 * strlen(a); return R - bw - 14 - aw - 8 >= TX0 + 6 * (int)strlen(ifn) + 4; };
+  if (!fit()) for (char* t : {a, b}) { char* q = strstr(t, "/s"); if (q) *q = 0; }
+  int bw = 6 * strlen(b), aw = 6 * strlen(a), bx = R - bw, ax = bx - 14 - aw;
+  int maxc = (ax - 8 - 4 - TX0) / 6; if ((int)strlen(ifn) > maxc) ifn[max(1, maxc)] = 0;
   txt(X + 48, 1, ifn, stale ? V_GREY : V_WHITE);
   // hand-drawn arrows (not in the font), same as page 1
   fb.drawFastVLine(ax - 5, 1, 7, V_RX); fb.drawLine(ax - 7, 5, ax - 5, 7, V_RX); fb.drawLine(ax - 3, 5, ax - 5, 7, V_RX);
