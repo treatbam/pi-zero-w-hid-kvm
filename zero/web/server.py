@@ -78,7 +78,8 @@ MAX_FAILS, LOCKOUT_S = 5, 60
 HOST_POWER = ("power", "sleep", "wake")          # soft: System Control keys over USB
 HOST_HARD = ("hard_reset", "hard_power")         # needs optocoupler wiring (not built yet)
 MODE_REQ = {"mode": None, "quality": None}
-HISTORY = history.NetHistory(os.environ.get("KVM_DATA_DIR", "/var/lib/kvm"))
+HISTORY = history.NetHistory(os.environ.get("KVM_DATA_DIR", "/var/lib/kvm"),
+                             require_mount=os.environ.get("KVM_DATA_REQUIRE_MOUNT", "1") != "0")
 STATS = hostview.StatsKeeper(hostview.shared, min_s=float(os.environ.get("KVM_STATS_MIN_S", "10")))
 
 def stats_keeper_loop():

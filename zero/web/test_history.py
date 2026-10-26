@@ -127,5 +127,12 @@ class ExtFieldsTest(unittest.TestCase):
         self.assertEqual(got[0]["pc_id"], A)
 
 
+class RequireMountTest(unittest.TestCase):
+    def test_plain_dir_refused_when_mount_required(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertFalse(history.NetHistory(d, require_mount=True).open())
+            self.assertTrue(history.NetHistory(d).open())
+
+
 if __name__ == "__main__":
     unittest.main()

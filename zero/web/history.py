@@ -30,18 +30,22 @@ def log(msg):
 
 
 class NetHistory:
-    def __init__(self, data_dir, now=time.time, flush_s=30.0):
+    def __init__(self, data_dir, now=time.time, flush_s=30.0, require_mount=False):
         self.path = os.path.join(data_dir, "history.sqlite3")
         self.data_dir, self._now, self.flush_s = data_dir, now, flush_s
         self._lock = threading.Lock()
         self._db = None
         self._pending = {}        # pc_id -> {"host","first","procs":{name:[rx,tx]}}
+        self.require_mount = require_mount
         self.enabled = False
 
     def open(self):
         try:
             if not os.path.isdir(self.data_dir):
                 raise OSError(f"{self.data_dir} missing (no kvmdata partition?)")
+            if self.require_mount and not os.path.ismount(self.data_dir):
+                # A bare dir on the overlay root would take writes into RAM and lose them on reboot.
+                raise OSError(f"{self.data_dir} is not a mount point (kvmdata partition not mounted?)")
             db = sqlite3.connect(self.path, check_same_thread=False, timeout=5)
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript("""
