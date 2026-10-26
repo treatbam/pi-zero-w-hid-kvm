@@ -296,7 +296,8 @@ class HostView:
                            "pc_mem_total": (ext.get("mem") or [None, None])[1],
                            "pc_disk_used": (ext.get("disk") or [None] * 3)[0],
                            "pc_disk_total": (ext.get("disk") or [None] * 3)[1],
-                           "pc_disk_dev": (ext.get("disk") or [None] * 3)[2]})
+                           "pc_disk_dev": (ext.get("disk") or [None] * 3)[2],
+                           "pc_net_ip": ext.get("net_ip")})
             return fields
 
     def frame_bytes(self, host_connected):
@@ -568,6 +569,9 @@ def _parse_ext(payload):
         out["disk"] = [int(dk[0]), int(dk[1]), dk[2][:15] or None]
     if _num(d.get("uptime_s"), 0, 10 ** 9):
         out["uptime_s"] = int(d["uptime_s"])
+    ip = d.get("net_ip")
+    if isinstance(ip, str) and ip.isprintable() and 0 < len(ip) <= 45:
+        out["net_ip"] = ip
     return out
 
 

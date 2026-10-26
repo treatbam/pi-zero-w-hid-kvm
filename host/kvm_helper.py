@@ -52,6 +52,7 @@ import glob
 import math
 import os
 import pty
+import fcntl
 import re
 import select
 import shutil
@@ -372,6 +373,24 @@ def read_lan_ip():
             ip = s.getsockname()[0]
         finally:
             s.close()
+        return "" if ip.startswith("127.") or ip == "0.0.0.0" else ip
+    except OSError:
+        return ""
+
+
+def iface_ip(iface):
+    """IPv4 address bound to `iface`, or '' if none/unavailable."""
+    if not iface:
+        return ""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            # SIOCGIFADDR: fetch the IPv4 address of a named interface.
+            packed = struct.pack("256s", iface.encode("utf-8")[:15])
+            addr = fcntl.ioctl(s.fileno(), 0x8915, packed)[20:24]
+        finally:
+            s.close()
+        ip = socket.inet_ntoa(addr)
         return "" if ip.startswith("127.") or ip == "0.0.0.0" else ip
     except OSError:
         return ""
@@ -1089,6 +1108,10 @@ def send_helper_packets(fd, display, announced, state=None, want_frame=True):
         netprocs, state.sock_prev = top_net_procs(state.sock_prev, read_tcp_sockets(), now)
         if netprocs:
             more["netprocs"] = netprocs
+        if iface:
+            ip = iface_ip(iface)
+            if ip:
+                more["net_ip"] = ip
         if len(more) > 1:
             blob += kvm_stats.pack_ext(more)
     blob += pack_mode(b"helper")

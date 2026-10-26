@@ -370,3 +370,11 @@ class MemDiskExtTest(unittest.TestCase):
         self.assertEqual(d["mem"], [4, 16])
         self.assertEqual(d["disk"], [100, 500, "nvme0n1p2"])
         self.assertNotIn("mem", hostview._parse_ext(b'{"v":1,"mem":[20,16]}'))
+
+
+class NetIpExtTest(unittest.TestCase):
+    def test_net_ip_validated(self):
+        d = hostview._parse_ext(b'{"v":1,"net_ip":"192.168.1.42"}')
+        self.assertEqual(d["net_ip"], "192.168.1.42")
+        self.assertNotIn("net_ip", hostview._parse_ext(b'{"v":1,"net_ip":123}'))
+        self.assertNotIn("net_ip", hostview._parse_ext(b'{"v":1,"net_ip":""}'))
