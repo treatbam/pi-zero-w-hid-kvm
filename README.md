@@ -44,7 +44,8 @@ Then browse to `http://192.168.4.1:8080`. Manual run: `sudo bash zero/gadget/hid
 ### API (port 8080, bound to 0.0.0.0)
 | Method | Path | Body |
 |---|---|---|
-| GET | /api/status | → `hid_ready`, `host_connected`, `udc_state`, `leds` (`{num,caps,scroll}`), `ip`, `temp_c`, `load1`, `mem_pct`, `link` (`LINKED` / `KEYS` / `NO HOST`), `pc_temp_c`, `pc_load1`, `pc_mem_pct`, `pc_rx_bps`, `pc_tx_bps`, `pc_ncpu`, `pc_net_iface` (the PC's busiest interface, held a few samples so it doesn't flicker), `pc_cores` (top 8 core busy % sorted hottest-to-coolest), `pc_ip`, `pc_disk_pct`, `pc_top_proc`, `pc_top_cpu_pct`, `pc_age_s`, `frame_fresh`, `pc_procs` (top 8 PC processes as `[name, cpu%]`, busiest first, same-name processes merged; null until the second sample), `pc_net_procs` (top 8 PC processes by TCP traffic as `[name, bytes/s up+down]`; other users' sockets count as `other`; UDP not included), `pc_mem_used`/`pc_mem_total` and `pc_disk_used`/`pc_disk_total` (bytes; root filesystem) with `pc_disk_dev` (its device, e.g. `nvme0n1p2`), and `pc_net_ip` (the IPv4 address bound to `pc_net_iface`). PC fields are null unless `link` is `LINKED`. |
+| GET | /api/status | → `hid_ready`, `host_connected`, `udc_state`, `leds` (`{num,caps,scroll}`), `ip`, `temp_c`, `load1`, `mem_pct`, `link` (`LINKED` / `KEYS` / `NO HOST`), `pc_temp_c`, `pc_load1`, `pc_mem_pct`, `pc_rx_bps`, `pc_tx_bps`, `pc_ncpu`, `pc_net_iface` (the PC's busiest interface, held a few samples so it doesn't flicker), `pc_cores` (top 8 core busy % sorted hottest-to-coolest), `pc_ip`, `pc_disk_pct`, `pc_top_proc`, `pc_top_cpu_pct`, `pc_age_s`, `frame_fresh`, `pc_procs` (top 8 PC processes as `[name, cpu%]`, busiest first, same-name processes merged; null until the second sample), `pc_net_procs` (top 8 PC processes by TCP traffic as `[name, bytes/s up+down]`; other users' sockets count as `other`; UDP not included), `pc_mem_used`/`pc_mem_total` and `pc_disk_used`/`pc_disk_total` (bytes; root filesystem) with `pc_disk_dev` (its device, e.g. `nvme0n1p2`), `pc_net_ip` (the IPv4 address bound to `pc_net_iface`), `pc_id` (12 hex chars, first of sha256 of the PC's `/etc/machine-id`) and `pc_host` (its hostname), `net_hist_since` (unix seconds of the last reset of this PC's history) and `net_hist` (cumulative TCP bytes per process for this PC since then, up to 8 `{"p": name, "rx": bytes, "tx": bytes}`, busiest rx+tx first; kept on the `/data` partition across reboots; null when unknown or storage is off). PC fields are null unless `link` is `LINKED`. |
+| POST | /api/net_hist/reset | `{"pc": hostname or pc_id}` (omit for the connected PC) → wipes all saved history for that PC and sets `net_hist_since` to now. 404 unknown PC, 409 hostname shared by several PCs (send `pc_id`), 503 storage off. |
 | GET | /api/frame[?crop=full\|loupe] | 240×135 RGB565 little-endian still (`full` downscale or `loupe` 1:1 cursor-centered crop), or 204 when stale. Requests on-demand capture from `kvm_helper.py`. Needs `X-KVM-PIN`. |
 | GET | /api/clipboard | → `{"ok":true,"text":"...","age_s":...}` pulls UTF-8 clipboard from host helper (needs `X-KVM-PIN`). |
 | POST | /api/clipboard | `{"text":"..."}` pushes layout-agnostic UTF-8 text to host clipboard (`wl-copy`/`xclip`/`xsel`). |
@@ -281,6 +282,18 @@ Port may be `/dev/ttyUSB0`; check `ls /dev/tty{ACM,USB}*`. Hold BOOT while plugg
 ## Updating remotely (from workbenchpc)
 
 ### Zero: `tools/update-zero.sh`
+### Network history storage (`/var/lib/kvm`)
+
+kvm-web keeps per-PC history in SQLite under `KVM_DATA_DIR` (default `/var/lib/kvm`), on a small
+ext4 partition labelled `kvmdata` outside the read-only overlay. Set it up once, **with the overlay
+off**: `sudo bash tools/setup-kvmdata.sh` (idempotent; needs free space at the end of the card;
+adds a `nofail` fstab line). Without it, history is simply off. Writes are batched every 30 s.
+
+To wipe a PC's history without the GEEK: pull the Zero's card, put an empty
+`<hostname>-erase.txt` (or `<pc_id>-erase.txt` if two PCs share a hostname) on the FAT boot
+partition, and boot. kvm-web wipes it at start and remembers the file (name, mtime, size) on
+`/data`, so it runs once; it never writes to boot. Override the scanned dir with `KVM_BOOT_DIR`.
+
 Updates the Zero over SSH, handling the read-only (overlayfs) root:
 preflight (nothing changes) → disable overlay + reboot → `git fetch` + checkout `--ref` →
 `sudo bash zero/install.sh` → restart `kvm-web` → check `kvm-web` + `tailscaled` →
