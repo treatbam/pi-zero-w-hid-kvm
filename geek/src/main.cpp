@@ -133,7 +133,7 @@ struct Status {
   bool ledNum = false, ledCaps = false, ledScroll = false;
   int httpCode = 0, rssi = 0;
   char udc[16] = "?", ip[16] = "--", geekIp[16] = "--", link[12] = "";
-  char pcIp[16] = "", pcTopProc[16] = "", tsIp[16] = "", netIf[12] = "";   // netIf: pc_net_iface, "" until the helper sends it   // tsIp: tailscale_ip, "" when null
+  char pcIp[16] = "", pcTopProc[16] = "", tsIp[16] = "", netIf[12] = "", netIp[16] = "";   // netIf: pc_net_iface, "" until the helper sends it   // tsIp: tailscale_ip, "" when null
   float temp = NAN, load1 = NAN, pcTemp = NAN, pcLoad = NAN;
   float pcRx = NAN, pcTx = NAN, pcNcpu = NAN, pcTopCpu = NAN;
   int mem = -1, pcMem = -1, pcDisk = -1, pcCoreCount = 0;
@@ -275,6 +275,7 @@ void pollOnce() {
         }
         if (!d["pc_ip"].isNull()) copyStr(s.pcIp, sizeof s.pcIp, d["pc_ip"] | "");
         if (!d["pc_net_iface"].isNull()) copyStr(s.netIf, sizeof s.netIf, d["pc_net_iface"] | "");
+        if (!d["pc_net_ip"].isNull()) copyStr(s.netIp, sizeof s.netIp, d["pc_net_ip"] | "");
         if (!d["pc_disk_pct"].isNull()) s.pcDisk = d["pc_disk_pct"].as<int>();
         if (!d["pc_mem_used"].isNull()) s.pcMemUsed = d["pc_mem_used"].as<double>();
         if (!d["pc_mem_total"].isNull()) s.pcMemTot = d["pc_mem_total"].as<double>();
@@ -1371,7 +1372,10 @@ void drawNet(const Status& s, uint32_t now) {
   txt(X, 1, "NETWORK", V_LAB);
   vFmtRate(a, sizeof a, linked ? s.pcRx : NAN); vFmtRate(b, sizeof b, linked ? s.pcTx : NAN);
   int bw = 6 * strlen(b), aw = 6 * strlen(a), bx = R - 30 - bw, ax = bx - 14 - aw;
-  char ifn[12]; strlcpy(ifn, linked && s.netIf[0] ? s.netIf : "NET", max(1, min((int)sizeof ifn, (ax - 10 - (X + 48)) / 6 + 1)));
+  // title rotates iface <-> IPv4 every NET_TITLE_MS; stays on iface when no IP
+  const uint32_t NET_TITLE_MS = 5000;
+  bool showIp = linked && s.netIp[0] && (now / NET_TITLE_MS) % 2;
+  char ifn[16]; strlcpy(ifn, showIp ? s.netIp : (linked && s.netIf[0] ? s.netIf : "NET"), max(1, min((int)sizeof ifn, (ax - 10 - (X + 48)) / 6 + 1)));
   txt(X + 48, 1, ifn, stale ? V_GREY : V_WHITE);
   // hand-drawn arrows (not in the font), same as page 1
   fb.drawFastVLine(ax - 5, 1, 7, V_RX); fb.drawLine(ax - 7, 5, ax - 5, 7, V_RX); fb.drawLine(ax - 3, 5, ax - 5, 7, V_RX);
