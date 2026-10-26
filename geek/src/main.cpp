@@ -1196,14 +1196,6 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   const int RX = have ? 102 : 134;
   if (have) {
     ft(RX, 14, "CPU", V_LAB, &FreeSansBold9pt7b);
-    // GPU and NVMe temps (pc_gpu_temp_c, pc_nvme_temp_c) on the CPU label line, off-white until warm
-    int gx = RX + ftW(&FreeSansBold9pt7b, "CPU") + 6;
-    for (int k = 0; k < 2; k++) {
-      float tv = k ? s.pcNvmeT : s.pcGpuT;
-      if (isnan(tv)) continue;
-      const char* lb = k ? "NV" : "GPU"; txt(gx, 5, lb, V_LAB); gx += strlen(lb) * CW + 2;
-      snprintf(b, sizeof b, "%.0f", tv); txt(gx, 5, b, stale ? V_GREY : vHeat(vT(tv))); gx += strlen(b) * CW + 6;
-    }
     fmtLoad(a, sizeof a, s.pcLoad); snprintf(b, sizeof b, "%s load", a);
     ft(RX, 33, b, stale ? V_GREY : V_WHITE, &FreeSansBold12pt7b);
     if (s.pcTopProc[0]) {
@@ -1220,22 +1212,46 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
       ft(RX + ftW(&FreeSansBold9pt7b, nm), 50, pct, stale ? V_GREY : vHeat(s.pcTopCpu / 100.f), &FreeSansBold9pt7b);
     }
   }
-  // left column: used/total as text (pc_mem_used/total, pc_disk_used/total/dev); % until the helper sends bytes
+  // left column: GPU/NVMe only when warm (>=70C), taking priority over mem/disk; else used/total text
   const int NX = 66;
-  for (int r = 0; r < 2; r++) {
-    int y = r ? 86 : 59;
-    double u = r ? s.pcDiskUsed : s.pcMemUsed, tot = r ? s.pcDiskTot : s.pcMemTot;
-    int pct = linked ? (r ? s.pcDisk : s.pcMem) : -1;
-    char lab[12]; strlcpy(lab, r ? (s.pcDiskDev[0] ? s.pcDiskDev : "DISK") : "RAM", sizeof lab);
+  const float T_WARM = 70.f;   // matches vT warm point
+  bool gpuHot = linked && !isnan(s.pcGpuT) && s.pcGpuT >= T_WARM;
+  bool nvHot = linked && !isnan(s.pcNvmeT) && s.pcNvmeT >= T_WARM;
+  // slot kinds: 0=GPU, 1=NVMe, 2=RAM, 3=DISK — hot sensors first, then mem/disk fill remaining slots
+  int slot[2]; int ns = 0;
+  if (gpuHot) slot[ns++] = 0;
+  if (nvHot && ns < 2) slot[ns++] = 1;
+  if (ns < 2) slot[ns++] = 2;
+  if (ns < 2) slot[ns++] = 3;
+  for (int r = 0; r < ns; r++) {
+    int y = r ? 86 : 59, kind = slot[r];
+    if (kind <= 1) {
+      float tv = kind ? s.pcNvmeT : s.pcGpuT;
+      txt(4, y, kind ? "NVME" : "GPU", V_LAB);
+      snprintf(a, sizeof a, "%.0f", tv);
+      ft(4, y + 25, a, stale ? V_GREY : vHeat(vT(tv)), &FreeSansBold12pt7b);
+      int dx = 4 + ftW(&FreeSansBold12pt7b, a) + 2;
+      fb.drawCircle(dx + 3, y + 12, 3, stale ? V_GREY : vHeat(vT(tv)));
+      fb.drawCircle(dx + 3, y + 12, 2, stale ? V_GREY : vHeat(vT(tv)));
+      continue;
+    }
+    bool disk = kind == 3;
+    double u = disk ? s.pcDiskUsed : s.pcMemUsed, tot = disk ? s.pcDiskTot : s.pcMemTot;
+    int pct = linked ? (disk ? s.pcDisk : s.pcMem) : -1;
+    char lab[12];
+    if (disk && s.pcDiskDev[0]) {
+      strlcpy(lab, s.pcDiskDev, sizeof lab);
+      for (char* p = lab; *p; p++) if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 'a' + 'A');
+    } else strlcpy(lab, disk ? "DISK" : "RAM", sizeof lab);
     if (strlen(lab) > (NX - 6) / CW) lab[(NX - 6) / CW] = 0;
     txt(4, y, lab, V_LAB);
     bool bytes = linked && !isnan(u) && !isnan(tot) && tot > 0;
     if (bytes) {
       float f = (float)(u / tot); char t2[12];
       vFmtSize(a, sizeof a, u, false); snprintf(t2, sizeof t2, "/"); vFmtSize(t2 + 1, sizeof t2 - 1, tot, true);
-      ft(4, y + 24, a, stale ? V_GREY : vHeat(r ? vDiskP((int)(f * 100)) : vMemP((int)(f * 100))), &FreeSansBold9pt7b);
+      ft(4, y + 24, a, stale ? V_GREY : vHeat(disk ? vDiskP((int)(f * 100)) : vMemP((int)(f * 100))), &FreeSansBold9pt7b);
       txt(4 + ftW(&FreeSansBold9pt7b, a) + 1, y + 17, t2, V_LAB);
-    } else { fmtMem(a, sizeof a, pct); ft(4, y + 25, a, pct < 0 || stale ? V_GREY : vHeat(r ? vDiskP(pct) : vMemP(pct)), &FreeSansBold12pt7b); }
+    } else { fmtMem(a, sizeof a, pct); ft(4, y + 25, a, pct < 0 || stale ? V_GREY : vHeat(disk ? vDiskP(pct) : vMemP(pct)), &FreeSansBold12pt7b); }
   }
   // mirrored net graph: one header (iface, down rate, up rate); RX hangs from the top, TX rises from the bottom
   const char* ifn = s.netIf[0] ? s.netIf : "NET";
@@ -1311,8 +1327,6 @@ void drawCores(const Status& s, uint32_t now) {
   txt(X, 1, "CORES", V_LAB);
   snprintf(a, sizeof a, "%d", n); txt(X + 36, 1, n ? a : "--", n && !stale ? V_WHITE : V_GREY);
   if (n) {
-    int sum = 0; for (int i = 0; i < n; i++) sum += s.coresAll[i];
-    int avg = (sum + n / 2) / n;
     for (int b = 0; b < bars; b++) {
       int lo = b * per, hi = min(n, lo + per), acc = 0;
       for (int i = lo; i < hi; i++) acc += s.coresAll[i];
@@ -1325,8 +1339,6 @@ void drawCores(const Status& s, uint32_t now) {
         fb.drawFastHLine(x0, y, BWID, stale ? mix(V_BG, c, 110) : c);
       }
     }
-    int ay = BOT - (int)((BOT - TOP) * avg / 100.f + 0.5f);
-    fb.drawFastHLine(X, ay, cw, stale ? V_GREY : V_WHITE);
   } else fb.drawRect(X, TOP, cw, BOT - TOP + 1, V_DIV);
   const int LX = X + cw + 8, R = W - 4;
   fb.drawFastVLine(LX - 4, TOP, BOT - TOP + 1, V_DIV);
@@ -1417,8 +1429,8 @@ void statusBar(const Status& s, const PcHist& h, uint32_t now) {
   // GEEK (right): "GEEK -52dBm"
   char rs[12]; if (s.wifi && s.rssi) snprintf(rs, sizeof rs, "%ddBm", s.rssi); else strcpy(rs, "--");
   uint16_t gc = rssiC(s.wifi, s.rssi);
-  int rw = strlen(rs) * CW, gx = W - 4 - rw - 5 * CW - 5;
-  vDot(gx + 2, ty + 3, gc); txt(gx + 5, ty, "GEEK", V_LAB); txtR(W - 4, ty, rs, gc);
+  int rw = strlen(rs) * CW, gx = W - 4 - rw - 5 * CW - 7;
+  vDot(gx + 2, ty + 3, gc); txt(gx + 7, ty, "GEEK", V_LAB); txtR(W - 4, ty, rs, gc);
 }
 
 enum Page { P_PC, P_CORES, P_NET, P_ZG, P_DESK, P_TERM, NPAGES };
