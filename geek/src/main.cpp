@@ -148,6 +148,10 @@ struct Status {
   uint8_t coresAll[64] = {0};   // every core the helper sends (it caps at 64)
   char procN[8][16] = {}; float procP[8] = {}; int procCount = 0;   // pc_procs, busiest first
   char netpN[8][16] = {}; float netpB[8] = {}; int netpCount = 0;   // pc_net_procs (TCP bytes/s up+down), busiest first
+  // cumulative per-process network history (Zero /data, since the last SD-file reset); absent -> histCount 0
+  char pcId[17] = "", pcHost[24] = "";
+  char histN[8][16] = {}; double histRx[8] = {}, histTx[8] = {}; int histCount = 0;
+  long long histSince = 0;       // net_hist_since, Unix s, 0 = unknown
   int coresAllN = 0, coresTotal = 0;
   float pcGpu = NAN, pcCpuT = NAN, pcGpuT = NAN, pcNvmeT = NAN;
   long upS = -1, pcUpS = -1;
@@ -236,6 +240,8 @@ Term gTerm;
 
 void pollOnce() {
   Status s; s.wifi = WiFi.status() == WL_CONNECTED; s.rssi = s.wifi ? WiFi.RSSI() : 0;
+  static bool ntpOn = false;   // wall clock only for the net-history "since" span
+  if (s.wifi && !ntpOn) { configTime(0, 0, "pool.ntp.org", "time.google.com"); ntpOn = true; }
   if (s.wifi) copyStr(s.geekIp, sizeof s.geekIp, WiFi.localIP().toString().c_str());
   if (s.wifi) {
     HTTPClient http; http.setTimeout(1500); http.setConnectTimeout(1500);
@@ -320,6 +326,21 @@ void pollOnce() {
             s.netpB[ni++] = r[1] | 0.f;
           }
           s.netpCount = ni;
+        }
+        copyStr(s.pcId, sizeof s.pcId, d["pc_id"] | "");
+        copyStr(s.pcHost, sizeof s.pcHost, d["pc_host"] | "");
+        s.histSince = d["net_hist_since"] | 0LL;
+        s.histCount = 0;
+        if (d["net_hist"].is<JsonArray>()) {
+          int hi = 0;
+          for (JsonObject o : d["net_hist"].as<JsonArray>()) {
+            if (hi >= 8) break;
+            if (!o["p"].is<const char*>()) continue;
+            copyStr(s.histN[hi], sizeof s.histN[hi], o["p"] | "");
+            s.histRx[hi] = max(0.0, o["rx"] | 0.0); s.histTx[hi] = max(0.0, o["tx"] | 0.0);
+            hi++;
+          }
+          s.histCount = hi;
         }
         if (!d["pc_gpu_pct"].isNull()) s.pcGpu = d["pc_gpu_pct"].as<float>();
         if (!d["pc_cpu_temp_c"].isNull()) s.pcCpuT = d["pc_cpu_temp_c"].as<float>();
@@ -1361,6 +1382,49 @@ void drawCores(const Status& s, uint32_t now) {
   pageDots(1);
 }
 
+// Byte totals: B/K/M/G/T, at most 5 chars.
+void fmtBytes(char* b, size_t n, double v) {
+  const char* u = "BKMGT"; int i = 0;
+  while (v >= 999.5 && i < 4) { v /= 1000.0; i++; }
+  if (i && v < 9.95) snprintf(b, n, "%.1f%c", v, u[i]); else snprintf(b, n, "%.0f%c", v, u[i]);
+}
+// Window since the last reset: "45m", "5h12m", "3d 4h"; "" when the clock or the field is unknown.
+void fmtSpan(char* b, size_t n, long long since) {
+  time_t t = time(nullptr); b[0] = 0;
+  if (since <= 0 || t < 1700000000 || t < since) return;   // NTP not synced yet
+  long long d = t - since;
+  if (d < 3600) snprintf(b, n, "%lldm", d / 60);
+  else if (d < 86400) snprintf(b, n, "%lldh%02lldm", d / 3600, (d % 3600) / 60);
+  else snprintf(b, n, "%lldd %lldh", d / 86400, (d % 86400) / 3600);
+}
+// Cumulative view: host + window on the first row, then each process' down/up totals.
+void drawNetHist(const Status& s, bool stale, int X, int R, int TOP, int BOT) {
+  uint16_t c = stale ? V_GREY : V_WHITE;
+  char span[16], a[12], b[12], hdr[48];
+  fmtSpan(span, sizeof span, s.histSince);
+  const char* host = s.pcHost[0] ? s.pcHost : s.pcId[0] ? s.pcId : "PC";
+  snprintf(hdr, sizeof hdr, "TOTAL %s", span[0] ? "since" : "");
+  txt(X, TOP, hdr, V_LAB);
+  int hx = X + 6 * (int)strlen(hdr) + 6;
+  if (span[0]) { txt(hx, TOP, span, c); hx += 6 * (int)strlen(span) + 6; }
+  int maxc = (R - hx) / 6; char hn[24]; strlcpy(hn, host, max(1, min((int)sizeof hn, maxc + 1)));
+  if (maxc > 0) txtR(R, TOP, hn, V_LAB);
+  fb.drawFastHLine(X, TOP + 10, R - X, V_DIV);
+  int n = min(s.histCount, 7), y0 = TOP + 13, rh = min(13, (BOT - y0) / max(1, n));
+  // fixed right columns: [arrow]rx(5) [arrow]tx(5)
+  const int BX = R - 5 * 6, AX = BX - 10 - 5 * 6;
+  for (int i = 0; i < n; i++) {
+    int y = y0 + i * rh;
+    fmtBytes(a, sizeof a, s.histRx[i]); fmtBytes(b, sizeof b, s.histTx[i]);
+    int mc = (AX - 8 - X) / 6; char nm[16]; strlcpy(nm, s.histN[i], max(1, min((int)sizeof nm, mc + 1)));
+    txt(X, y, nm, c);
+    fb.drawFastVLine(AX - 5, y, 7, V_RX); fb.drawLine(AX - 7, y + 4, AX - 5, y + 6, V_RX); fb.drawLine(AX - 3, y + 4, AX - 5, y + 6, V_RX);
+    txtR(BX - 10, y, a, c);
+    fb.drawFastVLine(BX - 5, y, 7, V_TX); fb.drawLine(BX - 7, y + 2, BX - 5, y, V_TX); fb.drawLine(BX - 3, y + 2, BX - 5, y, V_TX);
+    txtR(R, y, b, c);
+  }
+}
+
 // v2 page 3: bandwhich-style network use. The PC's busiest processes by TCP up+down
 // (pc_net_procs), each with a bar scaled to the busiest one, under the interface totals.
 void drawNet(const Status& s, uint32_t now) {
@@ -1387,8 +1451,12 @@ void drawNet(const Status& s, uint32_t now) {
   txt(ax, 1, a, stale ? V_GREY : V_WHITE);
   fb.drawFastVLine(bx - 5, 1, 7, V_TX); fb.drawLine(bx - 7, 3, bx - 5, 1, V_TX); fb.drawLine(bx - 3, 3, bx - 5, 1, V_TX);
   txt(bx, 1, b, stale ? V_GREY : V_WHITE);
-  int n = linked ? s.netpCount : 0;
   const int TOP = 14, BOT = 116;
+  // With history from the Zero the body alternates live <-> cumulative every NET_VIEW_MS
+  // (two title cycles); without it the live view is unchanged.
+  const uint32_t NET_VIEW_MS = 10000;
+  if (linked && s.histCount && (now / NET_VIEW_MS) % 2) { drawNetHist(s, stale, X, R, TOP, BOT); pageDots(2); return; }
+  int n = linked ? s.netpCount : 0;
   if (!n) txt(X, TOP + 2, linked ? "no TCP traffic" : "--", V_GREY);
   else {
     float mx = 1.f; for (int i = 0; i < n; i++) mx = max(mx, s.netpB[i]);
