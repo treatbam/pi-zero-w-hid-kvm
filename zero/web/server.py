@@ -10,7 +10,12 @@ API:
                                       "pc_cores_all","pc_gpu_pct","pc_cpu_temp_c","pc_gpu_temp_c","pc_nvme_temp_c","pc_uptime_s","pc_procs","pc_net_procs","pc_mem_used","pc_mem_total","pc_disk_used","pc_disk_total","pc_disk_dev","pc_net_ip",
                                       "serial_mode","serial_mode_age_s","serial_mode_requested",
                                       "preview_quality","preview_quality_requested",
+                                      "pc_id","pc_host","net_hist_since","net_hist",
                                       "zero_wifi_rssi","tailscale","tailscale_ip"}
+                                    pc_id (12 hex, sha256 of the PC's machine-id) / pc_host identify
+                                    the PC; net_hist is that PC's cumulative TCP bytes per process
+                                    since net_hist_since (unix s): up to 8 {"p","rx","tx"}, busiest
+                                    first; null when unknown or history storage (KVM_DATA_DIR) is off.
                                     zero_wifi_rssi (dBm) / tailscale ("up"/"down"/null) /
                                     tailscale_ip (tailscale0 IPv4 or null) are PIN-only
                                     too; the GEEK sends its KVM_PIN on the status poll.
@@ -41,6 +46,10 @@ API:
   POST /api/stats  {"on":true|false}           -> KVMCTL:stats:on|off (type 8 extended stats).
                    kvm-web sends stats:on by itself on the first helper ack and after a helper
                    restart (<= every 10 s); "off" stops that until turned on again. 409 in shell.
+  POST /api/net_hist/reset {"pc":"hostname"|"pc_id"} (omit pc = connected PC) -> wipes all saved
+                   history for that PC, since=now. 404 unknown, 409 ambiguous hostname (send pc_id),
+                   503 storage off. Also: <hostname-or-pc_id>-erase.txt on the boot partition
+                   wipes once at kvm-web start (handled files are remembered on /data).
   POST /api/power  {"target":"host","action":"power|sleep|wake|hard_reset|hard_power","confirm":true}
                    {"target":"zero","action":"shutdown|reboot","confirm":true}
 Every POST needs Content-Type: application/json, a same-origin Origin (if sent), and the PIN
@@ -50,9 +59,9 @@ A custom header also forces a CORS preflight, so other web pages can't send thes
 GET /api/status stays open (read-only; the GEEK and the console poll it).
 GET /api/term needs the X-KVM-PIN header too (host terminal output can hold secrets).
 """
-import argparse, fcntl, hmac, json, os, socket, struct, subprocess, threading, time
+import argparse, fcntl, signal, hmac, json, os, socket, struct, subprocess, threading, time
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
-import hid, hostview, term
+import hid, history, hostview, term
 from urllib.parse import urlsplit, parse_qs
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -69,6 +78,7 @@ MAX_FAILS, LOCKOUT_S = 5, 60
 HOST_POWER = ("power", "sleep", "wake")          # soft: System Control keys over USB
 HOST_HARD = ("hard_reset", "hard_power")         # needs optocoupler wiring (not built yet)
 MODE_REQ = {"mode": None, "quality": None}
+HISTORY = history.NetHistory(os.environ.get("KVM_DATA_DIR", "/var/lib/kvm"))
 STATS = hostview.StatsKeeper(hostview.shared, min_s=float(os.environ.get("KVM_STATS_MIN_S", "10")))
 
 def stats_keeper_loop():
@@ -110,8 +120,36 @@ def _strlist(body, k, allowed, maxn):
         raise ValueError(f"{k} must be a list of known names (max {maxn})")
     return v
 
+def net_hist_reset(pc):
+    """(code, body) for POST /api/net_hist/reset. pc None = the PC connected now."""
+    if not HISTORY.enabled:
+        return 503, {"error": "history storage is off (no writable KVM_DATA_DIR)"}
+    if pc is None:
+        pc = hostview.shared.status_fields(hid.status()["host_connected"]).get("pc_id")
+        if not pc:
+            return 409, {"error": "no PC identified right now; give {\"pc\": hostname or pc_id}"}
+    try:
+        pid = HISTORY.reset(pc)
+    except history.Ambiguous as e:
+        return 409, {"error": "hostname matches several PCs; send pc_id", "pc_ids": e.args[0]}
+    except history.NotFound:
+        return 404, {"error": f"no history for {pc!r}"}
+    except Exception as e:
+        return 500, {"error": str(e)}
+    return 200, {"ok": True, "pc_id": pid, "net_hist_since": int(time.time())}
+
+def history_loop():
+    while True:
+        time.sleep(HISTORY.flush_s)
+        HISTORY.flush()
+
 def validate(path, body):
     """Return positional args for the handler or raise ValueError. Unknown path -> 404 later."""
+    if path == "/api/net_hist/reset":
+        pc = body.get("pc")
+        if pc is not None and (not isinstance(pc, str) or not 0 < len(pc) <= 63 or not pc.isprintable()):
+            raise ValueError("pc must be a hostname or pc_id")
+        return (pc,)
     if path == "/api/key":
         return (_strlist(body, "keys", hid.KEYS, 6), _strlist(body, "mods", hid.MOD, 8))
     if path == "/api/type":
@@ -258,7 +296,9 @@ class H(SimpleHTTPRequestHandler):
                 sm = {"pin_ok": True, **zero_link(), "serial_mode": mode, "serial_mode_age_s": age,
                       "serial_mode_requested": hostview.shared.requested_mode,
                       "preview_quality": hostview.shared.quality(), "preview_quality_requested": MODE_REQ["quality"]}
-            return self._json(200, {**st, "ip": self._my_ip(), **sysstats(), **pc, **sm})
+            since, hist = HISTORY.snapshot(pc.get("pc_id"))
+            return self._json(200, {**st, "ip": self._my_ip(), **sysstats(), **pc,
+                                    "net_hist_since": since, "net_hist": hist, **sm})
         u = urlsplit(self.path)
         if u.path == "/api/frame":
             ok = self._pin_ok()
@@ -374,6 +414,8 @@ class H(SimpleHTTPRequestHandler):
         except (ValueError, TypeError) as e:  # JSONDecodeError is a ValueError
             return self._json(400, {"error": f"bad request: {e}"})
         if self.path == "/api/auth": return self._json(200, {"ok": True})
+        if self.path == "/api/net_hist/reset":
+            return self._json(*net_hist_reset(args[0]))
         if self.path == "/api/term":
             try:
                 if not term.send(*args): return self._json(409, {"error": "serial port not open"})
@@ -447,6 +489,11 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(); p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=8080); a = p.parse_args()
     PIN = load_pin()
+    if HISTORY.open():
+        HISTORY.scan_erase(history.boot_dir())
+        hostview.shared.on_ext = HISTORY.ingest
+        threading.Thread(target=history_loop, name="net-history", daemon=True).start()
+        signal.signal(signal.SIGTERM, lambda *_: (HISTORY.close(), os._exit(0)))
     term.start()
     threading.Thread(target=stats_keeper_loop, name="stats-keeper", daemon=True).start()
     print(f"KVM console on http://{a.host}:{a.port}")

@@ -34,6 +34,7 @@ lookalike cannot swallow the shell.
 import base64
 import json
 import math
+import re
 import struct
 import threading
 import time
@@ -142,6 +143,7 @@ class HostView:
         self.requested_mode = None  # set by the server from /api/mode
         self.helper_returned = 0    # bumps on a helper ack after silence (StatsKeeper watches it)
         self._ext = None            # validated type-8 dict
+        self.on_ext = None          # callback(ext) per accepted type 8 (net history)
         self._ext_at = None
         self._quality = None        # last quality the helper acked
         self._pv = {}               # (x, y) -> (zseq, w, h, jpeg bytes)
@@ -297,7 +299,8 @@ class HostView:
                            "pc_disk_used": (ext.get("disk") or [None] * 3)[0],
                            "pc_disk_total": (ext.get("disk") or [None] * 3)[1],
                            "pc_disk_dev": (ext.get("disk") or [None] * 3)[2],
-                           "pc_net_ip": ext.get("net_ip")})
+                           "pc_net_ip": ext.get("net_ip"),
+                           "pc_id": ext.get("pc_id"), "pc_host": ext.get("pc_host")})
             return fields
 
     def frame_bytes(self, host_connected):
@@ -433,6 +436,11 @@ class HostView:
             ext = _parse_ext(payload)
             if ext is not None:
                 self._ext, self._ext_at = ext, now
+                if self.on_ext is not None and "pc_id" in ext:
+                    try:
+                        self.on_ext(ext)       # history: must only touch memory (no I/O)
+                    except Exception:
+                        pass
 
     def _accept_preview(self, payload, now):
         """payload is a memoryview into the read buffer; tiles are copied out once."""
@@ -527,6 +535,10 @@ def _num(v, lo, hi):
     return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and lo <= v <= hi
 
 
+PC_ID_RE = re.compile(r"[0-9a-f]{12}")
+NET_DELTA_MAX = 16
+
+
 def _parse_ext(payload):
     """Validated type-8 dict, keeping only known, sane fields; None if unusable."""
     try:
@@ -572,6 +584,19 @@ def _parse_ext(payload):
     ip = d.get("net_ip")
     if isinstance(ip, str) and ip.isprintable() and 0 < len(ip) <= 45:
         out["net_ip"] = ip
+    pid = d.get("pc_id")
+    if isinstance(pid, str) and PC_ID_RE.fullmatch(pid):
+        out["pc_id"] = pid
+    ph = d.get("pc_host")
+    if isinstance(ph, str) and 0 < len(ph) <= 63 and ph.isprintable() and not any(c.isspace() for c in ph):
+        out["pc_host"] = ph
+    nd = d.get("netdelta")
+    if isinstance(nd, list) and len(nd) <= NET_DELTA_MAX:
+        rows = [[r[0][:15], int(r[1]), int(r[2])] for r in nd
+                if isinstance(r, list) and len(r) == 3 and isinstance(r[0], str) and r[0]
+                and r[0].isprintable() and _num(r[1], 0, 1e12) and _num(r[2], 0, 1e12)]
+        if rows:
+            out["netdelta"] = rows
     return out
 
 
