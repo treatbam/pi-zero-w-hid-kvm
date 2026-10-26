@@ -234,3 +234,28 @@ class NetProcsTest(unittest.TestCase):
         b = dict(a); b[("10.0.0.2:1", "1.1.1.1:443")] = ("firefox", 3000)
         rows, _ = kvm_helper.top_net_procs(prev, b, 12)
         self.assertEqual(rows, [["firefox", 1000.0]])
+
+    def test_net_deltas_split_rx_tx(self):
+        a = kvm_helper.parse_ss(self.SS, split=True)
+        self.assertEqual(a[("10.0.0.2:1", "1.1.1.1:443")], ("firefox", 1000, 900, 100))
+        self.assertEqual(kvm_helper.net_deltas(None, a), [])          # first sample: nothing
+        b = dict(a)
+        b[("10.0.0.2:1", "1.1.1.1:443")] = ("firefox", 1500, 1300, 200)
+        b[("10.0.0.2:3", "1.1.1.1:443")] = ("curl", 7, 5, 2)          # new socket counts in full
+        b[("10.0.0.2:2", "1.1.1.1:443")] = ("other", 10, 0, 10)       # went backwards: reused
+        self.assertEqual(kvm_helper.net_deltas(a, b),
+                         [["firefox", 400, 100], ["other", 0, 10], ["curl", 5, 2]])
+
+    def test_net_deltas_merge_tail_into_other(self):
+        b = {(str(i), "p"): (f"p{i}", 2 * i, i, i) for i in range(1, 21)}
+        rows = kvm_helper.net_deltas({}, b, n=4)
+        self.assertEqual([r[0] for r in rows], ["p20", "p19", "p18", "other"])
+        self.assertEqual(sum(r[1] for r in rows), sum(range(1, 21)))
+
+    def test_pc_id(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write("abc\n")
+        self.assertEqual(kvm_helper.read_pc_id(f.name), "ba7816bf8f01")
+        os.unlink(f.name)
+        self.assertIsNone(kvm_helper.read_pc_id("/nonexistent"))

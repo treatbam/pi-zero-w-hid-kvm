@@ -49,6 +49,7 @@ import base64
 import binascii
 import ctypes
 import glob
+import hashlib
 import math
 import os
 import pty
@@ -492,9 +493,10 @@ _SS_USER = re.compile(r'\(\("([^"]+)",pid=\d+')
 _SS_BYTES = re.compile(r"\b(bytes_acked|bytes_received):(\d+)")
 
 
-def parse_ss(text):
+def parse_ss(text, split=False):
     """{(local, peer): (comm or "other", bytes_acked + bytes_received)} from
-    `ss -tinpH` output. Sockets of other users have no pid and land in "other"."""
+    `ss -tinpH` output. Sockets of other users have no pid and land in "other".
+    split=True adds rx (bytes_received) and tx (bytes_acked): (comm, total, rx, tx)."""
     out, key, comm = {}, None, None
     for line in text.splitlines():
         if not line.strip():
@@ -509,8 +511,9 @@ def parse_ss(text):
             continue
         if key is None:
             continue
-        total = sum(int(v) for _, v in _SS_BYTES.findall(line))
-        out[key] = (comm, total)
+        vals = dict((k, int(v)) for k, v in _SS_BYTES.findall(line))
+        rx, tx = vals.get("bytes_received", 0), vals.get("bytes_acked", 0)
+        out[key] = (comm, rx + tx, rx, tx) if split else (comm, rx + tx)
         key = None
     return out
 
@@ -520,7 +523,53 @@ def read_tcp_sockets():
         r = subprocess.run(["ss", "-tinpH"], capture_output=True, text=True, timeout=1.5)
     except (OSError, subprocess.SubprocessError):
         return None
-    return parse_ss(r.stdout) if r.returncode == 0 else None
+    return parse_ss(r.stdout, split=True) if r.returncode == 0 else None
+
+
+NET_DELTA_MAX = 16
+
+
+def net_deltas(prev, sample, n=NET_DELTA_MAX):
+    """[[comm, rx_bytes, tx_bytes], ...] moved since `prev` (both from parse_ss(split=True)),
+    for the Zero's cumulative history. Never negative. Nothing on the first sample (prev
+    None), so a helper restart doesn't re-count bytes old sockets moved before it. A socket
+    new since prev, or whose counters went backwards (reused 4-tuple), counts in full.
+    Past n names the rest merge into "other" so no bytes are dropped."""
+    if sample is None or prev is None:
+        return []
+    by = {}
+    for k, v in sample.items():
+        if len(v) < 4:
+            continue
+        comm, rx, tx = v[0], v[2], v[3]
+        old = prev.get(k)
+        if old is not None and len(old) >= 4 and rx >= old[2] and tx >= old[3]:
+            rx, tx = rx - old[2], tx - old[3]
+        if rx > 0 or tx > 0:
+            a = by.setdefault(comm, [0, 0])
+            a[0] += rx; a[1] += tx
+    rows = sorted(by.items(), key=lambda kv: kv[1][0] + kv[1][1], reverse=True)
+    if len(rows) > n:
+        keep = [r for r in rows if r[0] != "other"][:n - 1]
+        names = {c for c, _ in keep}
+        o = [sum(v[0] for c, v in rows if c not in names), sum(v[1] for c, v in rows if c not in names)]
+        rows = keep + [("other", o)]
+    return [[c, int(a), int(b)] for c, (a, b) in rows]
+
+
+def read_pc_id(path="/etc/machine-id"):
+    """First 12 hex of sha256(machine-id): stable per install, reveals nothing. None if unreadable."""
+    try:
+        with open(path, "rb") as f:
+            mid = f.read().strip()
+    except OSError:
+        return None
+    return hashlib.sha256(mid).hexdigest()[:12] if mid else None
+
+
+def read_pc_host():
+    h = "".join(ch for ch in socket.gethostname() if ch.isprintable() and not ch.isspace())
+    return h[:63] or None
 
 
 def top_net_procs(prev, sample, now, n=8):
@@ -533,7 +582,8 @@ def top_net_procs(prev, sample, now, n=8):
         return [], new
     dt = now - prev[0]
     by = {}
-    for k, (comm, b) in sample.items():
+    for k, v in sample.items():
+        comm, b = v[0], v[1]
         old = prev[1].get(k)
         d = b - old[1] if old else b
         if d > 0:
@@ -1053,6 +1103,8 @@ class HelperState:
         self.cores_prev = None
         self.proc_prev = None
         self.sock_prev = None
+        self.pc_id = read_pc_id()
+        self.pc_host = read_pc_host()
         self.prev_raw = None
         self.crop_mode = "full"
         self.frame_until = time.monotonic() + FRAME_LEASE_S
@@ -1105,9 +1157,17 @@ def send_helper_packets(fd, display, announced, state=None, want_frame=True):
         disk = read_disk_info("/")
         if disk:
             more["disk"] = list(disk)
-        netprocs, state.sock_prev = top_net_procs(state.sock_prev, read_tcp_sockets(), now)
+        socks = read_tcp_sockets()
+        nd = net_deltas(state.sock_prev[1] if state.sock_prev else None, socks)
+        netprocs, state.sock_prev = top_net_procs(state.sock_prev, socks, now)
         if netprocs:
             more["netprocs"] = netprocs
+        if state.pc_id:
+            more["pc_id"] = state.pc_id
+        if state.pc_host:
+            more["pc_host"] = state.pc_host
+        if nd:
+            more["netdelta"] = nd
         if iface:
             ip = iface_ip(iface)
             if ip:
