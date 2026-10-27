@@ -29,11 +29,6 @@
 #include "secrets.example.h"   // CI / web-flasher build: placeholders, real values set in the setup portal
 #define KVM_PLACEHOLDER_SECRETS 1
 #endif
-#ifndef KVM_API_TOKEN
-#define KVM_API_TOKEN ""   // optional: Zero /api token, sent as X-KVM-Token; empty = no header
-#endif
-// Every request to the Zero: PIN (when given) plus the API token (when configured).
-#define KVM_TOKEN_HDR(http) do { if (KVM_API_TOKEN[0]) (http).addHeader("X-KVM-Token", KVM_API_TOKEN); } while (0)
 #ifndef KVM_PIN
 #define KVM_PIN ""   // not in secrets.h: set it in the setup portal (BOOT held at power-on)
 #endif
@@ -251,7 +246,7 @@ void pollOnce() {
   if (s.wifi) copyStr(s.geekIp, sizeof s.geekIp, WiFi.localIP().toString().c_str());
   if (s.wifi) {
     HTTPClient http; http.setTimeout(1500); http.setConnectTimeout(1500);
-    uint32_t t0 = millis(); http.begin(BASE + "/api/status"); KVM_TOKEN_HDR(http);
+    uint32_t t0 = millis(); http.begin(BASE + "/api/status");
     if (pinUsable()) http.addHeader("X-KVM-PIN", cfg.pin);   // unlocks the Zero link + serial fields
     s.httpCode = http.GET(); s.latencyMs = millis() - t0;
     if (s.httpCode == 200) {
@@ -375,7 +370,7 @@ void pollTerm() {
   Term t; t.n = 0;
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http; http.setTimeout(1500); http.setConnectTimeout(1500);
-    http.begin(BASE + "/api/term?n=" + TROWS); KVM_TOKEN_HDR(http); http.addHeader("X-KVM-PIN", cfg.pin);
+    http.begin(BASE + "/api/term?n=" + TROWS); http.addHeader("X-KVM-PIN", cfg.pin);
     t.code = http.GET();
     if (t.code == 401 || t.code == 429) pinFailed();
     if (t.code == 200) {
@@ -411,7 +406,7 @@ void pollFrame() {
   bool ok = false;
   if (WiFi.status() == WL_CONNECTED && gDeskOn) {
     HTTPClient http; http.setTimeout(4000); http.setConnectTimeout(1500);
-    http.begin(BASE + "/api/frame"); KVM_TOKEN_HDR(http); http.addHeader("X-KVM-PIN", cfg.pin);
+    http.begin(BASE + "/api/frame"); http.addHeader("X-KVM-PIN", cfg.pin);
     int code = http.GET();
     if (code == 401 || code == 429) pinFailed();
     if (code == 200) {
