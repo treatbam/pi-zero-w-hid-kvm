@@ -26,6 +26,9 @@ API:
                                     or null when no helper has answered yet.
                                     link is "LINKED", "KEYS", or "NO HOST".
                                     PC fields are null unless link is LINKED.
+                                    PC fields, pc_id/pc_host and net_hist* are also null without a
+                                    valid X-KVM-PIN (localhost is exempt for on-box checks).
+                                    mode: "hid" (no helper), "term" (shell) or "desktop" (helper).
   GET  /api/frame[?crop=full|loupe] -> 240x135 RGB565-LE still, or 204 if it is stale
                                     (PIN required; requests on-demand capture from helper)
   GET  /api/clipboard            -> {"ok":true,"text":"...","age_s":0.1} (PIN required)
@@ -297,8 +300,17 @@ class H(SimpleHTTPRequestHandler):
                 sm = {"pin_ok": True, **zero_link(), "serial_mode": mode, "serial_mode_age_s": age,
                       "serial_mode_requested": hostview.shared.requested_mode,
                       "preview_quality": hostview.shared.quality(), "preview_quality_requested": MODE_REQ["quality"]}
-            since, hist = HISTORY.snapshot(pc.get("pc_id"))
-            return self._json(200, {**st, "ip": self._my_ip(), **sysstats(), **pc,
+            hm = hostview.shared.mode()[0]
+            mode = {"shell": "term", "helper": "desktop"}.get(hm, "hid")
+            local = self.client_address[0] in ("127.0.0.1", "::1")
+            if sm.get("pin_ok") or local:
+                since, hist = HISTORY.snapshot(pc.get("pc_id"))
+            else:
+                # PC details and per-process history are PIN-only: anyone else on the LAN
+                # (or a future fallback AP) sees just the HID link state. Same keys, nulled.
+                pc = {k: (v if k == "link" else None) for k, v in pc.items()}
+                since, hist = None, None
+            return self._json(200, {**st, "ip": self._my_ip(), **sysstats(), **pc, "mode": mode,
                                     "net_hist_since": since, "net_hist": hist, **sm})
         u = urlsplit(self.path)
         if u.path == "/api/frame":
