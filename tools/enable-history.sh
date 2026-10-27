@@ -18,7 +18,7 @@ say() { printf '\n==> %s\n' "$*"; }
 wait_up() { say "waiting for $HOST to come back"; sleep 15
   for _ in $(seq 60); do "${SSH[@]}" true 2>/dev/null && return 0; sleep 5; done
   echo "Zero did not come back over SSH" >&2; exit 1; }
-ro_on() { "${SSH[@]}" "sudo raspi-config nonint enable_overlayfs && (sleep 1; sudo systemctl reboot) >/dev/null 2>&1 &" || true; wait_up; }
+ro_on() { "${SSH[@]}" "sudo raspi-config nonint enable_overlayfs && sudo sed -i 's/overlayroot=tmpfs[^ ]*/overlayroot=tmpfs:recurse=0/' /boot/firmware/cmdline.txt && (sleep 1; sudo systemctl reboot) >/dev/null 2>&1 &" || true; wait_up; }
 
 say "pulling geek-display-v2"
 git checkout -q geek-display-v2 && git pull -q --ff-only

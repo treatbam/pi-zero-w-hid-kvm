@@ -31,10 +31,10 @@ if ! blkid -L "$LABEL" >/dev/null 2>&1; then
 fi
 mkdir -p "$MNT"
 if ! grep -q "^LABEL=$LABEL[[:space:]]" /etc/fstab; then
-  echo "LABEL=$LABEL $MNT ext4 defaults,noatime,nofail,x-systemd.device-timeout=5s 0 2" >> /etc/fstab
+  echo "LABEL=$LABEL $MNT ext4 defaults,noatime,nofail,x-systemd.device-timeout=30s 0 2" >> /etc/fstab
   echo "added $MNT to /etc/fstab"
 fi
 mountpoint -q "$MNT" || mount "$MNT"
 echo "ok: $(findmnt -no SOURCE,TARGET,FSTYPE "$MNT")"
-# overlayroot only covers /; a separate ext4 mount from fstab stays writable when the
+# With overlayroot=tmpfs:recurse=0 (set by enable-history.sh) overlayroot covers only /; a separate ext4 mount from fstab stays writable when the
 # overlay is back on. Re-enable it with: raspi-config nonint enable_overlayfs; reboot

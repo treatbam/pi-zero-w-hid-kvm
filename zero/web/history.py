@@ -17,6 +17,20 @@ ERASE_RE = re.compile(r"(.+)-erase\.txt", re.I)
 DELTA_MAX = 1e12          # per interval, per process; larger is nonsense
 
 
+def _mount_info(path):
+    """(fstype, set(options)) of the mount exactly at path, or (None, set())."""
+    path = os.path.realpath(path)
+    try:
+        with open("/proc/mounts") as f:
+            for line in reversed(f.read().splitlines()):
+                parts = line.split()
+                if len(parts) >= 4 and parts[1].replace("\\040", " ") == path:
+                    return parts[2], set(parts[3].split(","))
+    except OSError:
+        pass
+    return None, set()
+
+
 class Ambiguous(Exception):
     pass
 
@@ -43,9 +57,12 @@ class NetHistory:
         try:
             if not os.path.isdir(self.data_dir):
                 raise OSError(f"{self.data_dir} missing (no kvmdata partition?)")
-            if self.require_mount and not os.path.ismount(self.data_dir):
-                # A bare dir on the overlay root would take writes into RAM and lose them on reboot.
-                raise OSError(f"{self.data_dir} is not a mount point (kvmdata partition not mounted?)")
+            if self.require_mount:
+                # A bare dir, or an overlay over kvmdata, would take writes into RAM and lose them on reboot.
+                fstype, opts = _mount_info(self.data_dir)
+                if fstype != "ext4" or "rw" not in opts:
+                    raise OSError(f"{self.data_dir} is not a writable ext4 mount (got {fstype or 'none'}; "
+                                  "kvmdata not mounted, or overlayroot missing recurse=0?)")
             db = sqlite3.connect(self.path, check_same_thread=False, timeout=5)
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript("""
