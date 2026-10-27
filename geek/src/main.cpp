@@ -144,6 +144,7 @@ struct Status {
   int zRssi = 0;                 // Zero wlan0 dBm, 0 = unknown
   int8_t ts = -1;                // tailscale: -1 n/a, 0 down, 1 up
   char serialMode[8] = "";
+  char mode[8] = "";             // /api/status "mode": hid | term | desktop; "" = Zero too old to say
   // type-8 extended stats (absent -> NAN / 0)
   uint8_t coresAll[64] = {0};   // every core the helper sends (it caps at 64)
   char procN[8][16] = {}; float procP[8] = {}; int procCount = 0;   // pc_procs, busiest first
@@ -295,6 +296,7 @@ void pollOnce() {
         if (d["tailscale_ip"].is<const char*>()) copyStr(s.tsIp, sizeof s.tsIp, d["tailscale_ip"] | "");
         if (d["tailscale"].is<const char*>()) s.ts = strcmp(d["tailscale"] | "", "up") == 0 ? 1 : 0;
         copyStr(s.serialMode, sizeof s.serialMode, d["serial_mode"] | "");
+        copyStr(s.mode, sizeof s.mode, d["mode"] | "");
         if (d["pc_cores_all"].is<JsonArray>()) {
           int ci = 0, tot = 0;
           for (JsonVariant v : d["pc_cores_all"].as<JsonArray>()) {
@@ -1560,6 +1562,17 @@ int alertPage(const Status& s, uint32_t now, bool* offline) {
   if (!isnan(s.pcTopCpu) && s.pcTopCpu >= 95.f) return P_CORES;
   return -1;
 }
+// Desktop / terminal pages follow the Zero's active mode ("mode" in /api/status).
+// No field (older Zero) or no good poll yet -> both stay visible, as before.
+bool pageVisible(int p, const Status& s) {
+  if (p != P_DESK && p != P_TERM) return true;
+  if (!s.api || !s.mode[0]) return true;
+  return strcmp(s.mode, p == P_DESK ? "desktop" : "term") == 0;
+}
+int nextVisible(int from, const Status& s) {   // first visible page after `from` (P_PC is always visible)
+  for (int i = 1; i <= NPAGES; i++) { int p = ((from + i) % NPAGES + NPAGES) % NPAGES; if (pageVisible(p, s)) return p; }
+  return P_PC;
+}
 void go(int n);
 void pageLogic(const Status& s, uint32_t now, bool* offline) {
   int a = alertPage(s, now, offline);
@@ -1577,6 +1590,7 @@ void paint() {
   if (gOtaPct >= 0) { drawOta(); tft.drawRGBBitmap(0, 0, fb.getBuffer(), W, H); return; }
   static Status s; static PcHist h;   // static: PcHist is ~9 KB, keep it off the loop stack
   xSemaphoreTake(gLock, portMAX_DELAY); s = gStat; h = gHist; xSemaphoreGive(gLock);
+  if (!pageVisible(page, s)) go(nextVisible(page, s));   // mode changed under us: move on
   if (page == P_DESK) {
     bool show = false;
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) == pdTRUE) {
@@ -1660,7 +1674,7 @@ void loop() {
     Ev e = b->poll(now);
     if (e == EV_SHORT) {
       if (gHome >= 0) { gAck = page; int h = gHome; gHome = -1; go(h); }   // dismiss the alert jump
-      else go(page + 1);
+      else { static Status st; xSemaphoreTake(gLock, portMAX_DELAY); st = gStat; xSemaphoreGive(gLock); go(nextVisible(page, st)); }
       gAutoMs = now;
     } else if (e == EV_LONG) { gAuto = !gAuto; gAutoMs = now; }
   }
