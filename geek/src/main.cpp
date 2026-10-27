@@ -1085,19 +1085,21 @@ void bevelCard(int x, int y, int w, int h, uint16_t base = 0) {
 // ---- v2 skin: page 1 (target PC) and page 2 (ZERO | GEEK) ---------------------------------
 // Own near-black background and heat scale; FreeSansBold for the values (baseline y), the
 // built-in 6x8 font for labels and the bottom row.
-// Graphite: warm off-white text on near-black; the only colour is vHeat's orange->red high end.
-const uint16_t V_BG = 0x1082 /* 16,16,18 */, V_LAB = 0xBDF6 /* 190,188,182 */, V_WHITE = 0xF77D /* 240,238,232 */,
-               V_GREY = 0x8C71, V_DIMG = 0x4208, V_DIV = 0x2987 /* 45,50,58 */;
-uint16_t vHeat(float t) {   // off-white until 0.55, then a quick orange(255,150,30) -> red(200,20,20)
+// Palette (all v2 pages): dark graphite ground, cyan for labels and network, off-white values,
+// and one warm severity ramp (vHeat) yellow -> orange -> red. Change colours here only.
+const uint16_t V_BG = 0x0841 /* 10,10,12 graphite */, V_LAB = 0x565B /* 80,200,220 cyan */,
+               V_WHITE = 0xF77D /* 240,238,232 */, V_GREY = 0x8C71, V_DIMG = 0x3186, V_DIV = 0x2125 /* 36,38,44 */,
+               V_SHADOW = 0x0000;
+uint16_t vHeat(float t) {   // off-white until 0.55, then yellow(255,210,40) -> orange(255,140,20) -> red(225,30,25)
   if (isnan(t) || t < 0.f) t = 0.f;
   if (t > 1.f) t = 1.f;
   if (t < 0.55f) return rgb(225, 222, 215);
-  if (t < 0.7f) { float u = (t - 0.55f) / 0.15f; return rgb(225 + 30 * u, 222 - 72 * u, 215 - 185 * u); }
-  float u = (t - 0.7f) / 0.3f; return rgb(255 - 55 * u, 150 - 130 * u, 30 - 10 * u);
+  if (t < 0.7f) { float u = (t - 0.55f) / 0.15f; return rgb(255, 210 - 70 * u, 40 - 20 * u); }
+  float u = (t - 0.7f) / 0.3f; return rgb(255 - 30 * u, 140 - 110 * u, 20 + 5 * u);
 }
 const uint16_t V_OK = 0x2E8B /* green */, V_WARN = 0xFE85 /* yellow */, V_BAD = 0xF185 /* red */;
-// Mono: RX/TX are two greys; the only colour on the stats pages is the vHeat high end.
-const uint16_t V_RX = 0xCE58 /* 205,203,198 */, V_TX = 0x840F /* 130,128,124 */;
+// Network: RX bright cyan, TX deep cyan; peaks still take the vHeat ramp.
+const uint16_t V_RX = 0x05FB /* 0,190,220 */, V_TX = 0x0370 /* 0,110,130 */;
 // Each value's warm point lands on t = 0.55 (where vHeat leaves off-white), red at 1.
 float vWarm(float v, float warm, float hot) { return 0.55f + 0.45f * (v - warm) / (hot - warm); }
 float vT(float c) { return vWarm(c, 70.f, 90.f); }          // CPU/GPU/NVMe: warm 70 C, red 90 C
@@ -1111,6 +1113,8 @@ int ftW(const GFXfont* f, const char* s) {
 void ft(int x, int y, const char* s, uint16_t c, const GFXfont* f) {   // y = baseline (top for nullptr)
   fb.setFont(f); fb.setTextSize(1); fb.setTextColor(c); fb.setCursor(x, y); fb.print(s); fb.setFont(nullptr);
 }
+// Headline numbers only: 1px dark drop shadow under the glyphs.
+void ftS(int x, int y, const char* s, uint16_t c, const GFXfont* f) { ft(x + 1, y + 1, s, V_SHADOW, f); ft(x, y, s, c, f); }
 void ftR(int right, int y, const char* s, uint16_t c, const GFXfont* f) { ft(right - ftW(f, s), y, s, c, f); }
 void vDot(int x, int y, uint16_t c) { fb.fillCircle(x, y, 2, c); }
 void pageDots(int cur) {   // four tiny dots (PC, cores, network, ZERO|GEEK), top-right, current lit
@@ -1207,7 +1211,7 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   if (have) {
     snprintf(a, sizeof a, "%.0f", t);
     uint16_t c = stale ? V_GREY : vHeat(vT(t));
-    ft(4, 46, a, c, &FreeSansBold24pt7b);
+    ftS(4, 46, a, c, &FreeSansBold24pt7b);
     int dx = 4 + ftW(&FreeSansBold24pt7b, a) + 4;
     fb.drawCircle(dx + 4, 14, 4, c); fb.drawCircle(dx + 4, 14, 3, c);
   } else {
@@ -1221,7 +1225,7 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   if (have) {
     ft(RX, 14, "CPU", V_LAB, &FreeSansBold9pt7b);
     fmtLoad(a, sizeof a, s.pcLoad); snprintf(b, sizeof b, "%s load", a);
-    ft(RX, 33, b, stale ? V_GREY : V_WHITE, &FreeSansBold12pt7b);
+    ftS(RX, 33, b, stale ? V_GREY : V_WHITE, &FreeSansBold12pt7b);
     if (s.pcTopProc[0]) {
       char pct[8] = "";
       if (!isnan(s.pcTopCpu)) snprintf(pct, sizeof pct, " %.0f%%", s.pcTopCpu);
@@ -1253,7 +1257,7 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
       float tv = kind ? s.pcNvmeT : s.pcGpuT;
       txt(4, y, kind ? "NVME" : "GPU", V_LAB);
       snprintf(a, sizeof a, "%.0f", tv);
-      ft(4, y + 25, a, stale ? V_GREY : vHeat(vT(tv)), &FreeSansBold12pt7b);
+      ftS(4, y + 25, a, stale ? V_GREY : vHeat(vT(tv)), &FreeSansBold12pt7b);
       int dx = 4 + ftW(&FreeSansBold12pt7b, a) + 2;
       fb.drawCircle(dx + 3, y + 12, 3, stale ? V_GREY : vHeat(vT(tv)));
       fb.drawCircle(dx + 3, y + 12, 2, stale ? V_GREY : vHeat(vT(tv)));
@@ -1273,9 +1277,9 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
     if (bytes) {
       float f = (float)(u / tot); char t2[12];
       vFmtSize(a, sizeof a, u, false); snprintf(t2, sizeof t2, "/"); vFmtSize(t2 + 1, sizeof t2 - 1, tot, true);
-      ft(4, y + 24, a, stale ? V_GREY : vHeat(disk ? vDiskP((int)(f * 100)) : vMemP((int)(f * 100))), &FreeSansBold9pt7b);
+      ftS(4, y + 24, a, stale ? V_GREY : vHeat(disk ? vDiskP((int)(f * 100)) : vMemP((int)(f * 100))), &FreeSansBold9pt7b);
       txt(4 + ftW(&FreeSansBold9pt7b, a) + 1, y + 17, t2, V_LAB);
-    } else { fmtMem(a, sizeof a, pct); ft(4, y + 25, a, pct < 0 || stale ? V_GREY : vHeat(disk ? vDiskP(pct) : vMemP(pct)), &FreeSansBold12pt7b); }
+    } else { fmtMem(a, sizeof a, pct); ftS(4, y + 25, a, pct < 0 || stale ? V_GREY : vHeat(disk ? vDiskP(pct) : vMemP(pct)), &FreeSansBold12pt7b); }
   }
   // mirrored net graph: one header (iface, down rate, up rate); RX hangs from the top, TX rises from the bottom
   const char* ifn = s.netIf[0] ? s.netIf : "NET";
@@ -1301,7 +1305,7 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
   // ZERO half
   int L = 4, R = MID - 5;
   ft(L, 13, "ZERO", V_LAB, &FreeSansBold9pt7b);
-  ft(L, 40, s.api ? "HID" : "--", stale || !s.api ? V_GREY : V_WHITE, &FreeSansBold18pt7b);   // state colour lives in the bar
+  ftS(L, 40, s.api ? "HID" : "--", stale || !s.api ? V_GREY : V_WHITE, &FreeSansBold18pt7b);   // state colour lives in the bar
   uint16_t val = stale ? V_GREY : V_WHITE;
   const char* zip = s.tsIp[0] ? s.tsIp : s.ip;   // Tailscale first, LAN as fallback
   txt(L, 46, "load", V_LAB); fmtLoad(a, sizeof a, s.api ? s.load1 : NAN); txtR(R, 46, a, val);
@@ -1316,7 +1320,7 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
   L = MID + 5; R = W - 4;
   ft(L, 13, "GEEK", V_LAB, &FreeSansBold9pt7b);
   if (s.wifi && s.rssi) snprintf(a, sizeof a, "%d", s.rssi); else strcpy(a, "--");
-  ft(L, 40, a, s.wifi ? V_WHITE : V_GREY, &FreeSansBold18pt7b);
+  ftS(L, 40, a, s.wifi ? V_WHITE : V_GREY, &FreeSansBold18pt7b);
   txt(L + ftW(&FreeSansBold18pt7b, a) + 3, 33, "dBm", V_LAB);
   txt(L, 46, "ping", V_LAB);
   if (s.api) snprintf(a, sizeof a, "%ums", (unsigned)s.latencyMs); else strcpy(a, "--");
@@ -1469,7 +1473,7 @@ void drawNet(const Status& s, uint32_t now) {
       int maxc = (R - X - 6 * (int)strlen(a) - 6) / 6;
       char nm[24]; strlcpy(nm, s.netpN[i], max(1, min((int)sizeof nm, maxc + 1)));
       txt(X, y, nm, stale ? V_GREY : V_WHITE);
-      txtR(R, y, a, stale ? V_GREY : V_WHITE);
+      txtR(R, y, a, stale ? V_GREY : V_RX);
       int len = (int)((R - X) * s.netpB[i] / mx + 0.5f);
       fb.drawFastHLine(X, y + 9, R - X, V_DIV);
       for (int x = 0; x < len; x++) fb.drawPixel(X + x, y + 9, stale ? V_GREY : mix(V_RX, V_TX, 255 * x / max(1, R - X)));
