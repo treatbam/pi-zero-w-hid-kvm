@@ -4,15 +4,31 @@ API:
   GET  /api/status              -> {"hid_ready","host_connected","udc_state","leds","ip",
                                       "temp_c","load1","mem_pct","uptime_s",
                                       "link","pc_temp_c","pc_load1","pc_mem_pct",
-                                      "pc_rx_bps","pc_tx_bps","pc_ncpu","pc_cores",
+                                      "pc_rx_bps","pc_tx_bps","pc_ncpu","pc_cores","pc_net_iface",
                                       "pc_ip","pc_disk_pct","pc_top_proc","pc_top_cpu_pct",
                                       "pc_age_s","frame_fresh",
-                                      "serial_mode","serial_mode_age_s","serial_mode_requested"}
-                                    serial_* only with a valid X-KVM-PIN header.
+                                      "pc_cores_all","pc_gpu_pct","pc_cpu_temp_c","pc_gpu_temp_c","pc_nvme_temp_c","pc_uptime_s","pc_procs","pc_net_procs","pc_mem_used","pc_mem_total","pc_disk_used","pc_disk_total","pc_disk_dev","pc_net_ip",
+                                      "serial_mode","serial_mode_age_s","serial_mode_requested",
+                                      "preview_quality","preview_quality_requested",
+                                      "pc_id","pc_host","net_hist_since","net_hist",
+                                      "zero_wifi_rssi","tailscale","tailscale_ip"}
+                                    pc_id (12 hex, sha256 of the PC's machine-id) / pc_host identify
+                                    the PC; net_hist is that PC's cumulative TCP bytes per process
+                                    since net_hist_since (unix s): up to 8 {"p","rx","tx"}, busiest
+                                    first; null when unknown or history storage (KVM_DATA_DIR) is off.
+                                    zero_wifi_rssi (dBm) / tailscale ("up"/"down"/null) /
+                                    tailscale_ip (tailscale0 IPv4 or null) are PIN-only
+                                    too; the GEEK sends its KVM_PIN on the status poll.
+                                    pc_cores_all etc. (type 8) are null when the PC can't report them.
+                                    serial_* and preview_* only with a valid X-KVM-PIN header;
+                                    a header that is wrong (or locked out) adds "pin_ok":false.
                                     serial_mode is the helper's last ack ("helper"/"shell")
                                     or null when no helper has answered yet.
                                     link is "LINKED", "KEYS", or "NO HOST".
                                     PC fields are null unless link is LINKED.
+                                    PC fields, pc_id/pc_host and net_hist* are also null without a
+                                    valid X-KVM-PIN (localhost is exempt for on-box checks).
+                                    mode: "hid" (no helper), "term" (shell) or "desktop" (helper).
   GET  /api/frame[?crop=full|loupe] -> 240x135 RGB565-LE still, or 204 if it is stale
                                     (PIN required; requests on-demand capture from helper)
   GET  /api/clipboard            -> {"ok":true,"text":"...","age_s":0.1} (PIN required)
@@ -27,6 +43,16 @@ API:
   POST /api/term   {"text":"ls","newline":true}  -> keystrokes to the host's serial console
   POST /api/mode   {"mode":"shell"|"helper"}   -> asks the host helper to switch the serial port
                    (202; the helper's ack shows up as serial_mode in /api/status)
+  POST /api/quality {"quality":"low"|"med"|"high"|"off"} -> preview quality (202; 409 in shell mode)
+  GET  /api/preview?since=N   -> {"seq","w","h","quality","reset","tiles":[{x,y,w,h,jpg(base64)}]}
+                                 changed JPEG tiles since seq N (PIN required; 204 when stale)
+  POST /api/stats  {"on":true|false}           -> KVMCTL:stats:on|off (type 8 extended stats).
+                   kvm-web sends stats:on by itself on the first helper ack and after a helper
+                   restart (<= every 10 s); "off" stops that until turned on again. 409 in shell.
+  POST /api/net_hist/reset {"pc":"hostname"|"pc_id"} (omit pc = connected PC) -> wipes all saved
+                   history for that PC, since=now. 404 unknown, 409 ambiguous hostname (send pc_id),
+                   503 storage off. Also: <hostname-or-pc_id>-erase.txt on the boot partition
+                   wipes once at kvm-web start (handled files are remembered on /data).
   POST /api/power  {"target":"host","action":"power|sleep|wake|hard_reset|hard_power","confirm":true}
                    {"target":"zero","action":"shutdown|reboot","confirm":true}
 Every POST needs Content-Type: application/json, a same-origin Origin (if sent), and the PIN
@@ -36,9 +62,9 @@ A custom header also forces a CORS preflight, so other web pages can't send thes
 GET /api/status stays open (read-only; the GEEK and the console poll it).
 GET /api/term needs the X-KVM-PIN header too (host terminal output can hold secrets).
 """
-import argparse, hmac, json, os, socket, subprocess, threading, time
+import argparse, fcntl, signal, hmac, json, os, socket, struct, subprocess, threading, time
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
-import hid, hostview, term
+import autolaunch, hid, history, hostview, term, ws
 from urllib.parse import urlsplit, parse_qs
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -54,7 +80,58 @@ FAILS = {}            # ip -> (count, first_fail_time)
 MAX_FAILS, LOCKOUT_S = 5, 60
 HOST_POWER = ("power", "sleep", "wake")          # soft: System Control keys over USB
 HOST_HARD = ("hard_reset", "hard_power")         # needs optocoupler wiring (not built yet)
-MODE_REQ = {"mode": None}   # last mode asked for via /api/mode
+MODE_REQ = {"mode": None, "quality": None}
+HISTORY = history.NetHistory(os.environ.get("KVM_DATA_DIR", "/var/lib/kvm"),
+                             require_mount=os.environ.get("KVM_DATA_REQUIRE_MOUNT", "1") != "0")
+STATS = hostview.StatsKeeper(hostview.shared, min_s=float(os.environ.get("KVM_STATS_MIN_S", "10")))
+THEMES = ("slate", "braun", "cobalt")
+THEME_FILE = os.path.join(os.environ.get("KVM_DATA_DIR", "/var/lib/kvm"), "ui_theme.txt")
+
+def _load_theme():
+    env_t = os.environ.get("KVM_THEME", "").strip()
+    if env_t in THEMES:
+        return env_t
+    try:
+        t = open(THEME_FILE).read().strip()
+        if t in THEMES:
+            return t
+    except OSError:
+        pass
+    return "slate"
+
+def _save_theme(t):
+    UI_STATE["theme"] = t
+    try:
+        if os.path.isdir(os.path.dirname(THEME_FILE)):
+            tmp = THEME_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(t + "\n")
+            os.replace(tmp, THEME_FILE)
+    except OSError:
+        pass
+
+UI_STATE = {"theme": _load_theme()}
+AUTOLAUNCH = autolaunch.AutoLauncher(hostview.shared, term.send_ctl, term.send_boot_frame)
+
+def autolaunch_loop():
+    """Watch /dev/ttyGS0 + UDC on boot and plug-in; probe & stream helper when needed."""
+    while True:
+        time.sleep(0.3)
+        try:
+            AUTOLAUNCH.step(hid.status()["host_connected"])
+        except Exception:
+            pass
+
+def stats_keeper_loop():
+    """Re-arm the helper's type 8 stats when it (re)appears, so the GEEK's KVM page has
+    them with no browser open."""
+    while True:
+        time.sleep(1.0)
+        if STATS.due():
+            try:
+                if term.send_stats(True): STATS.sent()
+            except (TimeoutError, OSError):
+                pass
 FRAME_REQ = {"crop": "frame", "at": 0.0, "loupe_until": 0.0}
 ZERO_POWER = {"shutdown": "poweroff", "reboot": "reboot"}
 
@@ -84,8 +161,36 @@ def _strlist(body, k, allowed, maxn):
         raise ValueError(f"{k} must be a list of known names (max {maxn})")
     return v
 
+def net_hist_reset(pc):
+    """(code, body) for POST /api/net_hist/reset. pc None = the PC connected now."""
+    if not HISTORY.enabled:
+        return 503, {"error": "history storage is off (no writable KVM_DATA_DIR)"}
+    if pc is None:
+        pc = hostview.shared.status_fields(hid.status()["host_connected"]).get("pc_id")
+        if not pc:
+            return 409, {"error": "no PC identified right now; give {\"pc\": hostname or pc_id}"}
+    try:
+        pid = HISTORY.reset(pc)
+    except history.Ambiguous as e:
+        return 409, {"error": "hostname matches several PCs; send pc_id", "pc_ids": e.args[0]}
+    except history.NotFound:
+        return 404, {"error": f"no history for {pc!r}"}
+    except Exception as e:
+        return 500, {"error": str(e)}
+    return 200, {"ok": True, "pc_id": pid, "net_hist_since": int(time.time())}
+
+def history_loop():
+    while True:
+        time.sleep(HISTORY.flush_s)
+        HISTORY.flush()
+
 def validate(path, body):
     """Return positional args for the handler or raise ValueError. Unknown path -> 404 later."""
+    if path == "/api/net_hist/reset":
+        pc = body.get("pc")
+        if pc is not None and (not isinstance(pc, str) or not 0 < len(pc) <= 63 or not pc.isprintable()):
+            raise ValueError("pc must be a hostname or pc_id")
+        return (pc,)
     if path == "/api/key":
         return (_strlist(body, "keys", hid.KEYS, 6), _strlist(body, "mods", hid.MOD, 8))
     if path == "/api/type":
@@ -115,6 +220,14 @@ def validate(path, body):
         m = body.get("mode")
         if m not in ("shell", "helper"): raise ValueError('mode must be "shell" or "helper"')
         return (m,)
+    if path == "/api/stats":
+        on = body.get("on")
+        if not isinstance(on, bool): raise ValueError("on must be a bool")
+        return (on,)
+    if path == "/api/quality":
+        q = body.get("quality")
+        if q not in ("low", "med", "high", "off"): raise ValueError('quality must be "low", "med", "high" or "off"')
+        return (q,)
     if path == "/api/power":
         if body.get("confirm") is not True: raise ValueError("confirm must be true")
         t, a = body.get("target"), body.get("action")
@@ -124,7 +237,65 @@ def validate(path, body):
     if path == "/api/macro":
         if body.get("name") not in MACROS: raise ValueError("unknown macro")
         return (body["name"],)
+    if path == "/api/theme":
+        t = body.get("theme")
+        if t not in THEMES: raise ValueError('theme must be "slate", "braun", or "cobalt"')
+        return (t,)
+    if path == "/api/bootstrap":
+        method = body.get("method", "probe")
+        if method == "probe":
+            return ("probe", None)
+        if method == "hid":
+            if body.get("confirm") is not True: raise ValueError("confirm must be true for hid pairing")
+            os_name = body.get("os")
+            if os_name not in ("linux", "windows"): raise ValueError('os must be "linux" or "windows"')
+            return ("hid", os_name)
+        raise ValueError('method must be "probe" or "hid"')
     raise LookupError(path)
+
+NET_ROOT = os.environ.get("KVM_NET_ROOT", "/")   # tests point this at a fake /proc + /sys
+
+TS_IP_TTL = 30.0
+_TS_IP = {"at": -1e9, "ip": None}
+
+def _ifaddr(name):
+    """IPv4 of a local interface via one SIOCGIFADDR ioctl (no subprocess); None if it has none."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            r = fcntl.ioctl(s.fileno(), 0x8915, struct.pack("256s", name.encode()[:15]))
+        return socket.inet_ntoa(r[20:24])
+    except OSError:
+        return None
+
+def tailscale_ip(up):
+    """tailscale0's IPv4, cached for TS_IP_TTL s so the 2 s GEEK poll costs nothing."""
+    if not up: return None
+    now = time.monotonic()
+    if now - _TS_IP["at"] >= TS_IP_TTL:
+        _TS_IP["ip"], _TS_IP["at"] = _ifaddr("tailscale0"), now
+    return _TS_IP["ip"]
+
+def zero_link():
+    """Zero Wi-Fi RSSI (dBm) and Tailscale state for the GEEK's KVM page. Two tiny file
+    reads, no subprocess. tailscale: "up" (tailscale0 exists and is IFF_UP), "down"
+    (tailscaled installed but no live interface), or None (not installed)."""
+    out = {"zero_wifi_rssi": None, "tailscale": None}
+    try:
+        for line in open(os.path.join(NET_ROOT, "proc/net/wireless")):
+            f = line.split()
+            if f and f[0].rstrip(":") == "wlan0" and len(f) > 3:
+                v = int(float(f[3].rstrip(".")))
+                if -120 <= v < 0: out["zero_wifi_rssi"] = v
+    except (OSError, ValueError): pass
+    ts = os.path.join(NET_ROOT, "sys/class/net/tailscale0")
+    try:
+        out["tailscale"] = "up" if int(open(os.path.join(ts, "flags")).read(), 16) & 1 else "down"
+    except (OSError, ValueError):
+        installed = any(os.path.exists(os.path.join(NET_ROOT, p)) for p in
+                        ("usr/sbin/tailscaled", "usr/bin/tailscaled", "usr/bin/tailscale"))
+        out["tailscale"] = "down" if installed else None
+    out["tailscale_ip"] = tailscale_ip(out["tailscale"] == "up")
+    return out
 
 def sysstats():
     """Cheap /proc reads for the GEEK dashboard; any failure just omits the field."""
@@ -150,9 +321,21 @@ def local_ip():
         return "0.0.0.0"
 
 class H(SimpleHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
     timeout = 5
 
     def __init__(self, *a, **k): super().__init__(*a, directory=STATIC, **k)
+
+    def send_header(self, keyword, value):
+        if keyword.lower() == "cache-control":
+            self._has_cc = True
+        super().send_header(keyword, value)
+
+    def end_headers(self):
+        if not getattr(self, "_has_cc", False):
+            super().send_header("Cache-Control", "no-cache")
+        self._has_cc = False
+        super().end_headers()
 
     def _json(self, code, obj):
         b = json.dumps(obj).encode()
@@ -171,11 +354,44 @@ class H(SimpleHTTPRequestHandler):
             st = hid.status()
             pc = hostview.shared.status_fields(st["host_connected"])
             sm = {}
-            if self.headers.get("X-KVM-PIN") and self._pin_ok():   # serial fields need the PIN
+            # Serial/link detail needs the PIN. A wrong (or locked-out) PIN still gets a 200 with
+            # the open fields plus pin_ok:false, so the GEEK can notice and stop sending it.
+            if self.headers.get("X-KVM-PIN") and not self._pin_ok():
+                sm = {"pin_ok": False}
+            elif self.headers.get("X-KVM-PIN"):
                 mode, age = hostview.shared.mode()
-                sm = {"serial_mode": mode, "serial_mode_age_s": age, "serial_mode_requested": MODE_REQ["mode"]}
-            return self._json(200, {**st, "ip": self._my_ip(), **sysstats(), **pc, **sm})
+                sm = {"pin_ok": True, **zero_link(), "serial_mode": mode, "serial_mode_age_s": age,
+                      "serial_mode_requested": hostview.shared.requested_mode,
+                      "preview_quality": hostview.shared.quality(), "preview_quality_requested": MODE_REQ["quality"]}
+            hm = hostview.shared.mode()[0]
+            mode = {"shell": "term", "helper": "desktop"}.get(hm, "hid")
+            local = self.client_address[0] in ("127.0.0.1", "::1")
+            al = AUTOLAUNCH.status_fields()
+            if sm.get("pin_ok") or local:
+                since, hist = HISTORY.snapshot(pc.get("pc_id"))
+            else:
+                # PC details and per-process history are PIN-only: anyone else on the LAN
+                # (or a future fallback AP) sees just the HID link state. Same keys, nulled.
+                pc = {k: (v if k == "link" else None) for k, v in pc.items()}
+                al["helper_os"] = None
+                al["helper_arch"] = None
+                since, hist = None, None
+            return self._json(200, {**st, "ip": self._my_ip(), **sysstats(), **pc, **al,
+                                    "ui_theme": UI_STATE["theme"], "mode": mode,
+                                    "net_hist_since": since, "net_hist": hist, **sm})
         u = urlsplit(self.path)
+        if u.path == "/api/ws":
+            return ws.serve_ws(self, self._check_pin_str, hid, LOCK)
+        if u.path.startswith("/setup/"):
+            fname = u.path[len("/setup/"):]
+            blob, ctype = AUTOLAUNCH.builder.setup_file(fname)
+            if blob is None:
+                return self._json(404, {"error": "setup file not found"})
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(blob)))
+            self.end_headers(); self.wfile.write(blob); return
         if u.path == "/api/frame":
             ok = self._pin_ok()
             if ok is None: return self._json(429, {"error": "too many wrong PINs, wait a minute"})
@@ -233,6 +449,16 @@ class H(SimpleHTTPRequestHandler):
                     time.sleep(0.02)
             text, age, _ = hostview.shared.clipboard()
             return self._json(200, {"ok": True, "text": text or "", "age_s": age})
+        if u.path == "/api/preview":
+            ok = self._pin_ok()
+            if ok is None: return self._json(429, {"error": "too many wrong PINs, wait a minute"})
+            if not ok: return self._json(401, {"error": "wrong or missing PIN"})
+            try: since = int(parse_qs(u.query).get("since", ["0"])[0])
+            except ValueError: return self._json(400, {"error": "since must be an int"})
+            pv = hostview.shared.preview(since, hid.status()["host_connected"])
+            if pv is None:
+                self.send_response(204); self.send_header("Content-Length", "0"); self.end_headers(); return
+            return self._json(200, pv)
         if u.path == "/api/term":
             ok = self._pin_ok()
             if ok is None: return self._json(429, {"error": "too many wrong PINs, wait a minute"})
@@ -247,9 +473,9 @@ class H(SimpleHTTPRequestHandler):
         if not o: return True  # curl / same-origin GET-less clients
         return o.split("://", 1)[-1] == self.headers.get("Host", "")
 
-    def _pin_ok(self):
+    def _check_pin_str(self, given_str):
         ip = self.client_address[0]; now = time.monotonic()
-        given = (self.headers.get("X-KVM-PIN") or "").encode()
+        given = (given_str or "").encode()
         with PIN_LOCK:
             n, t0 = FAILS.get(ip, (0, now))
             if n >= MAX_FAILS and now - t0 < LOCKOUT_S: return None      # locked out
@@ -259,6 +485,9 @@ class H(SimpleHTTPRequestHandler):
             for k, (_, ts) in list(FAILS.items()):
                 if now - ts >= LOCKOUT_S: FAILS.pop(k, None)
             FAILS[ip] = (n + 1, t0 if n else now); return False
+
+    def _pin_ok(self):
+        return self._check_pin_str(self.headers.get("X-KVM-PIN") or "")
 
     def do_POST(self):
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
@@ -280,6 +509,21 @@ class H(SimpleHTTPRequestHandler):
         except (ValueError, TypeError) as e:  # JSONDecodeError is a ValueError
             return self._json(400, {"error": f"bad request: {e}"})
         if self.path == "/api/auth": return self._json(200, {"ok": True})
+        if self.path == "/api/theme":
+            _save_theme(args[0])
+            return self._json(200, {"ok": True, "ui_theme": args[0]})
+        if self.path == "/api/bootstrap":
+            method, os_name = args
+            if method == "probe":
+                try:
+                    return self._json(202, AUTOLAUNCH.trigger_probe())
+                except (TimeoutError, OSError) as e:
+                    return self._json(503, {"error": str(e)})
+            if not hid.status()["host_connected"]:
+                return self._json(409, {"error": "host not connected"})
+            return self._json(202, AUTOLAUNCH.trigger_hid_pair(os_name, hid, LOCK))
+        if self.path == "/api/net_hist/reset":
+            return self._json(*net_hist_reset(args[0]))
         if self.path == "/api/term":
             try:
                 if not term.send(*args): return self._json(409, {"error": "serial port not open"})
@@ -298,7 +542,30 @@ class H(SimpleHTTPRequestHandler):
             except (TimeoutError, OSError) as e:
                 return self._json(503, {"error": str(e)})
             MODE_REQ["mode"] = args[0]
+            hostview.shared.requested_mode = args[0]   # while "shell", types 7-9 are not parsed
             return self._json(202, {"ok": True, "requested": args[0], "note": "watch serial_mode in /api/status"})
+        if self.path == "/api/stats":
+            if hostview.shared.mode()[0] == "shell":
+                return self._json(409, {"error": "serial port is in shell mode; switch to helper first"})
+            try:
+                if not term.send_stats(args[0]): return self._json(409, {"error": "serial port not open"})
+            except (TimeoutError, OSError) as e:
+                return self._json(503, {"error": str(e)})
+            STATS.want = args[0]
+            if args[0]: STATS.sent()
+            return self._json(202, {"ok": True, "stats": args[0]})
+        if self.path == "/api/quality":
+            mode = hostview.shared.mode()[0]
+            if mode == "shell" or (hostview.shared.requested_mode == "shell" and mode != "helper"):
+                return self._json(409, {"error": "serial port is in shell mode; switch to helper first"})
+            if hostview.shared.requested_mode == "shell":   # acked helper again: back in helper
+                hostview.shared.requested_mode = "helper"
+            try:
+                if not term.send_quality(args[0]): return self._json(409, {"error": "serial port not open"})
+            except (TimeoutError, OSError) as e:
+                return self._json(503, {"error": str(e)})
+            MODE_REQ["quality"] = args[0]
+            return self._json(202, {"ok": True, "requested": args[0]})
         if self.path == "/api/power":
             target, action = args
             if target == "zero":
@@ -306,7 +573,9 @@ class H(SimpleHTTPRequestHandler):
                 return self._json(202, {"ok": True, "note": f"Zero {action} in 1 s"})
             if action in HOST_HARD:
                 return self._json(501, {"error": "hard power/reset needs the optocoupler wiring (not installed)"})
-        if not hid.status()["host_connected"]:
+        hst = hid.status()
+        can_wake = (self.path == "/api/power" and args == ("host", "wake") and hst.get("host_suspended"))
+        if not hst["host_connected"] and not can_wake:
             return self._json(409, {"error": "host not connected"})  # avoid blocking write
         try:
             with LOCK:
@@ -317,7 +586,11 @@ class H(SimpleHTTPRequestHandler):
                 elif self.path == "/api/type": hid.type_text(*args)
                 elif self.path == "/api/mouse": hid.mouse(*args)
                 elif self.path == "/api/macro": MACROS[args[0]]()
-                elif self.path == "/api/power": hid.system_key(args[1])
+                elif self.path == "/api/power":
+                    if args[1] == "wake":
+                        hid.wake_host()
+                    else:
+                        hid.system_key(args[1])
         except hid.HIDTimeout as e:
             return self._json(503, {"error": str(e)})
         except OSError as e:
@@ -330,6 +603,13 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(); p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=8080); a = p.parse_args()
     PIN = load_pin()
+    if HISTORY.open():
+        HISTORY.scan_erase(history.boot_dir())
+        hostview.shared.on_ext = HISTORY.ingest
+        threading.Thread(target=history_loop, name="net-history", daemon=True).start()
+        signal.signal(signal.SIGTERM, lambda *_: (HISTORY.close(), os._exit(0)))
     term.start()
+    threading.Thread(target=stats_keeper_loop, name="stats-keeper", daemon=True).start()
+    threading.Thread(target=autolaunch_loop, name="autolaunch", daemon=True).start()
     print(f"KVM console on http://{a.host}:{a.port}")
     ThreadingHTTPServer((a.host, a.port), H).serve_forever()

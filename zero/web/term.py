@@ -87,7 +87,7 @@ def _reader():
             dec = codecs.getincrementaldecoder("utf-8")("replace")
             last_data = time.monotonic()
             while True:
-                b = os.read(fd, 4096)
+                b = os.read(fd, 65536)   # preview frames are big; fewer syscalls
                 now = time.monotonic()
                 # A helper that dies mid-frame leaves a header waiting for 64800 bytes.
                 # The next open blocks, so the gap shows up on the following read.
@@ -137,9 +137,23 @@ def send_mode(mode):
     return _write(CTL + mode.encode() + b"\n")
 
 def send_ctl(cmd):
-    """Send a short control command ('frame', 'loupe', 'cget') to kvm_helper."""
-    if cmd not in ("frame", "loupe", "cget"): raise ValueError("bad ctl")
+    """Send a short control command ('frame', 'loupe', 'cget', 'probe') to kvm_helper/stub."""
+    if cmd not in ("frame", "loupe", "cget", "probe"): raise ValueError("bad ctl")
     return _write(CTL + cmd.encode() + b"\n")
+
+def send_boot_frame(prefix, os_name, sha256_hex, b64_payload):
+    """Stream a gzipped+SHA256 helper or installer payload to the host stub over /dev/ttyGS0."""
+    hdr = b"\x1e\x1f" + prefix.encode("ascii") + b":" + os_name.encode("ascii") + b":" + sha256_hex.encode("ascii") + b":"
+    return _write(hdr + b64_payload + b"\n", timeout=5.0)
+
+def send_stats(on):
+    """Ask the host helper to start/stop type 8 extended stats: KVMCTL:stats:on|off."""
+    return _write(CTL + (b"stats:on" if on else b"stats:off") + b"\n")
+
+def send_quality(q):
+    """Ask the host helper for a preview quality: 1E 1F "KVMCTL:q:" <low|med|high|off> LF."""
+    if q not in ("low", "med", "high", "off"): raise ValueError("bad quality")
+    return _write(CTL + b"q:" + q.encode() + b"\n")
 
 def send_clipboard(text):
     """Push UTF-8 clipboard text to the host helper as base64."""
@@ -151,15 +165,16 @@ def send(text, newline=True):
     """Write keystrokes to the host terminal. Returns False if the port isn't open."""
     return _write((text + ("\r" if newline else "")).encode())
 
-def _write(data):
+def _write(data, timeout=1.0):
     with _wlock:
         fd = _wfd
         if fd is None: return False
-        # If the host isn't reading, the port buffer fills; give up after 1 s.
-        end = time.monotonic() + 1.0
-        while data:
+        # If the host isn't reading, the port buffer fills; give up after timeout s.
+        end = time.monotonic() + timeout
+        view = memoryview(data)
+        while view:
             try:
-                n = os.write(fd, data); data = data[n:]
+                n = os.write(fd, view); view = view[n:]
             except BlockingIOError:
                 if time.monotonic() > end: raise TimeoutError("host not reading the serial port")
                 time.sleep(0.02)

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+echo "pio $*" >> "$FAKE_LOG"
+[ -f "$FAKE_STATE/pio_fail" ] && exit 1
+case "$*" in *upload*) exit 0;; esac
+mkdir -p "$FAKE_FWDIR"; echo FW > "$FAKE_FWDIR/firmware.bin"

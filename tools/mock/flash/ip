@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+echo "ip $*" >> "$FAKE_LOG"
+case "$*" in
+  "neigh show") [ -f "$FAKE_STATE/neigh_hit" ] && echo "192.168.4.23 dev wlan0 lladdr 84:FC:E6:51:45:F8 REACHABLE"
+                [ -f "$FAKE_STATE/swept" ] && echo "192.168.4.31 dev wlan0 lladdr 84:fc:e6:51:45:f8 STALE"
+                echo "192.168.4.9 dev wlan0 lladdr aa:bb:cc:dd:ee:ff STALE";;
+  *addr*) echo "3: wlan0    inet 192.168.4.1/24 brd 192.168.4.255 scope global wlan0";;
+esac

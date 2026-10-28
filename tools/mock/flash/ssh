@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# fake ssh: log argv, run the remote command locally with bash (stdin passed through).
+echo "ssh $*" >> "$FAKE_LOG"
+while [ $# -gt 0 ]; do case "$1" in -i|-o) shift 2;; -*) shift;; *) break;; esac; done
+shift
+[ -f "$FAKE_STATE/zero_down" ] && exit 255
+exec bash -c "$*"

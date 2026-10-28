@@ -3,7 +3,8 @@
 Envelope, little-endian:
 
     magic  FE FD 4B 56   ("\\xfe\\xfdKV")
-    type   u8            1 = stats, 2 = frame, 3 = mode, 4 = net+cores, 5 = triage, 6 = clip
+    type   u8            1 = stats, 2 = frame, 3 = mode, 4 = net+cores, 5 = triage, 6 = clip,
+                         7 = preview tiles, 8 = extended stats, 9 = preview quality ack
     len    u32           payload bytes
     payload
 
@@ -15,6 +16,14 @@ percentages sorted hottest-to-coolest (0..100, 255 = unused). 20 bytes (12-byte 
 Type 5 payload is headless bench triage: disk %, top process CPU %, 16B LAN IP, 16B top process
 name (`<ff16s16s`, 40 bytes).
 Type 6 payload is UTF-8 host clipboard bytes (0..1024 bytes).
+Type 7 is a preview frame of changed JPEG tiles (see host/kvm_preview.py), up to 1 MiB.
+  The Zero checks the tile table and bounds and stores the JPEG bytes untouched.
+Type 8 is extended stats as JSON (see host/kvm_stats.py), up to 4 KiB, version "v":1.
+Type 9 payload is the preview quality ack: 1 byte, 0 = low, 1 = med, 2 = high, 3 = off.
+Types 7-9 are parsed only while a fresh (<= MODE_ACK_TTL_S) helper-mode ack is held and
+the web console has not asked for shell mode; otherwise they are terminal text, so shell
+output can't fake a preview. A header whose payload hasn't arrived within PARTIAL_MAX_S is
+released as text (a time cap, so steady shell output can't keep it alive).
 Types 4, 5, 6 do not by themselves make the link LINKED. A stopped stats packet still
 drops the board to KEYS even if other packets keep arriving.
 
@@ -22,7 +31,10 @@ Anything else is terminal text. A header that does not match those shapes is
 terminal text too: the first byte is released and parsing resumes, so a stray
 lookalike cannot swallow the shell.
 """
+import base64
+import json
 import math
+import re
 import struct
 import threading
 import time
@@ -39,9 +51,24 @@ MODE_NAMES = {0: "helper", 1: "shell"}
 STATS_LEN = 12
 NET_LEN = 20
 NET_LEGACY_LEN = 12
+NET_IFACE_LEN = 36          # NET_LEN + 16-byte NUL-padded interface name
 TRIAGE_LEN = 40
 CLIP_MAX = 1024
 FRAME_LEN = 240 * 135 * 2
+TYPE_PREVIEW = 7
+TYPE_EXT = 8
+TYPE_QUALITY = 9
+TYPE_HELLO = 10
+GATED = (TYPE_PREVIEW, TYPE_EXT, TYPE_QUALITY)
+PREVIEW_MAX = 1 << 20
+EXT_MAX = 4096
+HELLO_MAX = 256
+HELLO_OS = ("linux", "windows", "darwin")
+QUALITY_NAMES = {0: "low", 1: "med", 2: "high", 3: "off"}
+PARTIAL_MAX_S = 3.0
+MODE_ACK_TTL_S = 5.0        # helper acks every 2 s; ~2x INTERVAL plus slack
+PV_MAX_W, PV_MAX_H, PV_TILE = 1280, 720, 64
+PV_MAX_BYTES = 2 << 20      # total stored JPEG bytes; over this the grid resets
 FRESH_S = 6.0
 
 
@@ -50,7 +77,7 @@ def pack_stats(temp, load, mem):
     return MAGIC + bytes([TYPE_STATS]) + struct.pack("<I", len(payload)) + payload
 
 
-def pack_net(rx_bps, tx_bps, ncpu, cores=()):
+def pack_net(rx_bps, tx_bps, ncpu, cores=(), iface=""):
     cbytes = [
         min(100, max(0, int(round(c))))
         if (c is not None and math.isfinite(c) and 0 <= c <= 100)
@@ -59,6 +86,8 @@ def pack_net(rx_bps, tx_bps, ncpu, cores=()):
     ]
     cbytes += [255] * (8 - len(cbytes))
     payload = struct.pack("<fff8B", float(rx_bps), float(tx_bps), float(ncpu), *cbytes)
+    if iface:
+        payload += (iface.encode("utf-8")[:15]).ljust(16, b"\x00")
     return MAGIC + bytes([TYPE_NET]) + struct.pack("<I", len(payload)) + payload
 
 
@@ -78,6 +107,14 @@ def pack_frame(rgb565):
     if len(rgb565) != FRAME_LEN:
         raise ValueError(f"frame must be {FRAME_LEN} bytes of rgb565le")
     return MAGIC + bytes([TYPE_FRAME]) + struct.pack("<I", FRAME_LEN) + rgb565
+
+
+def pack_hello(os_name, arch="", want="stream"):
+    if os_name not in HELLO_OS:
+        raise ValueError(f"unknown hello os: {os_name!r}")
+    body = json.dumps({"v": 1, "os": os_name, "arch": str(arch)[:24], "want": str(want)[:16]},
+                      separators=(",", ":")).encode("utf-8")
+    return MAGIC + bytes([TYPE_HELLO]) + struct.pack("<I", len(body)) + body
 
 
 def _hold_len(buf):
@@ -100,6 +137,8 @@ class HostView:
         self._net_at = None
         self._ncpu = None
         self._ncpu_at = None
+        self._iface = None          # PC's busiest interface name, from the helper
+        self._iface_at = None
         self._cores = None          # [int 0..100, ...] sorted hottest-to-coolest (max 8)
         self._cores_at = None
         self._triage = None         # (disk_pct, top_cpu_pct, lan_ip, top_proc)
@@ -112,11 +151,28 @@ class HostView:
         self._frame_seq = 0
         self._mode = None           # last mode the helper acked ("helper"/"shell")
         self._mode_at = None
+        self.requested_mode = None  # set by the server from /api/mode
+        self.helper_returned = 0    # bumps on a helper ack after silence (StatsKeeper watches it)
+        self._ext = None            # validated type-8 dict
+        self.on_ext = None          # callback(ext) per accepted type 8 (net history)
+        self._ext_at = None
+        self._quality = None        # last quality the helper acked
+        self._pv = {}               # (x, y) -> (zseq, w, h, jpeg bytes)
+        self._pv_seq = 0
+        self._pv_epoch = 0
+        self._pv_size = None
+        self._pv_at = None
+        self._pv_bytes = 0
+        self.pv_max_bytes = PV_MAX_BYTES
+        self._partial_at = None
+        self._hello = None          # validated type-10 stub hello dict
+        self._hello_at = None
+        self.hello_seq = 0
 
     def reset(self):
         """Drop a half-read envelope after the serial port closes. Readings stay until they go stale."""
         with self._lock:
-            self._buf.clear()
+            self._buf.clear(); self._partial_at = None
 
     def drop_incomplete(self):
         """Drop a header whose payload never arrived. A short magic prefix stays, so a pause
@@ -157,9 +213,9 @@ class HostView:
                     break
                 typ = self._buf[4]
                 ln = struct.unpack_from("<I", self._buf, 5)[0]
-                if not self._shape_ok(typ, ln):
+                if not self._ok(typ, ln):
                     out.append(self._buf[0])
-                    del self._buf[:1]
+                    del self._buf[:1]; self._partial_at = None
                     continue
                 # A fresh, fully valid header inside this packet's payload means the writer
                 # restarted mid-packet. Drop the truncated packet, keep parsing.
@@ -168,11 +224,37 @@ class HostView:
                     del self._buf[:j]
                     continue
                 if len(self._buf) < HDR + ln:
+                    now = self._now()
+                    if self._partial_at is None:
+                        self._partial_at = now
+                    elif now - self._partial_at > PARTIAL_MAX_S:
+                        out.append(self._buf[0])      # too slow: not a real packet
+                        del self._buf[:1]; self._partial_at = None
+                        continue
                     break
+                self._partial_at = None
+                if typ == TYPE_PREVIEW:            # parse in place: one copy per tile
+                    mv = memoryview(self._buf)
+                    try:
+                        self._accept_preview(mv[HDR:HDR + ln], self._now())
+                    finally:
+                        mv.release()
+                    del self._buf[:HDR + ln]
+                    continue
                 payload = bytes(self._buf[HDR:HDR + ln])
                 del self._buf[:HDR + ln]
                 self._accept(typ, payload)
             return bytes(out)
+
+    def _helper_live(self):
+        return (self._mode == "helper" and self._mode_at is not None
+                and self._now() - self._mode_at <= MODE_ACK_TTL_S
+                and self.requested_mode != "shell")
+
+    def _ok(self, typ, ln):
+        if typ in GATED and not self._helper_live():
+            return False
+        return self._shape_ok(typ, ln)
 
     def status_fields(self, host_connected):
         with self._lock:
@@ -188,6 +270,7 @@ class HostView:
                 "pc_rx_bps": None,
                 "pc_tx_bps": None,
                 "pc_ncpu": None,
+                "pc_net_iface": None,
                 "pc_cores": None,
                 "pc_ip": None,
                 "pc_disk_pct": None,
@@ -205,6 +288,8 @@ class HostView:
                     fields["pc_rx_bps"] = round(rx, 1)
                     fields["pc_tx_bps"] = round(tx, 1)
                     fields["pc_ncpu"] = int(round(ncpu))
+                if self._iface is not None and self._fresh(self._iface_at):
+                    fields["pc_net_iface"] = self._iface
                 if self._cores is not None and self._fresh(self._cores_at):
                     fields["pc_cores"] = list(self._cores)
                 if fields["pc_ncpu"] is None and self._ncpu is not None and self._fresh(self._ncpu_at):
@@ -217,6 +302,19 @@ class HostView:
                         fields["pc_top_cpu_pct"] = round(top_cpu_pct, 1)
                     fields["pc_ip"] = lan_ip
                     fields["pc_top_proc"] = top_proc
+            ext = self._ext if link == "LINKED" and self._fresh(self._ext_at) else {}
+            temps = ext.get("temps", {})
+            fields.update({"pc_cores_all": ext.get("cores"), "pc_gpu_pct": ext.get("gpu_pct"),
+                           "pc_cpu_temp_c": temps.get("cpu"), "pc_gpu_temp_c": temps.get("gpu"),
+                           "pc_nvme_temp_c": temps.get("nvme"), "pc_uptime_s": ext.get("uptime_s"),
+                           "pc_procs": ext.get("procs"), "pc_net_procs": ext.get("netprocs"),
+                           "pc_mem_used": (ext.get("mem") or [None, None])[0],
+                           "pc_mem_total": (ext.get("mem") or [None, None])[1],
+                           "pc_disk_used": (ext.get("disk") or [None] * 3)[0],
+                           "pc_disk_total": (ext.get("disk") or [None] * 3)[1],
+                           "pc_disk_dev": (ext.get("disk") or [None] * 3)[2],
+                           "pc_net_ip": ext.get("net_ip"),
+                           "pc_id": ext.get("pc_id"), "pc_host": ext.get("pc_host")})
             return fields
 
     def frame_bytes(self, host_connected):
@@ -258,7 +356,7 @@ class HostView:
                 return -1
             typ = self._buf[i + 4]
             ln = struct.unpack_from("<I", self._buf, i + 5)[0]
-            if typ != TYPE_CLIP and self._shape_ok(typ, ln):
+            if typ not in (TYPE_CLIP, TYPE_PREVIEW, TYPE_EXT, TYPE_HELLO) and self._ok(typ, ln):
                 return i
             i = self._buf.find(MAGIC, i + 1)
         return -1
@@ -272,11 +370,19 @@ class HostView:
         if typ == TYPE_MODE:
             return ln == 1
         if typ == TYPE_NET:
-            return ln in (NET_LEN, NET_LEGACY_LEN)
+            return ln in (NET_LEN, NET_LEGACY_LEN, NET_IFACE_LEN)
         if typ == TYPE_TRIAGE:
             return ln == TRIAGE_LEN
         if typ == TYPE_CLIP:
             return 0 <= ln <= CLIP_MAX
+        if typ == TYPE_QUALITY:
+            return ln == 1
+        if typ == TYPE_PREVIEW:
+            return 9 <= ln <= PREVIEW_MAX
+        if typ == TYPE_EXT:
+            return 2 <= ln <= EXT_MAX
+        if typ == TYPE_HELLO:
+            return 2 <= ln <= HELLO_MAX
         return False
 
     def _accept(self, typ, payload):
@@ -288,7 +394,12 @@ class HostView:
             self._stats = (temp, load, mem)
             self._stats_at = now
         elif typ == TYPE_NET:
-            if len(payload) == NET_LEN:
+            iface = None
+            if len(payload) == NET_IFACE_LEN:
+                rx, tx, ncpu, *cbytes = struct.unpack("<fff8B", payload[:NET_LEN])
+                name = payload[NET_LEN:].split(b"\x00", 1)[0].decode("utf-8", errors="replace").strip()
+                iface = name if name and name.isprintable() else None
+            elif len(payload) == NET_LEN:
                 rx, tx, ncpu, *cbytes = struct.unpack("<fff8B", payload)
             else:
                 rx, tx, ncpu = struct.unpack("<fff", payload)
@@ -297,6 +408,9 @@ class HostView:
                 return
             self._ncpu = int(round(ncpu))
             self._ncpu_at = now
+            if iface:
+                self._iface = iface
+                self._iface_at = now
             cores = [b for b in cbytes if b <= 100]
             if cores:
                 self._cores = cores
@@ -323,8 +437,87 @@ class HostView:
             self._frame_at = now
             self._frame_seq += 1
         elif typ == TYPE_MODE and payload[0] in MODE_NAMES:
+            if MODE_NAMES[payload[0]] == "helper" and (
+                    self._mode_at is None or now - self._mode_at > MODE_ACK_TTL_S):
+                self.helper_returned += 1          # first ack, or first after a gap (restart)
+            if MODE_NAMES[payload[0]] == "helper" and self._mode == "shell":
+                # bash exited on its own (Ctrl-D / exit): the shell request is over, so
+                # types 7-9 are parsed again and the GEEK keeps its extended stats.
+                self.requested_mode = None
             self._mode = MODE_NAMES[payload[0]]
             self._mode_at = now
+        elif typ == TYPE_QUALITY and payload[0] in QUALITY_NAMES:
+            self._quality = QUALITY_NAMES[payload[0]]
+        elif typ == TYPE_EXT:
+            ext = _parse_ext(payload)
+            if ext is not None:
+                self._ext, self._ext_at = ext, now
+                if self.on_ext is not None and "pc_id" in ext:
+                    try:
+                        self.on_ext(ext)       # history: must only touch memory (no I/O)
+                    except Exception:
+                        pass
+        elif typ == TYPE_HELLO:
+            info = _parse_hello(payload)
+            if info is not None:
+                self._hello, self._hello_at = info, now
+                self.hello_seq += 1
+
+    def _accept_preview(self, payload, now):
+        """payload is a memoryview into the read buffer; tiles are copied out once."""
+        ver, flags, q, w, h, n = struct.unpack_from("<BBBHHH", payload, 0)
+        if ver != 1 or q not in (0, 1, 2) or not (0 < w <= PV_MAX_W and 0 < h <= PV_MAX_H):
+            return
+        if n > ((w + PV_TILE - 1) // PV_TILE) * ((h + PV_TILE - 1) // PV_TILE):
+            return
+        table, off = [], 9
+        for _ in range(n):
+            if off + 12 > len(payload):
+                return
+            x, y, tw, th, ln = struct.unpack_from("<HHHHI", payload, off)
+            off += 12
+            if (off + ln > len(payload) or x % PV_TILE or y % PV_TILE or not 0 < tw <= PV_TILE
+                    or not 0 < th <= PV_TILE or x + tw > w or y + th > h):
+                return
+            table.append((x, y, tw, th, off, ln))
+            off += ln
+        if off != len(payload):
+            return
+        self._pv_seq += 1
+        if flags & 1 or self._pv_size != (w, h, q):
+            self._pv_reset()
+            self._pv_size = (w, h, q)
+        for x, y, tw, th, o, ln in table:
+            old = self._pv.get((x, y))
+            self._pv_bytes += ln - (len(old[3]) if old else 0)
+            self._pv[(x, y)] = (self._pv_seq, tw, th, bytes(payload[o:o + ln]))
+        if self._pv_bytes > self.pv_max_bytes:       # runaway: keep nothing, wait for a key frame
+            self._pv_reset()
+        self._pv_at = now
+
+    def _pv_reset(self):
+        self._pv.clear(); self._pv_bytes = 0; self._pv_epoch = self._pv_seq
+
+    def preview(self, since, host_connected):
+        """Tiles newer than `since` (all of them, with reset=True, if `since` predates the
+        current grid). None when the stream is stale or the USB host is gone."""
+        with self._lock:
+            if not host_connected or not self._fresh(self._pv_at) or self._pv_size is None:
+                return None
+            reset = since < self._pv_epoch or since > self._pv_seq
+            tiles = [{"x": x, "y": y, "w": tw, "h": th, "jpg": base64.b64encode(jpg).decode()}
+                     for (x, y), (zs, tw, th, jpg) in self._pv.items() if reset or zs > since]
+            w, h, q = self._pv_size
+            return {"seq": self._pv_seq, "w": w, "h": h, "quality": QUALITY_NAMES[q],
+                    "reset": reset, "tiles": tiles}
+
+    def quality(self):
+        with self._lock:
+            return self._quality
+
+    def ext(self):
+        with self._lock:
+            return dict(self._ext) if self._ext and self._fresh(self._ext_at) else None
 
     def mode(self):
         """(acked mode or None, seconds since the ack or None)."""
@@ -332,6 +525,127 @@ class HostView:
             if self._mode_at is None:
                 return None, None
             return self._mode, round(self._now() - self._mode_at, 1)
+
+    def hello(self):
+        """(validated stub hello dict or None, age in seconds or None, sequence counter)."""
+        with self._lock:
+            if self._hello_at is None:
+                return None, None, self.hello_seq
+            return dict(self._hello), round(self._now() - self._hello_at, 1), self.hello_seq
+
+
+class StatsKeeper:
+    """Decides when kvm-web sends KVMCTL:stats:on. Only after a helper ack (so a plain
+    getty on the port never gets control bytes): the first one, and the first after a gap,
+    which is what a helper restart looks like. At most once per `min_s`. A pending request
+    that hits the rate limit is sent as soon as the limit allows. want=False (POST
+    /api/stats {"on":false}) stops the automatic requests until it is turned back on."""
+
+    def __init__(self, view, min_s=10.0, now=None):
+        self.view, self.min_s, self._now = view, min_s, now or time.monotonic
+        self.want = True
+        self.seen = 0               # helper_returned value already answered
+        self.last_sent = None
+
+    def due(self):
+        if not self.want or self.view.helper_returned == self.seen:
+            return False
+        if self.view.mode()[0] != "helper":
+            return False
+        return self.last_sent is None or self._now() - self.last_sent >= self.min_s
+
+    def sent(self):
+        self.seen = self.view.helper_returned
+        self.last_sent = self._now()
+
+
+def _num(v, lo, hi):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and lo <= v <= hi
+
+
+PC_ID_RE = re.compile(r"[0-9a-f]{12}")
+NET_DELTA_MAX = 16
+
+
+def _parse_ext(payload):
+    """Validated type-8 dict, keeping only known, sane fields; None if unusable."""
+    try:
+        d = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(d, dict) or d.get("v") != 1:
+        return None
+    out = {}
+    c = d.get("cores")
+    if isinstance(c, list) and 0 < len(c) <= 64 and all(_num(x, 0, 100) for x in c):
+        out["cores"] = [round(float(x), 1) for x in c]
+    if _num(d.get("gpu_pct"), 0, 100):
+        out["gpu_pct"] = round(float(d["gpu_pct"]), 1)
+    t = d.get("temps")
+    if isinstance(t, dict):
+        tt = {k: round(float(t[k]), 1) for k in ("cpu", "gpu", "nvme") if _num(t.get(k), -50, 200)}
+        if tt:
+            out["temps"] = tt
+    pr = d.get("procs")
+    if isinstance(pr, list) and len(pr) <= 8:
+        rows = [[str(r[0])[:15], round(float(r[1]), 1)] for r in pr
+                if isinstance(r, list) and len(r) == 2 and isinstance(r[0], str)
+                and r[0].isprintable() and r[0] and _num(r[1], 0, 6400)]
+        if rows:
+            out["procs"] = rows
+    npr = d.get("netprocs")
+    if isinstance(npr, list) and len(npr) <= 8:
+        rows = [[str(r[0])[:15], round(float(r[1]), 1)] for r in npr
+                if isinstance(r, list) and len(r) == 2 and isinstance(r[0], str)
+                and r[0].isprintable() and r[0] and _num(r[1], 0, 1e11)]
+        if rows:
+            out["netprocs"] = rows
+    m = d.get("mem")
+    if isinstance(m, list) and len(m) == 2 and all(_num(x, 0, 2 ** 50) for x in m) and 0 <= m[0] <= m[1] and m[1] > 0:
+        out["mem"] = [int(m[0]), int(m[1])]
+    dk = d.get("disk")
+    if isinstance(dk, list) and len(dk) == 3 and _num(dk[0], 0, 2 ** 60) and _num(dk[1], 1, 2 ** 60) \
+            and dk[0] <= dk[1] and isinstance(dk[2], str) and dk[2].isprintable():
+        out["disk"] = [int(dk[0]), int(dk[1]), dk[2][:15] or None]
+    if _num(d.get("uptime_s"), 0, 10 ** 9):
+        out["uptime_s"] = int(d["uptime_s"])
+    ip = d.get("net_ip")
+    if isinstance(ip, str) and ip.isprintable() and 0 < len(ip) <= 45:
+        out["net_ip"] = ip
+    pid = d.get("pc_id")
+    if isinstance(pid, str) and PC_ID_RE.fullmatch(pid):
+        out["pc_id"] = pid
+    ph = d.get("pc_host")
+    if isinstance(ph, str) and 0 < len(ph) <= 63 and ph.isprintable() and not any(c.isspace() for c in ph):
+        out["pc_host"] = ph
+    nd = d.get("netdelta")
+    if isinstance(nd, list) and len(nd) <= NET_DELTA_MAX:
+        rows = [[r[0][:15], int(r[1]), int(r[2])] for r in nd
+                if isinstance(r, list) and len(r) == 3 and isinstance(r[0], str) and r[0]
+                and r[0].isprintable() and _num(r[1], 0, 1e12) and _num(r[2], 0, 1e12)]
+        if rows:
+            out["netdelta"] = rows
+    return out
+
+
+def _parse_hello(payload):
+    """Validated type-10 host stub hello dict, or None."""
+    try:
+        d = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(d, dict) or d.get("v") != 1:
+        return None
+    os_name = d.get("os")
+    if os_name not in HELLO_OS:
+        return None
+    out = {"os": os_name}
+    arch = d.get("arch")
+    if isinstance(arch, str) and arch.isprintable() and len(arch) <= 32:
+        out["arch"] = arch.strip()
+    want = d.get("want")
+    out["want"] = want if want in ("stream", "install") else "stream"
+    return out
 
 
 shared = HostView()

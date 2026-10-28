@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Loopback test: run kvm_helper.py against one end of a pty pair and play the Zero
 on the other end (packets parsed with zero/web/hostview.py). Needs a non-root user."""
-import os, select, subprocess, sys, termios, time, tty, unittest
+import os, struct, select, subprocess, sys, termios, time, tty, unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE); sys.path.insert(0, os.path.join(HERE, "..", "zero", "web"))
 import kvm_helper, hostview
@@ -191,3 +191,71 @@ class Loopback(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class NetPickerTest(unittest.TestCase):
+    def test_follows_busiest_with_hold(self):
+        p = kvm_helper.NetPicker()
+        self.assertEqual(p.choose({"eth0": (0, 0), "wlan0": (0, 0)}, "eth0"), "eth0")
+        c = {"eth0": (100, 0), "wlan0": (0, 0)}
+        self.assertEqual(p.choose(c, "eth0"), "eth0")
+        for i, want in enumerate(["eth0", "eth0", "wlan0"], 1):
+            c = {"eth0": (100, 0), "wlan0": (10000 * i, 0)}
+            self.assertEqual(p.choose(c, "eth0"), want)
+        # idle: keep the current pick
+        self.assertEqual(p.choose(c, "eth0"), "wlan0")
+
+    def test_packs_iface_into_net(self):
+        pkt = kvm_helper.pack_net(1.0, 2.0, 4, [50], "enp5s0")
+        self.assertEqual(struct.unpack("<I", pkt[5:9])[0], 36)
+        self.assertEqual(len(kvm_helper.pack_net(1.0, 2.0, 4, [50])) - 9, 20)
+
+
+class TopProcsTest(unittest.TestCase):
+    def test_top_procs_merged_and_sorted(self):
+        prev = (10, {1: ("a", 0), 2: ("b", 0), 3: ("b", 0), 4: ("c", 0)})
+        now = {1: ("a", 50), 2: ("b", 40), 3: ("b", 40), 4: ("c", 0), 5: ("new", 9)}
+        self.assertEqual(kvm_helper.top_procs(prev, now, 11, clk_tck=100), [["b", 80.0], ["a", 50.0]])
+        self.assertEqual(kvm_helper.top_procs(None, now, 11), [])
+
+
+class NetProcsTest(unittest.TestCase):
+    SS = ('ESTAB 0 0 10.0.0.2:1 1.1.1.1:443 users:(("firefox",pid=5,fd=3))\n'
+          '\t cubic bytes_sent:10 bytes_acked:100 bytes_received:900 segs_out:1\n'
+          'ESTAB 0 0 10.0.0.2:2 1.1.1.1:443\n'
+          '\t cubic bytes_acked:50 bytes_received:0\n')
+
+    def test_parse_and_rates(self):
+        a = kvm_helper.parse_ss(self.SS)
+        self.assertEqual(a[("10.0.0.2:1", "1.1.1.1:443")], ("firefox", 1000))
+        self.assertEqual(a[("10.0.0.2:2", "1.1.1.1:443")], ("other", 50))
+        rows, prev = kvm_helper.top_net_procs(None, a, 10)
+        self.assertEqual(rows, [])
+        b = dict(a); b[("10.0.0.2:1", "1.1.1.1:443")] = ("firefox", 3000)
+        rows, _ = kvm_helper.top_net_procs(prev, b, 12)
+        self.assertEqual(rows, [["firefox", 1000.0]])
+
+    def test_net_deltas_split_rx_tx(self):
+        a = kvm_helper.parse_ss(self.SS, split=True)
+        self.assertEqual(a[("10.0.0.2:1", "1.1.1.1:443")], ("firefox", 1000, 900, 100))
+        self.assertEqual(kvm_helper.net_deltas(None, a), [])          # first sample: nothing
+        b = dict(a)
+        b[("10.0.0.2:1", "1.1.1.1:443")] = ("firefox", 1500, 1300, 200)
+        b[("10.0.0.2:3", "1.1.1.1:443")] = ("curl", 7, 5, 2)          # new socket counts in full
+        b[("10.0.0.2:2", "1.1.1.1:443")] = ("other", 10, 0, 10)       # went backwards: reused
+        self.assertEqual(kvm_helper.net_deltas(a, b),
+                         [["firefox", 400, 100], ["other", 0, 10], ["curl", 5, 2]])
+
+    def test_net_deltas_merge_tail_into_other(self):
+        b = {(str(i), "p"): (f"p{i}", 2 * i, i, i) for i in range(1, 21)}
+        rows = kvm_helper.net_deltas({}, b, n=4)
+        self.assertEqual([r[0] for r in rows], ["p20", "p19", "p18", "other"])
+        self.assertEqual(sum(r[1] for r in rows), sum(range(1, 21)))
+
+    def test_pc_id(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write("abc\n")
+        self.assertEqual(kvm_helper.read_pc_id(f.name), "ba7816bf8f01")
+        os.unlink(f.name)
+        self.assertIsNone(kvm_helper.read_pc_id("/nonexistent"))

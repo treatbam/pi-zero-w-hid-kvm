@@ -7,9 +7,8 @@
 Description=Pi Zero W HID KVM host helper (stats, still, serial shell mode)
 
 [Service]
-Environment=KVM_HOST_DEV=/dev/serial/by-id/usb-DIY_PiZeroW_HID_KVM_0001-if03
 Environment=KVM_DISPLAY=:0
-ExecStart=/usr/bin/python3 %h/pi-zero-w-hid-kvm/host/kvm_helper.py
+ExecStart=/usr/bin/python3 %h/pi-zero-w-hid-kvm/host/kvm_stub.py
 Restart=always
 RestartSec=3
 

@@ -44,7 +44,8 @@ Then browse to `http://192.168.4.1:8080`. Manual run: `sudo bash zero/gadget/hid
 ### API (port 8080, bound to 0.0.0.0)
 | Method | Path | Body |
 |---|---|---|
-| GET | /api/status | → `hid_ready`, `host_connected`, `udc_state`, `leds` (`{num,caps,scroll}`), `ip`, `temp_c`, `load1`, `mem_pct`, `link` (`LINKED` / `KEYS` / `NO HOST`), `pc_temp_c`, `pc_load1`, `pc_mem_pct`, `pc_rx_bps`, `pc_tx_bps`, `pc_ncpu`, `pc_cores` (top 8 core busy % sorted hottest-to-coolest), `pc_ip`, `pc_disk_pct`, `pc_top_proc`, `pc_top_cpu_pct`, `pc_age_s`, `frame_fresh`. PC fields are null unless `link` is `LINKED`. |
+| GET | /api/status | → `hid_ready`, `host_connected`, `udc_state`, `leds` (`{num,caps,scroll}`), `ip`, `temp_c`, `load1`, `mem_pct`, `link` (`LINKED` / `KEYS` / `NO HOST`), `pc_temp_c`, `pc_load1`, `pc_mem_pct`, `pc_rx_bps`, `pc_tx_bps`, `pc_ncpu`, `pc_net_iface` (the PC's busiest interface, held a few samples so it doesn't flicker), `pc_cores` (top 8 core busy % sorted hottest-to-coolest), `pc_ip`, `pc_disk_pct`, `pc_top_proc`, `pc_top_cpu_pct`, `pc_age_s`, `frame_fresh`, `pc_procs` (top 8 PC processes as `[name, cpu%]`, busiest first, same-name processes merged; null until the second sample), `pc_net_procs` (top 8 PC processes by TCP traffic as `[name, bytes/s up+down]`; other users' sockets count as `other`; UDP not included), `pc_mem_used`/`pc_mem_total` and `pc_disk_used`/`pc_disk_total` (bytes; root filesystem) with `pc_disk_dev` (its device, e.g. `nvme0n1p2`), `pc_net_ip` (the IPv4 address bound to `pc_net_iface`), `pc_id` (12 hex chars, first of sha256 of the PC's `/etc/machine-id`) and `pc_host` (its hostname), `net_hist_since` (unix seconds of the last reset of this PC's history) and `net_hist` (cumulative TCP bytes per process for this PC since then, up to 8 `{"p": name, "rx": bytes, "tx": bytes}`, busiest rx+tx first; kept on the `/data` partition across reboots; null when unknown or storage is off). PC fields are null unless `link` is `LINKED`. |
+| POST | /api/net_hist/reset | `{"pc": hostname or pc_id}` (omit for the connected PC) → wipes all saved history for that PC and sets `net_hist_since` to now. 404 unknown PC, 409 hostname shared by several PCs (send `pc_id`), 503 storage off. |
 | GET | /api/frame[?crop=full\|loupe] | 240×135 RGB565 little-endian still (`full` downscale or `loupe` 1:1 cursor-centered crop), or 204 when stale. Requests on-demand capture from `kvm_helper.py`. Needs `X-KVM-PIN`. |
 | GET | /api/clipboard | → `{"ok":true,"text":"...","age_s":...}` pulls UTF-8 clipboard from host helper (needs `X-KVM-PIN`). |
 | POST | /api/clipboard | `{"text":"..."}` pushes layout-agnostic UTF-8 text to host clipboard (`wl-copy`/`xclip`/`xsel`). |
@@ -54,6 +55,9 @@ Then browse to `http://192.168.4.1:8080`. Manual run: `sudo bash zero/gadget/hid
 | POST | /api/mouse | `{"dx":0,"dy":0,"wheel":0,"buttons":0}` |
 | POST | /api/macro | `{"name":"ctrl_alt_del"|"alt_tab"|"win_l"}` |
 | GET | /api/term?n=40 | → `{"seq","lines":[...],"partial","open","error"}` (needs `X-KVM-PIN`) |
+| POST | /api/stats | `{"on":true\|false}` → type 8 extended stats on/off (PIN; 409 in shell mode) |
+| POST | /api/quality | `{"quality":"low"\|"med"\|"high"\|"off"}` → preview quality (409 in shell mode) |
+| GET | /api/preview?since=N | changed JPEG tiles since N (PIN; 204 when no fresh preview) |
 | POST | /api/mode | `{"mode":"shell"\|"helper"}` → switch the host serial port (see Serial mode toggle) |
 | POST | /api/term | `{"text":"ls","newline":true}` → keystrokes to the host serial console |
 
@@ -68,10 +72,12 @@ cd geek && cp src/secrets.example.h src/secrets.h   # edit SSID/pass to match th
 pio run -t upload && pio device monitor
 ```
 
-A short press on BOOT (or any wired button) advances **scoreboard → desktop still → terminal**.
+A short press on BOOT (or any wired button) advances **scoreboard (target PC) → KVM → desktop still → terminal**.
 A long press does nothing, and two quick presses are just two page steps (there is no double-press delay). Hold BOOT while powering on to reopen the setup portal.
 
-The scoreboard’s left block is the status word from `link`, with `N C S` keyboard lock LED indicators along the bottom edge when a host is attached. Green **LINKED** means the big figures are the PC, each with a dual-layer `82×22 px` readout (7px horizontal plasma gradient bar with warning notch and 60s peak-hold pip on top, 13px shaded Tufte horizon 60-sample sparkline with warning ember tint below), a 30s trend delta badge under each `temp`/`load`/`mem` label, an 8-core micro-chiclet utilization heatmap under `load`, headless bench triage (`pc_ip`, `/:disk%`, `top_proc:cpu%`) across the top header, and a mirrored duplex network waterfall (`dn` emerald upward / `up` amber downward) in the footer. When the helper goes quiet the rail stays blue **KEYS**, the last PC figures and traces stay up dimmed, and an amber **reconnecting** toast sits in the footer for one minute. After that minute the big figures are the Pi and the footer says **searching**. Yellow **NO HOST** means the cable is out: Pi figures immediately, no toast. If the Zero cannot be reached the word is **ZERO** and the figures are dashes. The desktop page stays on that blue KEYS waiting field until a fresh still arrives, and drops the picture when `/api/frame` is not 200. The phone follows `link` and does not hold the extra minute.
+The scoreboard’s left block is the status word from `link`, with `N C S` keyboard lock LED indicators along the bottom edge when a host is attached. Green **LINKED** means the big figures are the PC, each with a dual-layer `82×22 px` readout (7px horizontal plasma gradient bar with warning notch and 60s peak-hold pip on top, 13px shaded Tufte horizon 60-sample sparkline with warning ember tint below), a 30s trend delta badge under each `temp`/`load`/`mem` label, headless bench triage (`/:disk%` and the full top process name with its CPU %) across the top header, a glance line (green/red dots: Pi up + uptime, GEEK Wi-Fi + RSSI), and a mirrored duplex network waterfall (`dn` emerald upward / `up` amber downward) in the footer. When the helper goes quiet the rail stays blue **KEYS**, the last PC figures and traces stay up dimmed, and an amber **reconnecting** toast sits in the footer for one minute. After that minute the big figures are the Pi and the footer says **searching**. Yellow **NO HOST** means the cable is out: Pi figures immediately, no toast. If the Zero cannot be reached the word is **ZERO** and the figures are dashes. The desktop page stays on that blue KEYS waiting field until a fresh still arrives, and drops the picture when `/api/frame` is not 200. The phone follows `link` and does not hold the extra minute.
+
+The **KVM** page is about the box itself: Zero temp/load/mem, Zero Wi-Fi RSSI, Tailscale up/down and Zero uptime; GEEK RSSI and IP; the link word (LINKED / NO HOST / waiting) with the PC's LAN IP; per-core bars (every core from the type 8 extended stats, else main's top-8 hottest) and CPU/GPU/NVMe temperatures and GPU % when the PC reports them. Anything the PC doesn't report is simply left out. `zero_wifi_rssi` and `tailscale` come from `/api/status` only with the PIN; the GEEK sends its `KVM_PIN` on every status poll. Extended stats (type 8) are switched separately from the preview with `KVMCTL:stats:on|off`: kvm-web sends `stats:on` itself on the first helper ack and again after a helper restart (an ack after more than 5 s of silence, at most every 10 s), so page 2 has them with no browser open. The helper then sends type 8 every 2 s in helper mode (paused in shell mode). `POST /api/stats {"on":false}` (PIN; 409 in shell mode) turns them off and stops the automatic re-requests until `{"on":true}`; a browser preview level (`q:`) still brings them while it is set.
 
 ## Host terminal (USB serial)
 
@@ -149,6 +155,57 @@ from the host, including output printed inside the shell (e.g. `printf`), can fo
 envelopes: fake PC stats, a fake desktop still, or a fake mode ack. That only changes what
 the console *displays*; it can't start a shell or send keys.
 
+### Desktop preview (quality: low / med / high) and extra PC stats
+
+Open **Desktop preview & PC stats** on the console. The helper streams only the 64×64
+tiles that changed, as JPEGs; the Zero stores and serves them untouched (no re-encoding)
+and the browser draws them onto a canvas. Pick a quality in the dropdown (PIN-protected,
+sent to the helper as `1E 1F "KVMCTL:q:" low|med|high 0A`, the same framing and `/api/term`
+filter as the mode toggle). The preview pauses in shell mode and resumes afterwards.
+
+| quality | size | rate | JPEG q | max per frame | idle | typical (15% of screen changing) | ceiling |
+|---|---|---|---|---|---|---|---|
+| low | 640×360 | 1 fps | 45 | 48 KB | ~18 B/s | ~5 KB/s | 48 KB/s |
+| med | 960×540 | 2 fps | 60 | 96 KB | ~36 B/s | ~35 KB/s | 192 KB/s |
+| high | 1280×720 | 4 fps | 75 | 160 KB | ~72 B/s | ~90 KB/s | 640 KB/s |
+
+A full refresh (on start, quality change, leaving shell mode, and every 60 s) of a busy desktop
+is about 55 / 140 / 270 KB, so it is spread over one or two frames by the per-frame budget.
+The 240×135 GEEK still keeps main's on-demand lease (`frame`/`loupe`). Serial writes are queued in a non-blocking outbox, so a large preview frame waits instead of timing out; a preview frame is skipped while more than 64 KB is queued.
+
+The helper needs **only the Python 3 standard library** (fresh, minimal SBC installs are the
+main use). Everything else is optional and detected once at startup, logged as one
+`optional: missing ...` line:
+
+- `ffmpeg` + `xrandr` + an X display: the GEEK still (the same one-shot grab as before).
+- `python3-pil` as well: the browser preview. `numpy` makes the still conversion faster.
+- `psutil`, `nvidia-smi`: extra temperature and GPU sources. `/proc` and `/sys` are used without them.
+
+With none of them, or on a headless box with no X, the helper sends the basic stats and the
+mode acks and still does shell mode; the preview answers `off`.
+
+The helper sends **no** preview, extended stats or quality ack (types 7–9) until the Zero asks
+with `KVMCTL:q:<level>`. The console sends that when the preview panel opens, and `q:off`
+when it closes or the page is left (this stops the preview and the extended stats; with
+several browsers, the last one to close wins). `/api/quality` returns 409 in shell mode, and
+the console reports "no ack from the helper" if nothing confirms the level within 5 s.
+The Zero parses types 7–9 only while it holds a helper-mode ack less than 5 s old and the console hasn't asked for shell mode, and releases
+any header whose payload hasn't arrived within 3 s as terminal text, so shell output can't fake
+a preview or stall the terminal. Preview frames are bounded: 64-aligned tiles up to 64×64,
+1280×720 at most, and 2 MiB of stored JPEG in total (the grid resets past that).
+
+Extra stats (console panel, and `/api/status`): `pc_cores_all` (every core, %; `pc_cores` stays main's top-8), `pc_gpu_pct`,
+`pc_cpu_temp_c`, `pc_gpu_temp_c`, `pc_nvme_temp_c`. Each is `null` when the PC can't report it.
+Sources: `/proc/stat`, `psutil` if installed, `/sys/class/hwmon` (coretemp/k10temp, nvme,
+amdgpu/nouveau), AMD `gpu_busy_percent`, `nvidia-smi`. Intel iGPU usage is not reported.
+
+Wire additions (envelope `FE FD 4B 56`, type, u32 length): type 7 preview frame, type 8
+extended stats JSON `{"v":1,...}`, type 9 quality ack (types 4/5/6 stay net, triage, clipboard). Type 1 stats are still sent, so a new Zero
+works with an old helper. An old Zero with a new helper also works: the helper sends types 7–9 only
+after the Zero asks with `KVMCTL:q:` or `KVMCTL:stats:on`, which an old Zero never does.
+Quality ack values are 0 low, 1 med, 2 high, 3 off. `GET /api/preview?since=N` (PIN) returns the tiles changed after N; `preview_quality` and
+`preview_quality_requested` appear in `/api/status` only with the PIN.
+
 **Windows host** — no getty; find the port in Device Manager → Ports (COM & LPT)
 ("USB Serial Device", driver `usbser.sys` is automatic on Windows 10/11), then stream a
 script into it, e.g. PowerShell:
@@ -221,3 +278,84 @@ Port may be `/dev/ttyUSB0`; check `ls /dev/tty{ACM,USB}*`. Hold BOOT while plugg
 
 ### Building the merged bin yourself
 `tools/merge-geek-bin.sh` (needs `pio`) builds with placeholders and writes `build/kvm-geek.bin` (bootloader 0x0, partitions 0x8000, boot_app0 0xe000, app 0x10000 merged at 0x0, 8MB DIO).
+
+## Updating remotely (from workbenchpc)
+
+### Zero: `tools/update-zero.sh`
+### Network history storage (`/var/lib/kvm`)
+
+kvm-web keeps per-PC history in SQLite under `KVM_DATA_DIR` (default `/var/lib/kvm`), on a small
+ext4 partition labelled `kvmdata` outside the read-only overlay. Set it up once, **with the overlay
+off**: `sudo bash tools/setup-kvmdata.sh` (idempotent; needs free space at the end of the card;
+adds a `nofail` fstab line). Without it, history is simply off. Writes are batched every 30 s.
+
+To wipe a PC's history without the GEEK: pull the Zero's card, put an empty
+`<hostname>-erase.txt` (or `<pc_id>-erase.txt` if two PCs share a hostname) on the FAT boot
+partition, and boot. kvm-web wipes it at start and remembers the file (name, mtime, size) on
+`/data`, so it runs once; it never writes to boot. Override the scanned dir with `KVM_BOOT_DIR`.
+
+Updates the Zero over SSH, handling the read-only (overlayfs) root:
+preflight (nothing changes) → disable overlay + reboot → `git fetch` + checkout `--ref` →
+`sudo bash zero/install.sh` → restart `kvm-web` → check `kvm-web` + `tailscaled` →
+re-enable overlay + reboot → check root is `overlay` and both services are active.
+Then it copies `host/*.py` (not tests) to `~/.local/share/kvm-helper` and runs
+`systemctl --user restart kvm-helper` on workbenchpc.
+
+```bash
+tools/update-zero.sh --dry-run                       # print the plan
+tools/update-zero.sh --key ~/.ssh/id_ed25519_homelab # Zero + local helper
+tools/update-zero.sh --ref geek-ui-polish --skip-helper
+tools/update-zero.sh --helper-only
+tools/update-zero.sh --ref <previous-commit>         # roll back
+```
+Defaults: `--host geekpi-1` (`ZERO_HOST`), `--user pi` (`ZERO_USER`), `--key ~/.ssh/id_ed255`
+(`ZERO_KEY`; check this name, the homelab key is `~/.ssh/id_ed25519_homelab`), `--ref` = the
+Zero's current branch (`main` if detached), `--timeout 300` s per reboot.
+`--no-reboot-ro` leaves the Zero writable at the end.
+
+Safety: the Zero must be a git clone with an `origin` it can fetch (a private repo needs a deploy
+key or token on the Zero), with no local changes and passwordless sudo. These are checked before
+anything changes. The previous commit is printed and saved in
+`~/pi-zero-w-hid-kvm/.kvm-update-prev` on the Zero. If any step fails after the overlay
+is disabled, the script stops, **leaves the Zero writable**, and prints recovery and rollback
+commands. It doesn't re-enable read-only over a broken install unless you pass `--ro-on-failure`.
+The helper copy only helps if the user unit's `ExecStart` points at
+`~/.local/share/kvm-helper/kvm_helper.py`; the script warns when it doesn't (the shipped
+`host/kvm-helper.service` runs from `~/pi-zero-w-hid-kvm/host`).
+
+### GEEK: OTA over Wi-Fi (`tools/flash-geek.sh`)
+OTA (ArduinoOTA / espota, port 3232, mDNS name `kvm-geek.local`) is **off until you set an OTA
+password** in the setup portal (hold BOOT at power-on → join `KVM-GEEK-setup` →
+http://192.168.4.1 → "OTA update password", 8+ characters; tick "turn OTA off" to clear it).
+OTA uses its own password rather than the console PIN. The PIN is short and digits-only, the GEEK
+already sends it to the Zero on every poll, and OTA auth has no lockout, so a PIN could be
+brute-forced.
+
+```bash
+tools/flash-geek.sh                 # auto: USB if plugged in, else direct OTA, else relay via the Zero
+tools/flash-geek.sh usb             # fixed by-id port only (never ttyACM*)
+tools/flash-geek.sh ota [--host kvm-geek.local|IP]
+tools/flash-geek.sh relay [--via geekpi-1] [--user pi] [--key ~/.ssh/id_ed255] [--geek-ip IP]
+tools/flash-geek.sh relay --dry-run
+```
+`auto` checks the by-id port, then resolves `--host` (`GEEK_HOST`, default `kvm-geek.local`)
+and pings it for about 2 s. If neither works, it relays. `ota` and `relay` first build `geek_ota` if
+`firmware.bin` is missing or older than `geek/src` / `platformio.ini`.
+
+**Relay** (workbenchpc can't reach the GEEK, but the Zero can): over SSH with `-o IdentitiesOnly=yes`
+(`ZERO_HOST` / `ZERO_USER` / `ZERO_KEY`) it makes a private `mktemp -d /tmp/geek-ota.XXXXXX` on
+the Zero (`/tmp` only, since the root is read-only) and copies `espota.py`, a small runner and
+`firmware.bin` into it. The password goes in over SSH stdin to a 0600 file. It finds the GEEK
+in order: `--geek-ip`, `ip neigh` for MAC `84:fc:e6:51:45:f8`, `kvm-geek.local`, then a /24 ping
+sweep followed by `ip neigh` again. espota then runs there, and the dir is removed on exit,
+failure or Ctrl-C.
+
+**Password**: `GEEK_OTA_PASS`, else a hidden prompt. It is never on a command line. Direct OTA
+gives it to espota through the runner's environment. On the Zero, the runner reads the 0600
+file and calls `espota.py` in the same process. espota has no password-file option, so this is
+how both stay out of `ps`. Calling `pio run -e geek_ota -t upload` directly still passes
+`--auth=` on the command line; the script avoids that path.
+Partitions: `default_8MB.csv` (two 3.25 MB OTA slots, firmware ~1 MB). It's the same layout the
+board already used, so no repartition is needed. Firmware older than this has no OTA listener,
+so the first flash of this version must be over USB. The screen shows an OTA progress panel while
+an upload runs.

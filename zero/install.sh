@@ -38,6 +38,7 @@ fi
 grep -qx 'dwc2' /etc/modules || echo dwc2 >> /etc/modules
 grep -qx 'libcomposite' /etc/modules || echo libcomposite >> /etc/modules
 rsync -a --delete --exclude .git ./ /opt/pi-zero-w-hid-kvm/
+python3 /opt/pi-zero-w-hid-kvm/zero/gadget/build_setup_img.py /opt/pi-zero-w-hid-kvm/zero/gadget/kvm-setup.img
 # Console PIN: made once, kept across re-installs. Root-only file; shown at the end.
 install -d -m 700 /etc/pi-zero-w-hid-kvm
 if [ ! -s /etc/pi-zero-w-hid-kvm/pin ]; then

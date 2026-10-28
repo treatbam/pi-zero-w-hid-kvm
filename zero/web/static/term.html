@@ -1,77 +1,171 @@
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>KVM host terminal</title><style>
-body{font-family:sans-serif;margin:8px;background:#111;color:#eee}button{margin:2px;padding:8px}
-#out{background:#000;color:#cfc;font:13px/1.3 monospace;height:60vh;overflow:auto;white-space:pre-wrap;padding:6px;border-radius:6px}
-#st{font-size:13px;color:#aaa}a{color:#8cf}</style></head><body>
-<p><a href="/">&larr; Console</a> &nbsp; Host terminal (USB serial: host ttyACM0 / COMx) <span id="st"></span>
-<button id="mode" onclick="toggleMode()">serial: …</button></p>
-<div id="out"></div>
-<p><input id="cmd" placeholder="send to host…" style="width:60%" autocomplete="off">
-<button onclick="send(true)">Send ⏎</button><button onclick="send(false)">Send (no ⏎)</button>
-<button onclick="ctl('\x03')">Ctrl+C</button><button onclick="ctl('\x04')">Ctrl+D</button><button onclick="ctl('\r')">⏎</button>
-<button onclick="logout()">Change PIN</button></p>
-<p style="font-size:12px;color:#888">With <code>kvm_helper.py</code> running, press <b>serial: helper</b> to switch to a login shell (runs as the helper's normal user; stats pause). <code>exit</code> or the button switches back. Without the helper, this shows whatever getty or script the host runs on the port (see README).</p>
+<!doctype html>
+<html lang="en" data-theme="slate">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>KVM USB Serial Terminal</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #09090a; --cell: #161519; --cell-hi: #292730; --cell-lo: #040405;
+  --well: #0d0c0f; --lab: #74a8ee; --val: #f4efe6; --grey: #96918b;
+  --div: #222028; --rx: #2dd4bf; --tx: #818cf8; --ok: #34d399; --bad: #ff4e60;
+  --scrollbar-thumb: var(--grey); --scrollbar-track: var(--well);
+  accent-color: var(--lab);
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+:where([data-theme="braun"]) {
+  --bg: #100f0e; --cell: #1a1816; --cell-hi: #302c27; --cell-lo: #080706;
+  --well: #0b0a09; --lab: #eea848; --val: #f6f1e6; --grey: #948c80;
+  --div: #2a2622; --rx: #f5ac38; --ok: #6cd076; --bad: #ee443a;
+}
+:where([data-theme="cobalt"]) {
+  --bg: #080d18; --cell: #0f1728; --cell-hi: #20304e; --cell-lo: #04070e;
+  --well: #050912; --lab: #72baff; --val: #eef4ff; --grey: #7c90b0;
+  --div: #1a2844; --rx: #4cdcff; --ok: #40e098; --bad: #ff4e60;
+}
+html { box-sizing: border-box; }
+*, *::before, *::after { box-sizing: inherit; }
+.sr-only { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip: rect(0,0,0,0); }
+body {
+  margin: 0; padding: 8px; min-block-size: 100dvh; block-size: 100dvh;
+  display: flex; flex-direction: column; gap: 8px;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  background: var(--bg); color: var(--val);
+}
+header {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 6px 10px; background: var(--cell);
+  border-top: 1px solid var(--cell-hi); border-left: 1px solid var(--cell-hi);
+  border-right: 1px solid var(--cell-lo); border-bottom: 1px solid var(--cell-lo);
+  border-radius: 8px; user-select: none;
+}
+a { color: var(--lab); text-decoration: none; font-weight: 600; font-size: 13px; }
+button {
+  font-family: inherit; font-size: 12px; color: var(--val);
+  background: var(--cell); border-top: 1px solid var(--cell-hi); border-left: 1px solid var(--cell-hi);
+  border-right: 1px solid var(--cell-lo); border-bottom: 1px solid var(--cell-lo);
+  border-radius: 6px; padding: 6px 10px; cursor: pointer;
+}
+button.go { border-color: var(--ok); }
+#st { font: 12px ui-monospace, monospace; color: var(--grey); margin-inline-end: auto; }
+#out {
+  flex: 1 1 auto; min-block-size: 0; margin: 0;
+  background: var(--well); color: var(--rx);
+  border: 1px solid var(--div); border-radius: 8px;
+  font: 13px/1.35 ui-monospace, SFMono-Regular, monospace;
+  overflow: auto; white-space: pre-wrap; padding: 8px 10px;
+}
+#cmd-form { display: flex; flex-wrap: wrap; gap: 6px; }
+#cmd {
+  flex: 1 1 220px; min-inline-size: 0; padding: 7px 10px;
+  background: var(--well); color: var(--val);
+  border: 1px solid var(--div); border-radius: 6px;
+  font: 14px ui-monospace, monospace;
+}
+.note { margin: 0; font-size: 11px; color: var(--grey); }
+</style>
+</head>
+<body>
+<header>
+  <a href="/">&larr; Cockpit</a>
+  <strong style="font-size:13px">Host USB Serial</strong>
+  <span id="st">connecting…</span>
+  <button type="button" id="mode">serial: …</button>
+  <button type="button" id="pin-btn">🔑 PIN</button>
+</header>
+
+<pre id="out"></pre>
+
+<form id="cmd-form" autocomplete="off">
+  <label for="cmd" class="sr-only">Command to send over USB serial</label>
+  <input id="cmd" placeholder="Send command to host serial…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+  <button type="submit" class="go">Send ⏎</button>
+  <button type="button" id="send-raw">No ⏎</button>
+  <button type="button" data-ctl="&#x03;">Ctrl+C</button>
+  <button type="button" data-ctl="&#x04;">Ctrl+D</button>
+</form>
+<p class="note">Press <b>serial: helper</b> to switch the helper into an interactive non-root login shell (telemetry pauses until <code>exit</code> or switching back).</p>
+
 <script>
+const savedTheme = localStorage.getItem('kvmTheme') || 'slate';
+document.documentElement.dataset.theme = savedTheme;
+
 let pin = localStorage.getItem('kvmPin') || '';
 const askPin = m => {
   const p = prompt(m || 'Console PIN');
   if (p !== null) { pin = p.trim(); if (pin) localStorage.setItem('kvmPin', pin); else localStorage.removeItem('kvmPin'); }
 };
 if (!pin) askPin();
-function logout() { pin = ''; localStorage.removeItem('kvmPin'); askPin(); }
+document.getElementById('pin-btn').onclick = () => { pin = ''; localStorage.removeItem('kvmPin'); askPin(); };
+
 const out = document.getElementById('out'), st = document.getElementById('st'), cmd = document.getElementById('cmd');
 let lastText = '';
+
 async function poll() {
-  if (!pin) {
-    st.textContent = 'PIN required (click Change PIN)';
-    setTimeout(poll, 700);
-    return;
-  }
+  if (!pin) { st.textContent = 'PIN required'; setTimeout(poll, 700); return; }
   let delay = 700;
   try {
     const r = await fetch('/api/term?n=200', {headers: {'X-KVM-PIN': pin}});
-    if (r.status === 401) {
-      pin = ''; localStorage.removeItem('kvmPin');
-      askPin('Wrong or missing PIN. Console PIN:');
-    } else if (r.status === 429) {
-      st.textContent = 'Too many wrong PINs (wait 60 s)';
-      delay = 5000;
-    } else if (r.ok) {
+    if (r.status === 401) { pin = ''; localStorage.removeItem('kvmPin'); askPin('Wrong or missing PIN:'); }
+    else if (r.status === 429) { st.textContent = 'Locked out (wait 60 s)'; delay = 5000; }
+    else if (r.ok) {
       const j = await r.json(), t = j.lines.concat([j.partial]).join('\n');
       st.textContent = j.open ? '● port open' : '○ ' + (j.error || 'port closed');
-      if (t !== lastText) { const atBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 20;
-        out.textContent = lastText = t; if (atBottom) out.scrollTop = out.scrollHeight; }
+      if (t !== lastText) {
+        const atBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 20;
+        out.textContent = lastText = t;
+        if (atBottom) out.scrollTop = out.scrollHeight;
+      }
     } else st.textContent = 'HTTP ' + r.status;
   } catch (e) { st.textContent = 'Zero unreachable'; }
   setTimeout(poll, delay);
 }
-async function post(text, newline) {
+
+async function postTerm(text, newline) {
   if (!pin) { askPin('Console PIN:'); if (!pin) return; }
-  const r = await fetch('/api/term', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-KVM-PIN': pin},
-    body: JSON.stringify({text, newline})});
+  const r = await fetch('/api/term', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-KVM-PIN': pin},
+    body: JSON.stringify({text, newline})
+  });
   if (!r.ok) { const j = await r.json().catch(() => ({})); st.textContent = 'send failed: ' + (j.error || r.status); }
-  if (r.status === 401) { pin = ''; localStorage.removeItem('kvmPin'); askPin('Wrong or missing PIN. Console PIN:'); }
+  if (r.status === 401) { pin = ''; localStorage.removeItem('kvmPin'); askPin('Wrong PIN:'); }
 }
-function send(nl) { post(cmd.value, nl); cmd.value = ''; cmd.focus(); }
-function ctl(c) { post(c, false); }
-cmd.addEventListener('keydown', e => { if (e.key === 'Enter') send(true); });
+
+function send(nl) { postTerm(cmd.value, nl); cmd.value = ''; cmd.focus(); }
+document.getElementById('cmd-form').addEventListener('submit', e => { e.preventDefault(); send(true); });
+document.getElementById('send-raw').onclick = () => send(false);
+cmd.addEventListener('keydown', e => {
+  if (e.isComposing || e.keyCode === 229) return;
+  if (e.key === 'Enter') { e.preventDefault(); send(true); }
+});
+document.querySelectorAll('[data-ctl]').forEach(b => { b.onclick = () => postTerm(b.dataset.ctl, false); });
+
 let serialMode = null;
 async function modePoll() {
   try {
-    const s = await (await fetch('/api/status', {headers: pin ? {'X-KVM-PIN': pin} : {}})).json(), b = document.getElementById('mode');
+    const s = await (await fetch('/api/status', {headers: pin ? {'X-KVM-PIN': pin} : {}})).json();
+    if (s.ui_theme) { document.documentElement.dataset.theme = s.ui_theme; localStorage.setItem('kvmTheme', s.ui_theme); }
+    const b = document.getElementById('mode');
     serialMode = s.serial_mode;
     const pend = s.serial_mode_requested && s.serial_mode_requested !== s.serial_mode;
-    b.textContent = 'serial: ' + (serialMode || 'no helper') + (pend ? ' \u2192 ' + s.serial_mode_requested + '\u2026' : '');
+    b.textContent = 'serial: ' + (serialMode || 'no helper') + (pend ? ' → ' + s.serial_mode_requested + '…' : '');
   } catch (e) {}
   setTimeout(modePoll, 2000);
 }
-async function toggleMode() {
+document.getElementById('mode').onclick = async () => {
   if (!pin) { askPin('Console PIN:'); if (!pin) return; }
   const want = serialMode === 'shell' ? 'helper' : 'shell';
-  const r = await fetch('/api/mode', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-KVM-PIN': pin},
-    body: JSON.stringify({mode: want})});
-  if (r.status === 401) { pin = ''; localStorage.removeItem('kvmPin'); askPin('Wrong or missing PIN. Console PIN:'); return; }
+  const r = await fetch('/api/mode', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-KVM-PIN': pin},
+    body: JSON.stringify({mode: want})
+  });
+  if (r.status === 401) { pin = ''; localStorage.removeItem('kvmPin'); askPin('Wrong PIN:'); return; }
   if (!r.ok) { const j = await r.json().catch(() => ({})); st.textContent = 'mode failed: ' + (j.error || r.status); }
-}
+};
 poll(); modePoll();
-</script></body></html>
+</script>
+</body>
+</html>
