@@ -17,8 +17,11 @@ Nothing here is required for the helper to run on a stock Python 3.
 """
 import io
 import os
+import shutil
 import struct
 import subprocess
+import sys
+import tempfile
 import time
 
 try:
@@ -143,12 +146,58 @@ class Grabber:
         self.display, self.quality, self.screen_size = display, quality, screen_size
         self.proc, self.buf, self.latest, self.retry_at = None, bytearray(), None, 0.0
         self.test = os.environ.get("KVM_PREVIEW_SOURCE") == "test"
+        self.wayland = not display and bool(os.environ.get("WAYLAND_DISPLAY")) and bool(shutil.which("grim"))
+        self.macos = not display and sys.platform == "darwin" and bool(shutil.which("screencapture"))
         self.t = 0
 
     @property
     def frame_len(self):
         _, w, h, *_ = QUALITY[self.quality]
         return w * h * 3
+
+    def _fit_rgb24(self, img):
+        _, w, h, *_ = QUALITY[self.quality]
+        img = img.convert("RGB")
+        iw, ih = img.size
+        if iw <= 0 or ih <= 0:
+            return None
+        scale = min(w / iw, h / ih)
+        nw, nh = max(1, int(round(iw * scale))), max(1, int(round(ih * scale)))
+        resized = img.resize((nw, nh))
+        if (nw, nh) == (w, h):
+            return resized.tobytes()
+        canvas = Image.new("RGB", (w, h), (0, 0, 0))
+        canvas.paste(resized, ((w - nw) // 2, (h - nh) // 2))
+        return canvas.tobytes()
+
+    def _grab_alt_rgb24(self):
+        if Image is None or time.monotonic() < self.retry_at:
+            return None
+        if self.wayland:
+            try:
+                r = subprocess.run(["grim", "-t", "ppm", "-"], stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, timeout=1.5, check=False)
+                if r.returncode == 0 and r.stdout:
+                    return self._fit_rgb24(Image.open(io.BytesIO(r.stdout)))
+            except Exception:
+                pass
+            self.retry_at = time.monotonic() + 5
+        elif self.macos:
+            fd, tmp = tempfile.mkstemp(suffix=".jpg", prefix="kvm-pv-")
+            os.close(fd)
+            try:
+                r = subprocess.run(["screencapture", "-x", "-t", "jpg", tmp],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1.5, check=False)
+                if r.returncode == 0 and os.path.getsize(tmp) > 0:
+                    with Image.open(tmp) as im:
+                        return self._fit_rgb24(im)
+            except Exception:
+                pass
+            finally:
+                try: os.unlink(tmp)
+                except OSError: pass
+            self.retry_at = time.monotonic() + 5
+        return None
 
     def start(self):
         if self.test or self.proc or time.monotonic() < self.retry_at or not self.display:
@@ -206,5 +255,7 @@ class Grabber:
                 f[(r * w + sx) * 3:(r * w + sx + 32) * 3] = b"\xff\x40\x10" * 32
             self.t += 1
             return bytes(f)
+        if not self.display and (self.wayland or self.macos):
+            return self._grab_alt_rgb24()
         f, self.latest = self.latest, None
         return f

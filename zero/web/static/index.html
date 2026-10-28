@@ -1,77 +1,496 @@
-<!doctype html><html><head><meta charset="utf-8">
+<!doctype html>
+<html lang="en" data-theme="slate">
+<head>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Pi Zero W HID KVM</title>
 <style>
+:root {
+  color-scheme: dark;
+  --bg: #0b0e14;
+  --cell: #131822;
+  --cell-hi: #242d3e;
+  --cell-lo: #05070b;
+  --well: #080a0f;
+  --zebra: #0f141d;
+  --lab: #5edaf2;
+  --val: #f2f5fa;
+  --grey: #828ea2;
+  --dimg: #303846;
+  --div: #1e2634;
+  --rx: #3ee8b5;
+  --tx: #52a8ff;
+  --ok: #38d878;
+  --warn: #ffc436;
+  --hot: #ff8424;
+  --bad: #f84848;
+  --in-oklab: ;
+  accent-color: var(--lab);
+  scrollbar-color: var(--grey) var(--well);
+}
+@supports (background: linear-gradient(in oklab, white, black)) {
+  :root { --in-oklab: in oklab; }
+}
+:where([data-theme="braun"]) {
+  --bg: #100f0e;
+  --cell: #1a1816;
+  --cell-hi: #302c27;
+  --cell-lo: #080706;
+  --well: #0b0a09;
+  --zebra: #151311;
+  --lab: #eea848;
+  --val: #f6f1e6;
+  --grey: #948c80;
+  --dimg: #3e3832;
+  --div: #2a2622;
+  --rx: #f5ac38;
+  --tx: #76ceb4;
+  --ok: #6cd076;
+  --warn: #f8c440;
+  --hot: #f67a2a;
+  --bad: #ee443a;
+}
+:where([data-theme="cobalt"]) {
+  --bg: #080d18;
+  --cell: #0f1728;
+  --cell-hi: #20304e;
+  --cell-lo: #04070e;
+  --well: #050912;
+  --zebra: #0c1322;
+  --lab: #72baff;
+  --val: #eef4ff;
+  --grey: #7c90b0;
+  --dimg: #2a3852;
+  --div: #1a2844;
+  --rx: #4cdcff;
+  --tx: #a884ff;
+  --ok: #40e098;
+  --warn: #ffca44;
+  --hot: #ff8c34;
+  --bad: #ff4e60;
+}
+
 html { box-sizing: border-box; }
 *, *::before, *::after { box-sizing: inherit; }
+canvas { display: block; }
+
+.sr-only {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 body {
   margin: 0;
-  padding-inline: 8px;
-  padding-block: 8px;
+  padding: 6px;
   min-block-size: 100dvh;
   block-size: 100dvh;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  background: #111;
-  color: #eee;
-  font-family: ui-sans-serif, system-ui, sans-serif;
-  overflow: auto;
+  gap: 6px;
+  background: var(--bg);
+  color: var(--val);
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  overflow: hidden;
   touch-action: manipulation;
 }
-header { display: flex; align-items: center; gap: 8px; min-inline-size: 0; }
-#st { flex: 1; min-inline-size: 0; display: flex; align-items: center; gap: 8px; }
-.pill { font-weight: 700; letter-spacing: .06em; font-size: 13px; padding: 2px 8px; border-radius: 999px; background: #2c2c30; color: #aaa; }
-.pill.linked { background: #14663a; color: #d8ffe8; }
-.pill.keys { background: #1a4e86; color: #d6e8ff; }
-.pill.nohost { background: #8a5a10; color: #fff3d6; }
-.ip { color: #8cf; font-size: 13px; overflow: clip; }
-a { color: #9cf; font-size: 13px; }
-header button, #type button { padding-inline: 10px; background: #2c2c30; color: #9cf; }
-#type { display: flex; gap: 6px; }
+
+/* Raised GEEK-lineage beveled cell & recessed well */
+.bevel {
+  background: linear-gradient(to bottom var(--in-oklab), color-mix(in oklab, var(--cell) 88%, white 6%), var(--cell));
+  border-top: 1px solid var(--cell-hi);
+  border-left: 1px solid var(--cell-hi);
+  border-right: 1px solid var(--cell-lo);
+  border-bottom: 1px solid var(--cell-lo);
+  border-radius: 8px;
+}
+.well {
+  background: var(--well);
+  border-top: 1px solid var(--cell-lo);
+  border-left: 1px solid var(--cell-lo);
+  border-right: 1px solid var(--div);
+  border-bottom: 1px solid var(--div);
+  border-radius: 7px;
+}
+
+button, select {
+  margin: 0;
+  min-inline-size: 0;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--val);
+  background: linear-gradient(to bottom var(--in-oklab), color-mix(in oklab, var(--cell) 82%, white 10%), var(--cell));
+  border-top: 1px solid var(--cell-hi);
+  border-left: 1px solid var(--cell-hi);
+  border-right: 1px solid var(--cell-lo);
+  border-bottom: 1px solid var(--cell-lo);
+  border-radius: 6px;
+  padding: 5px 9px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+button:active { transform: translateY(1px); }
+button.chip-on, button.latched {
+  background: color-mix(in oklab, var(--lab) 24%, var(--cell));
+  border-color: var(--lab);
+  color: var(--val);
+}
+button.go {
+  background: color-mix(in oklab, var(--ok) 28%, var(--cell));
+  border-color: var(--ok);
+  color: var(--val);
+  font-weight: 600;
+}
+button.danger {
+  background: color-mix(in oklab, var(--bad) 26%, var(--cell));
+  border-color: var(--bad);
+}
+
+/* Top Status Bar */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  min-inline-size: 0;
+  flex-shrink: 0;
+  user-select: none;
+}
+#st {
+  flex: 1;
+  min-inline-size: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+}
+.pill {
+  font-weight: 800;
+  letter-spacing: .06em;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--dimg);
+  color: var(--val);
+  flex-shrink: 0;
+}
+.pill.linked { background: var(--ok); color: #04180c; }
+.pill.keys { background: var(--tx); color: #041022; }
+.pill.suspended { background: var(--warn); color: #221600; }
+.pill.nohost { background: var(--hot); color: #220b00; }
+
+.leds { display: inline-flex; gap: 3px; flex-shrink: 0; }
+.led {
+  font: 700 10px/1 ui-monospace, monospace;
+  padding: 2px 4px;
+  border-radius: 3px;
+  background: var(--well);
+  color: var(--dimg);
+  border: 1px solid var(--div);
+}
+.led.on {
+  background: color-mix(in oklab, var(--rx) 22%, var(--well));
+  color: var(--rx);
+  border-color: var(--rx);
+}
+
+#ip {
+  min-inline-size: 0;
+  color: var(--lab);
+  font: 600 12px/1.2 ui-monospace, SFMono-Regular, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.xport-badge {
+  font: 600 11px/1 ui-monospace, monospace;
+  color: var(--grey);
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: var(--well);
+  border: 1px solid var(--div);
+  flex-shrink: 0;
+}
+.xport-badge.ws-live { color: var(--rx); border-color: color-mix(in oklab, var(--rx) 45%, var(--div)); }
+
+.theme-seg {
+  display: none;
+  gap: 2px;
+  padding: 2px;
+}
+@media (min-width: 640px) {
+  .theme-seg { display: inline-flex; }
+}
+.theme-seg button {
+  padding: 3px 7px;
+  font-size: 11px;
+  border-radius: 4px;
+}
+
+/* Auto-Helper Pairing Banner */
+#pair-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--warn);
+  flex-shrink: 0;
+}
+#pair-banner[hidden] { display: none; }
+.pair-copy { min-inline-size: 0; flex: 1 1 220px; }
+.pair-copy strong { color: var(--warn); font-size: 12px; display: block; }
+.pair-copy span { color: var(--grey); font-size: 11px; }
+.pair-actions { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+
+/* Main Cockpit Grid */
+.cockpit {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.col-left, .col-right {
+  min-inline-size: 0;
+  min-block-size: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Pinned 16:9 Live Desktop Stage */
+.stage-card {
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.stage-well {
+  position: relative;
+  inline-size: 100%;
+  aspect-ratio: 16 / 9;
+  max-block-size: 28dvh;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+#pvc {
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: contain;
+}
+#stage-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  padding: 12px;
+  color: var(--grey);
+  font-size: 12px;
+  pointer-events: none;
+}
+#loupe-wrap {
+  position: absolute;
+  inset-block-end: 6px;
+  inset-inline-end: 6px;
+  inline-size: clamp(96px, 26%, 168px);
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--lab);
+  border-radius: 5px;
+  overflow: hidden;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .65);
+  background: #000;
+}
+#loupe-wrap[hidden] { display: none; }
+#loupe-cv { inline-size: 100%; block-size: 100%; image-rendering: pixelated; }
+
+.stage-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--grey);
+  user-select: none;
+}
+.stage-bar-left, .stage-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-inline-size: 0;
+}
+#pvst {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Portrait Deck Switcher */
+.deck-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  padding: 3px;
+  flex-shrink: 0;
+  user-select: none;
+}
+.deck-tabs button {
+  padding-block: 6px;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+/* Telemetry 2x2 Grid (GEEK Lineage) */
+.telemetry {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  min-block-size: 0;
+  overflow: auto;
+}
+.t-cell {
+  padding: 7px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-inline-size: 0;
+}
+.t-hdr {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 4px;
+  font: 700 10px/1.1 ui-monospace, monospace;
+  letter-spacing: .06em;
+  color: var(--lab);
+  text-transform: uppercase;
+}
+.t-hero {
+  font: 800 22px/1.05 ui-sans-serif, system-ui, sans-serif;
+  text-shadow: 1px 1px 0 #000;
+}
+.t-sub {
+  font: 11px/1.25 ui-monospace, monospace;
+  color: var(--grey);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.spark-well {
+  block-size: 38px;
+  inline-size: 100%;
+  overflow: hidden;
+}
+.spark-well canvas { inline-size: 100%; block-size: 100%; }
+.cores-strip {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  block-size: 30px;
+  padding: 3px;
+}
+.core-bar {
+  flex: 1 1 0;
+  min-inline-size: 3px;
+  block-size: 100%;
+  background: var(--bg);
+  position: relative;
+  border-radius: 1px;
+}
+.core-bar i {
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: 0;
+  background: var(--rx);
+}
+.proc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font: 11px/1.3 ui-monospace, monospace;
+}
+.proc-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.proc-row:nth-child(odd) { background: var(--zebra); }
+.proc-row span:first-child {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Type / Clipboard Form */
+#type-form {
+  display: flex;
+  gap: 4px;
+  min-inline-size: 0;
+  flex-shrink: 0;
+}
 #txt {
   flex: 1;
   min-inline-size: 0;
-  font-size: 16px;
-  padding: 8px;
-  border: 0;
+  font-size: 14px;
+  padding: 6px 8px;
+  color: var(--val);
   border-radius: 6px;
-  background: #1c1c20;
-  color: #eee;
 }
-#kb { display: flex; flex-direction: column; gap: 2px; }
-.row { display: grid; grid-template-columns: repeat(16, minmax(0, 1fr)); gap: 2px; }
-button {
-  margin: 0;
-  min-inline-size: 0;
-  border: 0;
-  border-radius: 4px;
-  padding-block: 9px;
-  padding-inline: 0;
-  background: #4a4a52;
-  color: #fff;
-  font-family: inherit;
-  font-size: clamp(10px, 2.4vw, 14px);
-  line-height: 1.1;
-  touch-action: manipulation;
+
+/* Quick-Key Strip */
+.quick-strip {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 4px;
+  flex-shrink: 0;
+  user-select: none;
 }
-button.mod { background: #2c2c30; color: #ddd; }
-button.fn { background: #2c2c30; color: #9cf; }
-button.go { background: #2a6; color: #042; }
-button.sp { background: #5a5a64; }
-button.latched { background: #2a6; color: #042; }
-button.danger { background: #622; color: #fff; }
-button.hw { opacity: .55; }
-#pad {
+.quick-strip button {
+  padding-block: 6px;
+  font-weight: 600;
+  font-size: 11px;
+}
+
+/* Generous Recessed Relative Trackpad Well */
+.pad-shell {
   flex: 1 1 auto;
-  min-block-size: 140px;
+  min-block-size: 155px;
+  padding: 6px;
   display: flex;
   flex-direction: column;
-  background: linear-gradient(#2a2d34, #1a1c22);
-  border: 1px solid #3a3e48;
-  border-radius: 14px;
+  gap: 6px;
+  user-select: none;
 }
-.pad-main { flex: 1; display: flex; min-block-size: 0; }
+.pad-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.pad-toolbar-group { display: flex; gap: 4px; align-items: center; }
+.pad-toolbar button { padding: 3px 7px; font-size: 11px; }
+
+.pad-main {
+  flex: 1 1 auto;
+  min-block-size: 110px;
+  display: flex;
+  gap: 5px;
+}
 #surface {
   position: relative;
   flex: 1;
@@ -79,11 +498,13 @@ button.hw { opacity: .55; }
   display: grid;
   place-items: center;
   touch-action: none;
-  color: #667;
-  letter-spacing: .08em;
-  font-size: 12px;
   overflow: hidden;
-  border-top-left-radius: 13px;
+  background-color: var(--well);
+  background-image: radial-gradient(color-mix(in oklab, var(--lab) 16%, transparent) 1px, transparent 1px);
+  background-size: 16px 16px;
+}
+#surface.dragging {
+  box-shadow: inset 0 0 0 1px var(--rx);
 }
 #view {
   position: absolute;
@@ -93,91 +514,456 @@ button.hw { opacity: .55; }
   object-fit: contain;
   image-rendering: pixelated;
   pointer-events: none;
-  opacity: .88;
+  opacity: .84;
 }
-#loupe {
-  position: absolute;
-  inset-block-start: 6px;
-  inset-inline-end: 6px;
-  z-index: 2;
-  padding: 4px 8px;
-  font-size: 11px;
-  background: rgba(20, 24, 34, .82);
-  color: #9cf;
-  border: 1px solid #3a465e;
+#view[hidden] { display: none; }
+#pad-label {
+  color: var(--dimg);
+  font: 700 11px/1.3 ui-monospace, monospace;
+  letter-spacing: .12em;
+  text-align: center;
+  pointer-events: none;
+}
+.scrolls {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.scrolls button {
+  flex: 1;
+  padding-inline: 11px;
+  font-weight: 700;
+}
+.pad-btns {
+  display: grid;
+  grid-template-columns: 1.3fr .8fr 1.3fr;
+  gap: 5px;
+}
+.pad-btns button {
+  padding-block: 9px;
+  font-weight: 600;
   border-radius: 6px;
 }
-#loupe.active { background: #145266; color: #dff8ff; border-color: #4ad8ff; }
-.leds { display: inline-flex; gap: 3px; align-items: center; }
-.led {
-  font-size: 10px;
-  font-weight: 700;
-  padding: 1px 4px;
-  border-radius: 4px;
-  background: #22242a;
-  color: #556;
-  border: 1px solid #333640;
+
+/* 16-Column Tactile Keyboard */
+.drawer-bar {
+  display: none;
+  gap: 4px;
+  user-select: none;
 }
-.led.on { background: #165e3a; color: #9effc8; border-color: #38d880; }
-.scrolls { display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 8px; }
-.scrolls button { background: rgba(255, 255, 255, .08); color: #ccc; padding-inline: 12px; }
-.pad-btns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; padding: 8px; }
-.pad-btns button { background: rgba(255, 255, 255, .08); color: #ccc; border-radius: 8px; }
-#mode.shell { background: #6a2c7a; color: #f3e0ff; }
-#pv { display: flex; flex-direction: column; gap: 4px; }
-#pv summary { cursor: pointer; font-size: 13px; color: #bbb; }
-#pvc { inline-size: 100%; max-block-size: 45dvh; object-fit: contain; background: #000; border-radius: 6px; }
-#pvbar { display: flex; gap: 8px; align-items: center; font-size: 12px; color: #aaa; flex-wrap: wrap; }
-#pcstats { font: 12px/1.4 ui-monospace, monospace; color: #cde; }
-#pcstats .core { display: inline-block; inline-size: 6px; block-size: 14px; margin-inline-end: 1px; background: #2c2c30; vertical-align: middle; position: relative; }
-#pcstats .core i { position: absolute; inset-inline: 0; inset-block-end: 0; background: #3aa76d; }
-#pwr { font-size: 13px; color: #bbb; min-block-size: 1em; }
-</style></head><body>
-<header>
+#kb {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex-shrink: 0;
+  user-select: none;
+}
+.row {
+  display: grid;
+  grid-template-columns: repeat(16, minmax(0, 1fr));
+  gap: 3px;
+}
+#kb button {
+  padding-block: 8px;
+  padding-inline: 0;
+  font-size: clamp(0.625rem, 0.5rem + 0.8vw, 0.8125rem);
+  line-height: 1.1;
+  border-radius: 5px;
+}
+#kb button.mod { color: var(--grey); }
+#kb button.fn { color: var(--lab); font-weight: 700; }
+#kb button.sp { background: color-mix(in oklab, var(--cell) 75%, white 12%); }
+#kb button.hw { opacity: .55; }
+
+/* Inline Serial Terminal Deck / Drawer */
+#term-card {
+  flex: 1 1 auto;
+  min-block-size: 150px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.term-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+}
+#term-out {
+  flex: 1 1 auto;
+  min-block-size: 90px;
+  margin: 0;
+  padding: 6px 8px;
+  font: 12px/1.35 ui-monospace, SFMono-Regular, monospace;
+  color: var(--rx);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+#term-form {
+  display: flex;
+  gap: 4px;
+  min-inline-size: 0;
+}
+#term-cmd {
+  flex: 1;
+  min-inline-size: 0;
+  font: 13px/1.2 ui-monospace, monospace;
+  padding: 5px 8px;
+  color: var(--val);
+}
+
+#pwr {
+  font: 11px/1.2 ui-monospace, monospace;
+  color: var(--grey);
+  min-block-size: 1.2em;
+  padding-inline: 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Portrait deck visibility */
+@media (max-width: 919px) {
+  body[data-deck="pad"] .telemetry,
+  body[data-deck="pad"] #type-form,
+  body[data-deck="pad"] #kb,
+  body[data-deck="pad"] #term-card { display: none; }
+
+  body[data-deck="keys"] .telemetry,
+  body[data-deck="keys"] .quick-strip,
+  body[data-deck="keys"] #term-card { display: none; }
+  body[data-deck="keys"] .stage-well { max-block-size: 19dvh; }
+  body[data-deck="keys"] .pad-shell { min-block-size: 110px; }
+  body[data-deck="keys"] .pad-toolbar { display: none; }
+
+  body[data-deck="term"] .telemetry,
+  body[data-deck="term"] #type-form,
+  body[data-deck="term"] .quick-strip,
+  body[data-deck="term"] .pad-shell,
+  body[data-deck="term"] #kb { display: none; }
+
+  body[data-deck="stats"] #type-form,
+  body[data-deck="stats"] .quick-strip,
+  body[data-deck="stats"] .pad-shell,
+  body[data-deck="stats"] #kb,
+  body[data-deck="stats"] #term-card { display: none; }
+  body[data-deck="stats"] .telemetry { flex: 1 1 auto; }
+}
+
+/* Wide Laptop / Tablet Side-by-Side Split Cockpit */
+@media (min-width: 920px) {
+  .deck-tabs { display: none; }
+  .cockpit {
+    display: grid;
+    grid-template-columns: minmax(0, 1.28fr) minmax(370px, 1fr);
+    gap: 8px;
+  }
+  .stage-well { max-block-size: 46dvh; }
+  .telemetry { flex: 1 1 auto; }
+  .drawer-bar { display: flex; }
+  body[data-drawer="kb"] #term-card { display: none; }
+  body[data-drawer="term"] #kb { display: none; }
+}
+
+/* Modal Dialogs (light-dismiss enabled) */
+dialog {
+  color: var(--val);
+  background: var(--cell);
+  border: 1px solid var(--cell-hi);
+  border-radius: 10px;
+  padding: 14px;
+  max-inline-size: min(440px, calc(100% - 24px));
+  inline-size: 100%;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .75);
+}
+dialog::backdrop {
+  background-color: rgba(0, 0, 0, 0.58);
+  backdrop-filter: blur(2px);
+}
+.dlg-hdr {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-block-end: 10px;
+}
+.dlg-hdr h2 {
+  margin: 0;
+  font-size: 14px;
+  color: var(--lab);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.dlg-sec {
+  margin-block: 10px;
+  padding-block-start: 8px;
+  border-top: 1px solid var(--div);
+}
+.dlg-sec h3 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: var(--grey);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.dlg-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.dlg-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+}
+.dlg-links a { color: var(--lab); }
+</style>
+</head>
+<body data-deck="pad" data-drawer="kb">
+
+<header class="topbar bevel">
   <div id="st">
     <span id="pill" class="pill">…</span>
     <span id="leds" class="leds" title="Host Keyboard LEDs (Num / Caps / Scroll)">
       <span id="led-num" class="led">N</span><span id="led-caps" class="led">C</span><span id="led-scroll" class="led">S</span>
     </span>
-    <span id="ip" class="ip"></span>
+    <span id="ip">connecting…</span>
   </div>
-  <button type="button" id="ping" title="Bounce CapsLock twice to verify host OS is responsive">Ping</button>
-  <button type="button" id="mode" title="Switch the host serial port between helper (stats + still) and a login shell">serial: …</button>
-  <a href="term.html">term</a>
-  <button type="button" id="pin">PIN</button>
+  <span id="xport" class="xport-badge" title="Active HID input transport">http</span>
+  <div class="theme-seg well" role="group" aria-label="Color Theme">
+    <button type="button" data-theme-pick="slate" class="chip-on">Slate</button>
+    <button type="button" data-theme-pick="braun">Braun</button>
+    <button type="button" data-theme-pick="cobalt">Cobalt</button>
+  </div>
+  <button type="button" id="mode" title="Switch host serial between telemetry helper and interactive shell">serial: …</button>
+  <button type="button" id="menu-btn" aria-haspopup="dialog">⚡ Menu</button>
 </header>
-<details id="pv"><summary>Desktop preview &amp; PC stats</summary>
-  <canvas id="pvc" width="960" height="540"></canvas>
-  <div id="pvbar">quality
-    <select id="pvq"><option value="low">low (640×360, 1 fps)</option><option value="med">med (960×540, 2 fps)</option><option value="high">high (1280×720, 4 fps)</option></select>
-    <span id="pvst">…</span></div>
-  <div id="pcstats"></div>
-</details>
-<div id="type">
-  <input id="txt" placeholder="type text or sync clipboard" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-  <button type="button" id="send" title="Type as US HID keystrokes">Send</button>
-  <button type="button" id="clip-push" title="Push UTF-8 text to host clipboard">Clip ↑</button>
-  <button type="button" id="clip-pull" title="Pull UTF-8 text from host clipboard">Clip ↓</button>
+
+<section id="pair-banner" class="bevel" hidden aria-live="polite">
+  <div class="pair-copy">
+    <strong id="pair-title">Helper not detected on target PC</strong>
+    <span id="pair-sub">Keyboard &amp; trackpad work now. Pair once (unlocked desktop) for auto-streamed telemetry, preview &amp; clipboard.</span>
+  </div>
+  <div class="pair-actions">
+    <button type="button" id="pair-linux" class="go">⌨ Pair Linux / Mac</button>
+    <button type="button" id="pair-win" class="go">⌨ Pair Windows</button>
+    <button type="button" id="pair-probe">↻ Probe</button>
+  </div>
+</section>
+
+<div class="deck-tabs bevel" role="tablist" aria-label="Console Deck">
+  <button type="button" role="tab" data-deck-btn="pad" class="chip-on" aria-selected="true">Trackpad</button>
+  <button type="button" role="tab" data-deck-btn="keys" aria-selected="false">Pad + Keys</button>
+  <button type="button" role="tab" data-deck-btn="term" aria-selected="false">Terminal</button>
+  <button type="button" role="tab" data-deck-btn="stats" aria-selected="false">Stats</button>
 </div>
-<div id="kb"></div>
-<div id="pwr"></div>
-<div id="pad">
-  <div class="pad-main">
-    <div id="surface">
-      <canvas id="view" width="240" height="135" hidden></canvas>
-      <span id="pad-label">TRACKPAD</span>
-      <button type="button" id="loupe" title="Toggle live desktop preview / 1:1 cursor loupe on trackpad">view: off</button>
+
+<main class="cockpit">
+  <div class="col-left">
+    <section class="stage-card bevel" aria-label="Target Desktop Preview">
+      <div class="stage-well well" id="stage-well">
+        <canvas id="pvc" width="960" height="540"></canvas>
+        <div id="stage-empty">Live Desktop Preview — select Low / Med / High below when LINKED</div>
+        <div id="loupe-wrap" hidden>
+          <canvas id="loupe-cv" width="240" height="135"></canvas>
+        </div>
+      </div>
+      <div class="stage-bar">
+        <div class="stage-bar-left">
+          <label for="pvq" class="sr-only">Preview quality</label>
+          <select id="pvq" title="Desktop preview stream quality">
+            <option value="off">Preview: Off</option>
+            <option value="low">Low (640×360)</option>
+            <option value="med" selected>Med (960×540)</option>
+            <option value="high">High (1280×720)</option>
+          </select>
+          <button type="button" id="loupe-inset-btn" title="Show 1:1 cursor loupe inset">Loupe 1:1</button>
+          <span id="pvst">idle</span>
+        </div>
+        <div class="stage-bar-right">
+          <button type="button" id="fs-btn" title="Fullscreen desktop stage">⛶</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="telemetry" aria-label="Target PC Telemetry">
+      <div class="t-cell bevel">
+        <div class="t-hdr"><span>CPU Thermal</span><span id="tc-sensors">--</span></div>
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px">
+          <span id="tc-temp" class="t-hero">--°C</span>
+          <span id="tc-load" class="t-sub">-- load</span>
+        </div>
+        <div class="spark-well well"><canvas id="sp-temp" width="220" height="38"></canvas></div>
+        <span id="tc-temp-sr" class="sr-only"></span>
+      </div>
+
+      <div class="t-cell bevel">
+        <div class="t-hdr"><span>Cores &amp; Procs</span><span id="tc-ncpu">--</span></div>
+        <div id="tc-cores" class="cores-strip well" aria-hidden="true"></div>
+        <div id="tc-procs" class="proc-list"><div class="t-sub">waiting for LINKED…</div></div>
+      </div>
+
+      <div class="t-cell bevel">
+        <div class="t-hdr"><span>Memory &amp; Disk</span><span id="tc-up">--</span></div>
+        <div id="tc-mem" class="t-hero" style="font-size:17px">RAM --</div>
+        <div id="tc-disk" class="t-sub">DISK --</div>
+        <div id="tc-host" class="t-sub">--</div>
+      </div>
+
+      <div class="t-cell bevel">
+        <div class="t-hdr"><span id="tc-iface">Network</span><span id="tc-rates">↓-- ↑--</span></div>
+        <div class="spark-well well"><canvas id="sp-net" width="220" height="38"></canvas></div>
+        <div id="tc-netp" class="proc-list"></div>
+      </div>
+    </section>
+  </div>
+
+  <div class="col-right">
+    <form id="type-form" autocomplete="off">
+      <label for="txt" class="sr-only">Type text or sync host clipboard</label>
+      <input id="txt" class="well" placeholder="Type text to host or sync clipboard…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+      <button type="submit" id="send" class="go" title="Type as US HID keystrokes">Type ⏎</button>
+      <button type="button" id="clip-push" title="Push text to host clipboard">Clip ↑</button>
+      <button type="button" id="clip-pull" title="Pull text from host clipboard">Clip ↓</button>
+    </form>
+
+    <div class="quick-strip" role="toolbar" aria-label="Quick Modifiers and Keys">
+      <button type="button" data-qk="esc">Esc</button>
+      <button type="button" data-qk="tab">Tab</button>
+      <button type="button" data-qm="ctrl">Ctrl</button>
+      <button type="button" data-qm="alt">Alt</button>
+      <button type="button" data-qm="win">Win</button>
+      <button type="button" data-qk="backspace" aria-label="Backspace">⌫</button>
+      <button type="button" data-qk="enter" aria-label="Enter">⏎</button>
+      <button type="button" id="qk-cad" title="Send Ctrl+Alt+Del">C-A-D</button>
     </div>
-    <div class="scrolls">
-      <button type="button" id="su" aria-label="Scroll up">↑</button>
-      <button type="button" id="sd" aria-label="Scroll down">↓</button>
+
+    <section id="pad" class="pad-shell bevel" aria-label="Relative Trackpad">
+      <div class="pad-toolbar">
+        <div class="pad-toolbar-group">
+          <button type="button" id="drag-lock" title="Latch left mouse button for effortless dragging">Drag-Lock</button>
+          <button type="button" id="accel-btn" title="Cycle pointer acceleration curve">Accel: 1.6x</button>
+        </div>
+        <div class="pad-toolbar-group">
+          <button type="button" id="loupe" title="Overlay 240x135 still or 1:1 loupe inside trackpad">Pad View: Off</button>
+        </div>
+      </div>
+      <div class="pad-main">
+        <div id="surface" class="well">
+          <canvas id="view" width="240" height="135" hidden></canvas>
+          <span id="pad-label">RELATIVE TRACKPAD<br><small style="letter-spacing:.04em;opacity:.75">1F tap = L-click · 2F scroll &amp; R-tap</small></span>
+        </div>
+        <div class="scrolls">
+          <button type="button" id="su" aria-label="Scroll up">↑</button>
+          <button type="button" id="sd" aria-label="Scroll down">↓</button>
+        </div>
+      </div>
+      <div class="pad-btns">
+        <button type="button" data-b="1">Left</button>
+        <button type="button" data-b="4">Mid</button>
+        <button type="button" data-b="2">Right</button>
+      </div>
+    </section>
+
+    <div class="drawer-bar">
+      <button type="button" data-drawer-btn="kb" class="chip-on">⌨ Tactile Keyboard</button>
+      <button type="button" data-drawer-btn="term">>_ USB Serial Terminal</button>
+      <a href="term.html" style="margin-inline-start:auto;align-self:center;color:var(--lab);font-size:11px">Full Term ↗</a>
+    </div>
+
+    <div id="kb" aria-label="Tactile US Keyboard"></div>
+
+    <section id="term-card" class="bevel" aria-label="USB Serial Terminal">
+      <div class="term-hdr">
+        <span id="term-st" style="color:var(--lab)">● USB serial</span>
+        <div style="display:flex;gap:4px">
+          <button type="button" id="term-mode-btn">Switch helper ⇄ shell</button>
+          <button type="button" data-tctl="&#x03;">^C</button>
+          <button type="button" data-tctl="&#x04;">^D</button>
+        </div>
+      </div>
+      <pre id="term-out" class="well"></pre>
+      <form id="term-form" autocomplete="off">
+        <label for="term-cmd" class="sr-only">Serial terminal command</label>
+        <input id="term-cmd" class="well" placeholder="Send command to serial shell…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+        <button type="submit" class="go">Send ⏎</button>
+      </form>
+    </section>
+  </div>
+</main>
+
+<div id="pwr" role="status" aria-live="polite"></div>
+
+<dialog id="menu-dlg" closedby="any" aria-labelledby="menu-dlg-title">
+  <div class="dlg-hdr">
+    <h2 id="menu-dlg-title">KVM System &amp; Power</h2>
+    <form method="dialog"><button type="submit">Close</button></form>
+  </div>
+
+  <div class="dlg-sec">
+    <h3>Synced Display Theme (Web + GEEK)</h3>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px">
+      <button type="button" data-theme-pick="slate">Instrument Slate</button>
+      <button type="button" data-theme-pick="braun">Warm Braun</button>
+      <button type="button" data-theme-pick="cobalt">Machined Cobalt</button>
     </div>
   </div>
-  <div class="pad-btns">
-    <button type="button" data-b="1">Left</button>
-    <button type="button" data-b="4">Middle</button>
-    <button type="button" data-b="2">Right</button>
+
+  <div class="dlg-sec">
+    <h3>Target Host Actions</h3>
+    <div class="dlg-grid">
+      <button type="button" data-pwr="host:wake:Wake suspended host">☀ Wake Host (S3)</button>
+      <button type="button" data-pwr="host:sleep:Sleep host">☾ Sleep Host</button>
+      <button type="button" data-pwr="host:power:Shut down host">⏻ Host Power</button>
+      <button type="button" id="ping">⚡ CapsLock Ping</button>
+      <button type="button" data-macro="ctrl_alt_del">Ctrl + Alt + Del</button>
+      <button type="button" data-macro="win_l">Lock Host (Win+L)</button>
+    </div>
   </div>
-</div>
+
+  <div class="dlg-sec">
+    <h3>Host Pairing &amp; Downloads</h3>
+    <div class="dlg-grid" style="margin-block-end:6px">
+      <button type="button" id="dlg-pair-linux">⌨ 1-Tap Pair Linux</button>
+      <button type="button" id="dlg-pair-win">⌨ 1-Tap Pair Windows</button>
+    </div>
+    <div class="dlg-links">
+      <a href="/setup/install-linux.sh" download>install-linux.sh</a>
+      <a href="/setup/install-windows.ps1" download>install-windows.ps1</a>
+      <a href="/setup/kvm_stub.py" download>kvm_stub.py</a>
+    </div>
+  </div>
+
+  <div class="dlg-sec">
+    <h3>Pi Zero W Appliance &amp; Auth</h3>
+    <div class="dlg-grid">
+      <button type="button" id="pin">🔑 Change PIN</button>
+      <button type="button" id="rst-hist">↺ Reset Net History</button>
+      <button type="button" class="danger" data-pwr="zero:reboot:Reboot the Zero">Reboot Zero</button>
+      <button type="button" class="danger" data-pwr="zero:shutdown:Shut down the Zero">Halt Zero</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="pin-dlg" closedby="any" aria-labelledby="pin-dlg-title">
+  <form id="pin-form">
+    <div class="dlg-hdr">
+      <h2 id="pin-dlg-title">Console PIN</h2>
+      <button type="button" id="pin-cancel">Later</button>
+    </div>
+    <p id="pin-msg" style="margin:0 0 8px;color:var(--grey);font-size:12px">Enter the 8-digit PIN from <code>/etc/pi-zero-w-hid-kvm/pin</code>.</p>
+    <div style="display:flex;gap:6px">
+      <label for="pin-inp" class="sr-only">8-digit Console PIN</label>
+      <input id="pin-inp" class="well" type="password" inputmode="numeric" placeholder="Console PIN" style="flex:1;padding:7px 9px;color:var(--val);font-size:15px" autocomplete="current-password">
+      <button type="submit" class="go">Unlock</button>
+    </div>
+  </form>
+</dialog>
+
 <script src="app.js"></script>
-</body></html>
+</body>
+</html>

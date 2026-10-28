@@ -77,7 +77,7 @@ CTL = b"\x1e\x1fKVMCTL:"
 CTL_MAX = len(CTL) + 12         # longest valid non-clipboard packet body before newline ("stats:off")
 CTL_CLIP_MAX = len(CTL) + 1500  # longest valid cset:<base64> packet before newline
 MODES = {b"helper": 0, b"shell": 1}
-SIMPLE_CTLS = {b"frame", b"loupe", b"cget"}
+SIMPLE_CTLS = {b"frame", b"loupe", b"cget", b"probe"}
 QCMDS = {b"q:low": "low", b"q:med": "med", b"q:high": "high", b"q:off": "off"}
 # None until the Zero sends KVMCTL:q:<level>; until then no type 7-9 packets go out.
 QUALITY_STATE = {"q": None}
@@ -698,10 +698,29 @@ def read_stats():
         mem = 100.0 * (total - avail) / total
         temp = read_temp()
     except (OSError, ValueError, KeyError, IndexError, ZeroDivisionError):
+        if sys.platform == "darwin":
+            return _read_stats_darwin()
         return None
     if temp is None or not (math.isfinite(load) and math.isfinite(mem)):
         return None
     return temp, load, mem
+
+
+def _read_stats_darwin():
+    """macOS stdlib fallback using os.getloadavg() + vm_stat/sysctl."""
+    try:
+        load = float(os.getloadavg()[0])
+        tot = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], timeout=1).strip())
+        vm = subprocess.check_output(["vm_stat"], text=True, timeout=1)
+        ps_m = re.search(r"page size of (\d+) bytes", vm)
+        ps = int(ps_m.group(1)) if ps_m else 4096
+        pages = {k.strip(): int(v.strip().rstrip(".")) for k, v in
+                 (ln.split(":", 1) for ln in vm.splitlines()[1:] if ":" in ln and ln.split(":", 1)[1].strip().rstrip(".").isdigit())}
+        free_b = (pages.get("Pages free", 0) + pages.get("Pages speculative", 0) + pages.get("Pages inactive", 0)) * ps
+        mem = max(0.0, min(100.0, 100.0 * (tot - free_b) / tot))
+        return 45.0, load, mem
+    except Exception:
+        return None
 
 
 def screen_size(display):
@@ -818,10 +837,52 @@ def decorate_frame(raw, prev_raw=None, cursor_xy=None):
     return bytes(buf)
 
 
+def _capture_wayland_or_macos(crop="full", prev_raw=None):
+    """Fallback 240x135 RGB565-LE still on Wayland (grim) or macOS (screencapture)."""
+    if "KVM_DISPLAY" in os.environ and not os.environ["KVM_DISPLAY"].strip():
+        return None, prev_raw
+    if kvm_preview.Image is None:
+        return None, prev_raw
+    import io, tempfile
+    im = None
+    if os.environ.get("WAYLAND_DISPLAY") and shutil.which("grim"):
+        try:
+            r = subprocess.run(["grim", "-t", "ppm", "-"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=1.5, check=False)
+            if r.returncode == 0 and r.stdout:
+                im = kvm_preview.Image.open(io.BytesIO(r.stdout)).convert("RGB")
+        except Exception:
+            im = None
+    elif sys.platform == "darwin" and shutil.which("screencapture"):
+        fd, tmp = tempfile.mkstemp(suffix=".jpg", prefix="kvm-st-")
+        os.close(fd)
+        try:
+            r = subprocess.run(["screencapture", "-x", "-t", "jpg", tmp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1.5, check=False)
+            if r.returncode == 0 and os.path.getsize(tmp) > 0:
+                with kvm_preview.Image.open(tmp) as src:
+                    im = src.convert("RGB")
+        except Exception:
+            im = None
+        finally:
+            try: os.unlink(tmp)
+            except OSError: pass
+    if im is None:
+        return None, prev_raw
+    w, h = im.size
+    if crop == "loupe" and w >= 240 and h >= 135:
+        ox, oy = (w - 240) // 2, (h - 135) // 2
+        im = im.crop((ox, oy, ox + 240, oy + 135))
+        cxy = (120, 67)
+    else:
+        im = im.resize((240, 135))
+        cxy = None
+    raw = kvm_preview.rgb565_still(im.tobytes(), 240, 135)
+    return decorate_frame(raw, prev_raw=prev_raw, cursor_xy=cxy), raw
+
+
 def capture_with_state(display, crop="full", prev_raw=None):
     """Return (decorated_rgb565, raw_rgb565) or (None, prev_raw)."""
     if not display:
-        return None, prev_raw
+        return _capture_wayland_or_macos(crop=crop, prev_raw=prev_raw)
     size = screen_size(display)
     if not size:
         return None, prev_raw
@@ -867,9 +928,9 @@ def capture(display, crop="full", prev_raw=None):
 
 
 def _clip_env(display):
-    if not display and not os.environ.get("WAYLAND_DISPLAY"):
-        return None
     if "KVM_DISPLAY" in os.environ and not os.environ["KVM_DISPLAY"].strip():
+        return None
+    if not display and not os.environ.get("WAYLAND_DISPLAY") and sys.platform != "darwin":
         return None
     env = dict(os.environ)
     if display:
@@ -886,6 +947,7 @@ def get_clipboard(display=""):
         ["wl-paste", "-n"],
         ["xclip", "-selection", "clipboard", "-o"],
         ["xsel", "--clipboard", "--output"],
+        ["pbpaste"],
     )
     for cmd in cmds:
         try:
@@ -907,6 +969,7 @@ def set_clipboard(data, display=""):
         ["wl-copy"],
         ["xclip", "-selection", "clipboard", "-i"],
         ["xsel", "--clipboard", "--input"],
+        ["pbcopy"],
     )
     for cmd in cmds:
         try:
@@ -996,8 +1059,12 @@ def detect_caps(display):
         "display": bool(display),
     }
     test = os.environ.get("KVM_PREVIEW_SOURCE") == "test"
-    have["preview"] = have["pillow"] and (test or (have["ffmpeg"] and have["xrandr"] and have["display"]))
-    have["still"] = have["ffmpeg"] and have["xrandr"] and have["display"]
+    alt_cap = have["pillow"] and (
+        (sys.platform == "darwin" and bool(shutil.which("screencapture")))
+        or (bool(os.environ.get("WAYLAND_DISPLAY")) and bool(shutil.which("grim")))
+    )
+    have["preview"] = have["pillow"] and (test or (have["ffmpeg"] and have["xrandr"] and have["display"]) or alt_cap)
+    have["still"] = (have["ffmpeg"] and have["xrandr"] and have["display"]) or alt_cap
     return have
 
 
@@ -1140,7 +1207,8 @@ def send_helper_packets(fd, display, announced, state=None, want_frame=True):
     if disk_pct >= 0 or lan_ip or top_proc:
         blob += pack_triage(disk_pct, top_cpu, lan_ip, top_proc)
     frame = None
-    if want_frame and display and (now - state.last_frame_at >= 1.0):
+    can_still = bool(display) or getattr(state, "still_ok", False)
+    if want_frame and can_still and (now - state.last_frame_at >= 1.0):
         frame, state.prev_raw = capture_with_state(display, crop=state.crop_mode, prev_raw=state.prev_raw)
         if frame:
             blob += pack_frame(frame)
@@ -1178,7 +1246,7 @@ def send_helper_packets(fd, display, announced, state=None, want_frame=True):
     if q is not None:
         blob += kvm_preview.pack_quality(q if getattr(state, "preview_ok", False) else "off")
     _out(fd, blob)
-    has_frame = bool(frame) or (want_frame and bool(display) and state.last_frame_at > 0)
+    has_frame = bool(frame) or (want_frame and can_still and state.last_frame_at > 0)
     st_str = ("stats" if stats else "no-stats") + ("+net" if net else "") + ("+frame" if has_frame else "")
     if st_str != announced:
         print(st_str, flush=True)
@@ -1203,12 +1271,13 @@ def run(fd, display, have=None):
     next_prev = key_at = 0.0
     streaming = lambda: have["preview"] and QUALITY_STATE["q"] in kvm_preview.QUALITY
     hstate.preview_ok = have["preview"]
+    hstate.still_ok = have["still"]
     try:
         ob.send(pack_mode(b"helper"))
         while True:
             now = time.monotonic()
             if shell is None and now >= next_tick:
-                want_frame = bool(display) and (now <= hstate.frame_until)
+                want_frame = (bool(display) or have["still"]) and (now <= hstate.frame_until)
                 announced = send_helper_packets(ob, display, announced, state=hstate, want_frame=want_frame)
                 next_tick = time.monotonic() + INTERVAL
             if shell is None and streaming():
@@ -1274,11 +1343,14 @@ def run(fd, display, have=None):
                                 hstate.prev_raw = None
                             hstate.crop_mode = new_crop
                             hstate.frame_until = time.monotonic() + FRAME_LEASE_S
-                            if display and (crop_changed or time.monotonic() - hstate.last_frame_at >= 0.8):
+                            if (display or have["still"]) and (crop_changed or time.monotonic() - hstate.last_frame_at >= 0.8):
                                 frame, hstate.prev_raw = capture_with_state(display, crop=hstate.crop_mode, prev_raw=hstate.prev_raw)
                                 if frame:
                                     ob.send(pack_frame(frame))
                                     hstate.last_frame_at = time.monotonic()
+                        elif val == b"probe":
+                            ob.send(pack_mode(b"helper"))
+                            next_tick = 0.0
                         elif val == b"cget":
                             clip = get_clipboard(display)
                             if clip is not None:
@@ -1342,15 +1414,29 @@ def run(fd, display, have=None):
             shell.close()
 
 
+def discover_port():
+    env_dev = os.environ.get("KVM_HOST_DEV", "").strip()
+    if env_dev:
+        return env_dev
+    for pat in ("/dev/serial/by-id/usb-DIY_PiZeroW_HID_KVM_*", "/dev/cu.usbmodem*"):
+        matches = sorted(glob.glob(pat))
+        if matches:
+            return matches[0]
+    return "/dev/ttyACM0"
+
+
 def main():
-    dev = os.environ.get("KVM_HOST_DEV", "/dev/ttyACM0")
+    once = "--once" in sys.argv[1:]
     display = os.environ.get("KVM_DISPLAY", os.environ.get("DISPLAY", "")).strip()
     have = detect_caps(display)
     log_caps(have)                       # once; missing pieces just switch features off
     while True:
+        dev = discover_port()
         fd = None
+        connected = False
         try:
             fd = open_port(dev)
+            connected = True
             print(f"helper on {dev}", flush=True)
             run(fd, display, have)
         except (OSError, TimeoutError) as exc:
@@ -1361,6 +1447,8 @@ def main():
                     os.close(fd)
                 except OSError:
                     pass
+        if once and connected:
+            return
         time.sleep(2)
 
 

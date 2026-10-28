@@ -182,6 +182,22 @@ def system_key(name):
     """Tap a System Control key (power/sleep/wake) on the host."""
     _write(SYS_DEV, bytes([SYS_KEYS[name]])); time.sleep(0.1); _write(SYS_DEV, b"\x00")
 
+def wake_host():
+    """Wake a suspended (S3) or sleeping USB host via UDC remote wakeup + HID System Wake."""
+    for p in glob.glob("/sys/class/udc/*/srp") + glob.glob("/sys/class/udc/*/device/wakeup"):
+        try:
+            if p.endswith("/srp"):
+                with open(p, "w") as f: f.write("1")
+        except OSError:
+            pass
+    try:
+        system_key("wake")
+        return
+    except (HIDTimeout, OSError):
+        pass
+    # Fallback: tap Left Shift on boot keyboard interface
+    key_combo([], ["shift"])
+
 def status():
     """hid_ready: device nodes exist. host_connected: UDC state == 'configured'
     (host enumerated us). Approximate: a powered-but-idle host may still read configured;
@@ -190,5 +206,7 @@ def status():
     state = open(udcs[0]).read().strip() if udcs else "no-udc"
     return {"hid_ready": os.path.exists(KBD_DEV) and os.path.exists(MOUSE_DEV),
             "power_keys": os.path.exists(SYS_DEV),
-            "host_connected": state == "configured", "udc_state": state,
+            "host_connected": state == "configured",
+            "host_suspended": state == "suspended",
+            "udc_state": state,
             "leds": read_leds()}

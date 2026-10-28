@@ -64,7 +64,7 @@ GET /api/term needs the X-KVM-PIN header too (host terminal output can hold secr
 """
 import argparse, fcntl, signal, hmac, json, os, socket, struct, subprocess, threading, time
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
-import hid, history, hostview, term
+import autolaunch, hid, history, hostview, term, ws
 from urllib.parse import urlsplit, parse_qs
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -84,6 +84,43 @@ MODE_REQ = {"mode": None, "quality": None}
 HISTORY = history.NetHistory(os.environ.get("KVM_DATA_DIR", "/var/lib/kvm"),
                              require_mount=os.environ.get("KVM_DATA_REQUIRE_MOUNT", "1") != "0")
 STATS = hostview.StatsKeeper(hostview.shared, min_s=float(os.environ.get("KVM_STATS_MIN_S", "10")))
+THEMES = ("slate", "braun", "cobalt")
+THEME_FILE = os.path.join(os.environ.get("KVM_DATA_DIR", "/var/lib/kvm"), "ui_theme.txt")
+
+def _load_theme():
+    env_t = os.environ.get("KVM_THEME", "").strip()
+    if env_t in THEMES:
+        return env_t
+    try:
+        t = open(THEME_FILE).read().strip()
+        if t in THEMES:
+            return t
+    except OSError:
+        pass
+    return "slate"
+
+def _save_theme(t):
+    UI_STATE["theme"] = t
+    try:
+        if os.path.isdir(os.path.dirname(THEME_FILE)):
+            tmp = THEME_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(t + "\n")
+            os.replace(tmp, THEME_FILE)
+    except OSError:
+        pass
+
+UI_STATE = {"theme": _load_theme()}
+AUTOLAUNCH = autolaunch.AutoLauncher(hostview.shared, term.send_ctl, term.send_boot_frame)
+
+def autolaunch_loop():
+    """Watch /dev/ttyGS0 + UDC on boot and plug-in; probe & stream helper when needed."""
+    while True:
+        time.sleep(0.3)
+        try:
+            AUTOLAUNCH.step(hid.status()["host_connected"])
+        except Exception:
+            pass
 
 def stats_keeper_loop():
     """Re-arm the helper's type 8 stats when it (re)appears, so the GEEK's KVM page has
@@ -200,6 +237,20 @@ def validate(path, body):
     if path == "/api/macro":
         if body.get("name") not in MACROS: raise ValueError("unknown macro")
         return (body["name"],)
+    if path == "/api/theme":
+        t = body.get("theme")
+        if t not in THEMES: raise ValueError('theme must be "slate", "braun", or "cobalt"')
+        return (t,)
+    if path == "/api/bootstrap":
+        method = body.get("method", "probe")
+        if method == "probe":
+            return ("probe", None)
+        if method == "hid":
+            if body.get("confirm") is not True: raise ValueError("confirm must be true for hid pairing")
+            os_name = body.get("os")
+            if os_name not in ("linux", "windows"): raise ValueError('os must be "linux" or "windows"')
+            return ("hid", os_name)
+        raise ValueError('method must be "probe" or "hid"')
     raise LookupError(path)
 
 NET_ROOT = os.environ.get("KVM_NET_ROOT", "/")   # tests point this at a fake /proc + /sys
@@ -270,6 +321,7 @@ def local_ip():
         return "0.0.0.0"
 
 class H(SimpleHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
     timeout = 5
 
     def __init__(self, *a, **k): super().__init__(*a, directory=STATIC, **k)
@@ -303,16 +355,32 @@ class H(SimpleHTTPRequestHandler):
             hm = hostview.shared.mode()[0]
             mode = {"shell": "term", "helper": "desktop"}.get(hm, "hid")
             local = self.client_address[0] in ("127.0.0.1", "::1")
+            al = AUTOLAUNCH.status_fields()
             if sm.get("pin_ok") or local:
                 since, hist = HISTORY.snapshot(pc.get("pc_id"))
             else:
                 # PC details and per-process history are PIN-only: anyone else on the LAN
                 # (or a future fallback AP) sees just the HID link state. Same keys, nulled.
                 pc = {k: (v if k == "link" else None) for k, v in pc.items()}
+                al["helper_os"] = None
+                al["helper_arch"] = None
                 since, hist = None, None
-            return self._json(200, {**st, "ip": self._my_ip(), **sysstats(), **pc, "mode": mode,
+            return self._json(200, {**st, "ip": self._my_ip(), **sysstats(), **pc, **al,
+                                    "ui_theme": UI_STATE["theme"], "mode": mode,
                                     "net_hist_since": since, "net_hist": hist, **sm})
         u = urlsplit(self.path)
+        if u.path == "/api/ws":
+            return ws.serve_ws(self, self._check_pin_str, hid, LOCK)
+        if u.path.startswith("/setup/"):
+            fname = u.path[len("/setup/"):]
+            blob, ctype = AUTOLAUNCH.builder.setup_file(fname)
+            if blob is None:
+                return self._json(404, {"error": "setup file not found"})
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(blob)))
+            self.end_headers(); self.wfile.write(blob); return
         if u.path == "/api/frame":
             ok = self._pin_ok()
             if ok is None: return self._json(429, {"error": "too many wrong PINs, wait a minute"})
@@ -394,9 +462,9 @@ class H(SimpleHTTPRequestHandler):
         if not o: return True  # curl / same-origin GET-less clients
         return o.split("://", 1)[-1] == self.headers.get("Host", "")
 
-    def _pin_ok(self):
+    def _check_pin_str(self, given_str):
         ip = self.client_address[0]; now = time.monotonic()
-        given = (self.headers.get("X-KVM-PIN") or "").encode()
+        given = (given_str or "").encode()
         with PIN_LOCK:
             n, t0 = FAILS.get(ip, (0, now))
             if n >= MAX_FAILS and now - t0 < LOCKOUT_S: return None      # locked out
@@ -406,6 +474,9 @@ class H(SimpleHTTPRequestHandler):
             for k, (_, ts) in list(FAILS.items()):
                 if now - ts >= LOCKOUT_S: FAILS.pop(k, None)
             FAILS[ip] = (n + 1, t0 if n else now); return False
+
+    def _pin_ok(self):
+        return self._check_pin_str(self.headers.get("X-KVM-PIN") or "")
 
     def do_POST(self):
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
@@ -427,6 +498,19 @@ class H(SimpleHTTPRequestHandler):
         except (ValueError, TypeError) as e:  # JSONDecodeError is a ValueError
             return self._json(400, {"error": f"bad request: {e}"})
         if self.path == "/api/auth": return self._json(200, {"ok": True})
+        if self.path == "/api/theme":
+            _save_theme(args[0])
+            return self._json(200, {"ok": True, "ui_theme": args[0]})
+        if self.path == "/api/bootstrap":
+            method, os_name = args
+            if method == "probe":
+                try:
+                    return self._json(202, AUTOLAUNCH.trigger_probe())
+                except (TimeoutError, OSError) as e:
+                    return self._json(503, {"error": str(e)})
+            if not hid.status()["host_connected"]:
+                return self._json(409, {"error": "host not connected"})
+            return self._json(202, AUTOLAUNCH.trigger_hid_pair(os_name, hid, LOCK))
         if self.path == "/api/net_hist/reset":
             return self._json(*net_hist_reset(args[0]))
         if self.path == "/api/term":
@@ -478,7 +562,9 @@ class H(SimpleHTTPRequestHandler):
                 return self._json(202, {"ok": True, "note": f"Zero {action} in 1 s"})
             if action in HOST_HARD:
                 return self._json(501, {"error": "hard power/reset needs the optocoupler wiring (not installed)"})
-        if not hid.status()["host_connected"]:
+        hst = hid.status()
+        can_wake = (self.path == "/api/power" and args == ("host", "wake") and hst.get("host_suspended"))
+        if not hst["host_connected"] and not can_wake:
             return self._json(409, {"error": "host not connected"})  # avoid blocking write
         try:
             with LOCK:
@@ -489,7 +575,11 @@ class H(SimpleHTTPRequestHandler):
                 elif self.path == "/api/type": hid.type_text(*args)
                 elif self.path == "/api/mouse": hid.mouse(*args)
                 elif self.path == "/api/macro": MACROS[args[0]]()
-                elif self.path == "/api/power": hid.system_key(args[1])
+                elif self.path == "/api/power":
+                    if args[1] == "wake":
+                        hid.wake_host()
+                    else:
+                        hid.system_key(args[1])
         except hid.HIDTimeout as e:
             return self._json(503, {"error": str(e)})
         except OSError as e:
@@ -509,5 +599,6 @@ if __name__ == "__main__":
         signal.signal(signal.SIGTERM, lambda *_: (HISTORY.close(), os._exit(0)))
     term.start()
     threading.Thread(target=stats_keeper_loop, name="stats-keeper", daemon=True).start()
+    threading.Thread(target=autolaunch_loop, name="autolaunch", daemon=True).start()
     print(f"KVM console on http://{a.host}:{a.port}")
     ThreadingHTTPServer((a.host, a.port), H).serve_forever()

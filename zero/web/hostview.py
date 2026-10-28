@@ -58,9 +58,12 @@ FRAME_LEN = 240 * 135 * 2
 TYPE_PREVIEW = 7
 TYPE_EXT = 8
 TYPE_QUALITY = 9
+TYPE_HELLO = 10
 GATED = (TYPE_PREVIEW, TYPE_EXT, TYPE_QUALITY)
 PREVIEW_MAX = 1 << 20
 EXT_MAX = 4096
+HELLO_MAX = 256
+HELLO_OS = ("linux", "windows", "darwin")
 QUALITY_NAMES = {0: "low", 1: "med", 2: "high", 3: "off"}
 PARTIAL_MAX_S = 3.0
 MODE_ACK_TTL_S = 5.0        # helper acks every 2 s; ~2x INTERVAL plus slack
@@ -104,6 +107,14 @@ def pack_frame(rgb565):
     if len(rgb565) != FRAME_LEN:
         raise ValueError(f"frame must be {FRAME_LEN} bytes of rgb565le")
     return MAGIC + bytes([TYPE_FRAME]) + struct.pack("<I", FRAME_LEN) + rgb565
+
+
+def pack_hello(os_name, arch="", want="stream"):
+    if os_name not in HELLO_OS:
+        raise ValueError(f"unknown hello os: {os_name!r}")
+    body = json.dumps({"v": 1, "os": os_name, "arch": str(arch)[:24], "want": str(want)[:16]},
+                      separators=(",", ":")).encode("utf-8")
+    return MAGIC + bytes([TYPE_HELLO]) + struct.pack("<I", len(body)) + body
 
 
 def _hold_len(buf):
@@ -154,6 +165,9 @@ class HostView:
         self._pv_bytes = 0
         self.pv_max_bytes = PV_MAX_BYTES
         self._partial_at = None
+        self._hello = None          # validated type-10 stub hello dict
+        self._hello_at = None
+        self.hello_seq = 0
 
     def reset(self):
         """Drop a half-read envelope after the serial port closes. Readings stay until they go stale."""
@@ -342,7 +356,7 @@ class HostView:
                 return -1
             typ = self._buf[i + 4]
             ln = struct.unpack_from("<I", self._buf, i + 5)[0]
-            if typ not in (TYPE_CLIP, TYPE_PREVIEW, TYPE_EXT) and self._ok(typ, ln):
+            if typ not in (TYPE_CLIP, TYPE_PREVIEW, TYPE_EXT, TYPE_HELLO) and self._ok(typ, ln):
                 return i
             i = self._buf.find(MAGIC, i + 1)
         return -1
@@ -367,6 +381,8 @@ class HostView:
             return 9 <= ln <= PREVIEW_MAX
         if typ == TYPE_EXT:
             return 2 <= ln <= EXT_MAX
+        if typ == TYPE_HELLO:
+            return 2 <= ln <= HELLO_MAX
         return False
 
     def _accept(self, typ, payload):
@@ -441,6 +457,11 @@ class HostView:
                         self.on_ext(ext)       # history: must only touch memory (no I/O)
                     except Exception:
                         pass
+        elif typ == TYPE_HELLO:
+            info = _parse_hello(payload)
+            if info is not None:
+                self._hello, self._hello_at = info, now
+                self.hello_seq += 1
 
     def _accept_preview(self, payload, now):
         """payload is a memoryview into the read buffer; tiles are copied out once."""
@@ -504,6 +525,13 @@ class HostView:
             if self._mode_at is None:
                 return None, None
             return self._mode, round(self._now() - self._mode_at, 1)
+
+    def hello(self):
+        """(validated stub hello dict or None, age in seconds or None, sequence counter)."""
+        with self._lock:
+            if self._hello_at is None:
+                return None, None, self.hello_seq
+            return dict(self._hello), round(self._now() - self._hello_at, 1), self.hello_seq
 
 
 class StatsKeeper:
@@ -597,6 +625,26 @@ def _parse_ext(payload):
                 and r[0].isprintable() and _num(r[1], 0, 1e12) and _num(r[2], 0, 1e12)]
         if rows:
             out["netdelta"] = rows
+    return out
+
+
+def _parse_hello(payload):
+    """Validated type-10 host stub hello dict, or None."""
+    try:
+        d = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(d, dict) or d.get("v") != 1:
+        return None
+    os_name = d.get("os")
+    if os_name not in HELLO_OS:
+        return None
+    out = {"os": os_name}
+    arch = d.get("arch")
+    if isinstance(arch, str) and arch.isprintable() and len(arch) <= 32:
+        out["arch"] = arch.strip()
+    want = d.get("want")
+    out["want"] = want if want in ("stream", "install") else "stream"
     return out
 
 

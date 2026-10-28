@@ -5,6 +5,7 @@
 # Requires: dtoverlay=dwc2 in /boot/firmware/config.txt and "dwc2" in /etc/modules (see README).
 set -euo pipefail
 G=/sys/kernel/config/usb_gadget/kvm
+HERE="$(cd "$(dirname "$0")" && pwd)"
 modprobe libcomposite
 
 wait_nodes() {  # /dev/hidg* appear asynchronously after bind; retry instead of racing chmod
@@ -25,8 +26,9 @@ if [ -d "$G" ]; then
   if [ ! -L "$G/configs/c.1/hid.usb0" ] || [ ! -L "$G/configs/c.1/hid.usb1" ] || \
      [ ! -L "$G/configs/c.1/hid.usb2" ] || [ ! -L "$G/configs/c.1/acm.usb0" ]; then
     echo "" > "$G/UDC" 2>/dev/null || true
-    rm -f "$G"/configs/c.1/hid.usb* "$G"/configs/c.1/acm.usb* ; rmdir "$G"/configs/c.1/strings/0x409 "$G"/configs/c.1 \
-      "$G"/functions/hid.usb* "$G"/functions/acm.usb* "$G"/strings/0x409 2>/dev/null || true; rmdir "$G" || true
+    rm -f "$G"/configs/c.1/hid.usb* "$G"/configs/c.1/acm.usb* "$G"/configs/c.1/mass_storage.usb*
+    rmdir "$G"/configs/c.1/strings/0x409 "$G"/configs/c.1 \
+      "$G"/functions/hid.usb* "$G"/functions/acm.usb* "$G"/functions/mass_storage.usb* "$G"/strings/0x409 2>/dev/null || true; rmdir "$G" || true
   elif [ -n "$(cat "$G/UDC" 2>/dev/null)" ]; then finish; fi
 fi
 if [ -d "$G" ]; then
@@ -46,6 +48,7 @@ echo "DIY" > strings/0x409/manufacturer
 echo "PiZeroW HID KVM" > strings/0x409/product
 mkdir -p configs/c.1/strings/0x409
 echo "HID+ACM" > configs/c.1/strings/0x409/configuration
+echo 0xa0 > configs/c.1/bmAttributes   # bus-powered + USB remote wakeup for S3 sleep wake
 echo 250 > configs/c.1/MaxPower
 
 # Keyboard: standard boot keyboard, 8-byte report [mods,0,k1..k6]
@@ -74,8 +77,33 @@ ln -s functions/hid.usb0 configs/c.1/
 ln -s functions/hid.usb1 configs/c.1/
 ln -s functions/hid.usb2 configs/c.1/
 ln -s functions/acm.usb0 configs/c.1/
+
+# Optional read-only KVM-SETUP FAT12 pairing drive (mass_storage.usb0).
+# If dwc2 runs out of hardware IN endpoints on bind, we automatically drop it so HID+ACM always binds.
+SETUP_IMG="$HERE/kvm-setup.img"
+if [ ! -f "$SETUP_IMG" ] && [ -f "$HERE/build_setup_img.py" ]; then
+  python3 "$HERE/build_setup_img.py" /run/kvm-setup.img >/dev/null 2>&1 && SETUP_IMG=/run/kvm-setup.img || true
+fi
+if [ "${KVM_SETUP_DRIVE:-1}" != "0" ] && [ -f "$SETUP_IMG" ]; then
+  if mkdir -p functions/mass_storage.usb0 2>/dev/null; then
+    echo 0 > functions/mass_storage.usb0/stall 2>/dev/null || true
+    echo 1 > functions/mass_storage.usb0/lun.0/ro
+    echo 1 > functions/mass_storage.usb0/lun.0/removable
+    echo 1 > functions/mass_storage.usb0/lun.0/nofua 2>/dev/null || true
+    echo "DIY      KVM-SETUP" > functions/mass_storage.usb0/lun.0/inquiry_string 2>/dev/null || true
+    echo "$SETUP_IMG" > functions/mass_storage.usb0/lun.0/file
+    ln -s functions/mass_storage.usb0 configs/c.1/
+  fi
+fi
+
 UDC_NAME=$(ls /sys/class/udc 2>/dev/null | head -n1 || true)
 [ -n "$UDC_NAME" ] || { echo "ERROR: no UDC in /sys/class/udc (is [all] dtoverlay=dwc2 set? rebooted?)" >&2; exit 1; }
-echo "$UDC_NAME" > UDC   # bind to dwc2 UDC (e.g. 20980000.usb)
+if ! echo "$UDC_NAME" > UDC 2>/dev/null || [ -z "$(cat UDC 2>/dev/null)" ]; then
+  if [ -L configs/c.1/mass_storage.usb0 ]; then
+    echo "WARN: UDC bind with mass_storage exceeded dwc2 endpoint budget; binding HID+ACM only" >&2
+    rm -f configs/c.1/mass_storage.usb0
+    echo "$UDC_NAME" > UDC
+  fi
+fi
 [ -n "$(cat UDC)" ] || { echo "ERROR: UDC bind failed" >&2; exit 1; }
 finish
