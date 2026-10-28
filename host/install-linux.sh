@@ -58,12 +58,15 @@ else
   UNIT_DIR="$HOME/.config/systemd/user"
   mkdir -p "$UNIT_DIR"
   PY_BIN="$(command -v python3 || echo /usr/bin/python3)"
+  XAUTH_VAL="${XAUTHORITY:-%h/.Xauthority}"
   cat > "$UNIT_DIR/kvm-helper.service" <<EOF
 [Unit]
 Description=Pi Zero W HID KVM auto-stream watcher stub (stats, preview, serial shell)
 
 [Service]
 Environment=DISPLAY=${DISPLAY:-:0}
+Environment=KVM_DISPLAY=${KVM_DISPLAY:-${DISPLAY:-:0}}
+Environment=XAUTHORITY=$XAUTH_VAL
 ExecStart=$PY_BIN %h/.local/share/kvm-helper/kvm_stub.py
 Restart=always
 RestartSec=2
