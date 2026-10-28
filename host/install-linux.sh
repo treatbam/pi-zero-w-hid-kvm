@@ -57,7 +57,11 @@ EOF
 else
   UNIT_DIR="$HOME/.config/systemd/user"
   mkdir -p "$UNIT_DIR"
-  PY_BIN="$(command -v python3 || echo /usr/bin/python3)"
+  if [ -x /usr/bin/python3 ]; then
+    PY_BIN=/usr/bin/python3
+  else
+    PY_BIN="$(command -v python3 || echo /usr/bin/python3)"
+  fi
   XAUTH_VAL="${XAUTHORITY:-%h/.Xauthority}"
   cat > "$UNIT_DIR/kvm-helper.service" <<EOF
 [Unit]

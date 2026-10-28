@@ -1422,7 +1422,9 @@ def discover_port():
         matches = sorted(glob.glob(pat))
         if matches:
             return matches[0]
-    return "/dev/ttyACM0"
+    if sys.platform == "darwin":
+        return "/dev/cu.usbmodem0"
+    return "/dev/serial/by-id/usb-DIY_PiZeroW_HID_KVM_0001-if03"
 
 
 def main():

@@ -261,17 +261,22 @@ class AutoLauncher:
 
             sf = self.hv.status_fields(True)
             mode, _ = self.hv.mode()
-            if sf["link"] == "LINKED" or mode == "shell" or self.hv.requested_mode == "shell":
+            if mode == "shell" or self.hv.requested_mode == "shell":
                 self._state = "linked"
                 self._stream_tries = 0
                 self._last_hello_seq = self.hv.hello()[2]
                 return None
 
             h_info, h_age, h_seq = self.hv.hello()
-            if h_info is not None and h_seq != self._last_hello_seq and (h_age is not None and h_age <= 5.0):
+            want = h_info.get("want", "stream") if h_info else None
+            if (
+                h_info is not None
+                and h_seq != self._last_hello_seq
+                and (h_age is not None and h_age <= 5.0)
+                and want in ("stream", "install")
+            ):
                 self._last_hello_seq = h_seq
                 os_name = h_info.get("os", "linux")
-                want = h_info.get("want", "stream")
                 self._detected_os = os_name
                 self._detected_arch = h_info.get("arch") or None
                 self._detected_host = h_info.get("host") or None
@@ -280,6 +285,16 @@ class AutoLauncher:
                 self._last_stream_at = now
                 self._stream_tries += 1
                 action = ("boot", want, os_name)
+            elif sf["link"] == "LINKED" or (
+                h_info is not None
+                and h_seq != self._last_hello_seq
+                and (h_age is not None and h_age <= 5.0)
+                and want == "running"
+            ):
+                self._state = "linked"
+                self._stream_tries = 0
+                self._last_hello_seq = h_seq
+                return None
             elif self._state in ("no_host", "linked"):
                 self._state = "watching"
                 self._state_at = now
