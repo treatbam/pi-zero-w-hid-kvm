@@ -7,18 +7,19 @@
 <style>
 :root {
   color-scheme: dark;
-  /* GEEK Hybrid Default: #2 matte charcoal ground + bone figures, #3 studio cobalt/mint/indigo/heat telemetry */
-  --bg: #09090a;
-  --cell: #161519;
-  --cell-hi: #292730;
-  --cell-lo: #040405;
-  --well: #0d0c0f;
-  --zebra: #121116;
-  --lab: #74a8ee;
-  --val: #f4efe6;
-  --grey: #96918b;
-  --dimg: #3a3842;
-  --div: #222028;
+  /* GEEK Hybrid. Ground steps are RGB565-exact so the panel and the page show the same tiles. */
+  --bg: #101010;
+  --cell: #303038;
+  --cell-hi: #484858;
+  --cell-lo: #080808;
+  --well: #181c20;
+  --zebra: #282830;
+  --lab: #88b4f0;
+  --val: #f0ece0;
+  --fig: #e8e8e0;
+  --grey: #b0aca0;
+  --dimg: #787888;
+  --div: #404050;
   --rx: #2dd4bf;
   --tx: #818cf8;
   --ok: #34d399;
@@ -35,38 +36,40 @@
   :root { --in-oklab: in oklab; }
 }
 :where([data-theme="braun"]) {
-  --bg: #100f0e;
-  --cell: #1a1816;
-  --cell-hi: #302c27;
-  --cell-lo: #080706;
-  --well: #0b0a09;
-  --zebra: #151311;
-  --lab: #eea848;
-  --val: #f6f1e6;
-  --grey: #948c80;
-  --dimg: #3e3832;
-  --div: #2a2622;
-  --rx: #7ad68c;
-  --tx: #e8a838;
-  --ok: #6cd076;
+  --bg: #101410;
+  --cell: #383028;
+  --cell-hi: #504c40;
+  --cell-lo: #080808;
+  --well: #202018;
+  --zebra: #282820;
+  --lab: #f0b058;
+  --val: #f0f0e0;
+  --fig: #e8e4d8;
+  --grey: #b0a490;
+  --dimg: #787068;
+  --div: #484038;
+  --rx: #f0ac38;
+  --tx: #70ccb0;
+  --ok: #68d070;
   --warn: #f8c440;
   --hot: #f67a2a;
   --bad: #ee443a;
 }
 :where([data-theme="cobalt"]) {
-  --bg: #050810;
-  --cell: #0e1525;
-  --cell-hi: #1f2f4d;
-  --cell-lo: #020409;
-  --well: #080d18;
-  --zebra: #0b1120;
-  --lab: #74a8ee;
-  --val: #eef4ff;
-  --grey: #7c90b0;
-  --dimg: #2a3852;
-  --div: #1a2844;
-  --rx: #2dd4bf;
-  --tx: #818cf8;
+  --bg: #081420;
+  --cell: #203050;
+  --cell-hi: #305080;
+  --cell-lo: #000810;
+  --well: #102030;
+  --zebra: #182840;
+  --lab: #78c4f8;
+  --val: #e8f4f8;
+  --fig: #e0e8f0;
+  --grey: #98acc8;
+  --dimg: #6880a8;
+  --div: #284060;
+  --rx: #48dcf8;
+  --tx: #b08cf8;
   --ok: #40e098;
   --warn: #ffca44;
   --hot: #ff8c34;
@@ -421,19 +424,39 @@ button.danger {
 
 .stage-well {
   position: relative;
-  flex: 1 1 0;
+  flex: 1 1 auto;
   inline-size: 100%;
-  min-block-size: 72px;
+  min-block-size: 0;
   overflow: clip;
   display: grid;
   place-items: center;
-  background: #040406;
+  container-type: size;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.stage-well:fullscreen {
+  background: var(--bg);
+  padding: 8px;
+}
+.stage-frame {
+  position: relative;
+  inline-size: min(100cqw, calc(100cqh * 16 / 9));
+  block-size: min(100cqh, calc(100cqw * 9 / 16));
+  max-inline-size: 100%;
+  max-block-size: 100%;
+  background: var(--cell-lo);
+  border-radius: 6px;
+  overflow: clip;
+  box-shadow: inset 0 0 0 1px var(--div);
 }
 #pvc {
   inline-size: 100%;
   block-size: 100%;
-  aspect-ratio: 16 / 9;
-  object-fit: contain;
+  min-inline-size: 0;
+  min-block-size: 0;
+  object-fit: fill;
 }
 #stage-empty {
   position: absolute;
@@ -1050,6 +1073,7 @@ button.danger {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-inline-size: 0;
 }
 .s-kpi-lbl {
   font: 700 9.5px/1.1 ui-monospace, monospace;
@@ -1076,25 +1100,35 @@ button.danger {
 
 .s-cores-matrix {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
   gap: 5px;
   padding: 6px;
 }
 .s-core-tile {
-  padding: 4px 5px;
+  padding: 4px 6px;
   border-radius: 4px;
   background: var(--zebra);
   border: 1px solid var(--div);
   display: flex;
   flex-direction: column;
   gap: 3px;
+  min-inline-size: 0;
+  overflow: clip;
   font: 600 10px/1 ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
 }
 .s-core-top {
   display: flex;
   justify-content: space-between;
+  gap: 4px;
   color: var(--grey);
+  white-space: nowrap;
+}
+.s-kpi-lbl, .s-kpi-val, .s-kpi-sub {
+  max-inline-size: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .s-core-top b { color: var(--val); }
 .s-core-track {
@@ -1560,15 +1594,17 @@ dialog::backdrop {
         <button type="button" id="fs-btn" title="Fullscreen desktop stage" aria-label="Fullscreen desktop stage">⛶</button>
       </div>
     </div>
-    <div class="stage-well well" id="stage-well">
-      <canvas id="pvc" width="960" height="540"></canvas>
-      <div id="stage-empty">
-        <span class="empty-tag">Tile Stream Standby</span>
-        <span id="stage-empty-msg">Live desktop tiles appear automatically once target helper is LINKED</span>
-      </div>
-      <div id="loupe-wrap" hidden>
-        <canvas id="loupe-cv" width="240" height="135"></canvas>
-        <span class="loupe-tag">1:1 LOUPE</span>
+    <div class="stage-well" id="stage-well">
+      <div class="stage-frame">
+        <canvas id="pvc" width="960" height="540"></canvas>
+        <div id="stage-empty">
+          <span class="empty-tag">Tile Stream Standby</span>
+          <span id="stage-empty-msg">Live desktop tiles appear automatically once target helper is LINKED</span>
+        </div>
+        <div id="loupe-wrap" hidden>
+          <canvas id="loupe-cv" width="240" height="135"></canvas>
+          <span class="loupe-tag">1:1 LOUPE</span>
+        </div>
       </div>
     </div>
   </section>
@@ -1671,7 +1707,7 @@ dialog::backdrop {
         <div id="pad-center" class="pad-center-mark">
           <svg class="pad-arc" viewBox="0 0 110 38" fill="none" aria-hidden="true">
             <path d="M12 31 C 34 6, 76 6, 98 31" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-            <circle cx="96" cy="29" r="5" fill="#0d0c0f" stroke="currentColor" stroke-width="2"/>
+            <circle cx="96" cy="29" r="5" fill="var(--well)" stroke="currentColor" stroke-width="2"/>
           </svg>
           <span id="pad-label">RELATIVE TRACKPAD · 1F Move/Tap · 2F Scroll &amp; Right-Click</span>
         </div>

@@ -1,5 +1,5 @@
 // Trackpad-first KVM cockpit (Phone Portrait, Touch-Ergonomic Tablet Mode, Wide Split Cockpit & Full Stats Dashboard).
-// Shares the GEEK visual lineage (#2 matte charcoal ground + #3 studio periwinkle/mint-teal/indigo/warning ramp),
+// Shares the GEEK visual lineage (lifted charcoal tiles, bone figures until warm, mint/indigo telemetry),
 // low-latency /api/ws WebSocket HID transport with HTTP/1.1 keep-alive fallback, 2-finger scroll + right-tap,
 // sticky/locked modifiers, Drag-Lock, acceleration curves, and supervised 1-tap target host pairing.
 
@@ -1079,15 +1079,20 @@ const histTemp = [], histLoad = [], histRx = [], histTx = [];
 const MAX_HIST = 240; // 240 * 2s = 8 minutes (matches GEEK HIST = 240!)
 
 function cssVar(name) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#74a8ee';
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#88b4f0';
 }
 
+// Cool figures stay bone (--fig) until `warm`, then warn → hot → bad. Same stops as the GEEK vHeat ramp.
 function heatColorCss(val, warm, hot) {
-  if (val == null || !Number.isFinite(val)) return 'var(--val)';
+  if (val == null || !Number.isFinite(val)) return 'var(--fig)';
   if (val >= hot) return 'var(--bad)';
   if (val >= (warm + hot) * 0.5) return 'var(--hot)';
   if (val >= warm) return 'var(--warn)';
-  return 'var(--rx)';
+  return 'var(--fig)';
+}
+function meterColorCss(val, warm, hot) {
+  const c = heatColorCss(val, warm, hot);
+  return c === 'var(--fig)' ? 'var(--rx)' : c;
 }
 
 function prepHiDpiCanvas(cv) {
@@ -1110,12 +1115,12 @@ function drawTempCurve(cv, detailed) {
   const ctx = prepHiDpiCanvas(cv);
   if (!ctx) return;
   const {g, w, h} = ctx;
-  const cWarn = cssVar('--warn'), cHot = cssVar('--hot'), cBad = cssVar('--bad'), cDiv = cssVar('--div');
+  const cFig = cssVar('--fig'), cWarn = cssVar('--warn'), cHot = cssVar('--hot'), cBad = cssVar('--bad');
 
   if (detailed) {
-    // Draw 70C warm and 85C hot reference lines
+    // Draw 70C warm and 90C red reference lines (same stops as the GEEK ramp)
     const y70 = h - ((70 - 25) / 70) * (h - 8) - 4;
-    const y85 = h - ((85 - 25) / 70) * (h - 8) - 4;
+    const y90 = h - ((90 - 25) / 70) * (h - 8) - 4;
     g.save();
     g.setLineDash([3, 4]);
     g.lineWidth = 1;
@@ -1123,7 +1128,7 @@ function drawTempCurve(cv, detailed) {
     g.globalAlpha = 0.28;
     g.beginPath(); g.moveTo(0, y70); g.lineTo(w, y70); g.stroke();
     g.strokeStyle = cBad;
-    g.beginPath(); g.moveTo(0, y85); g.lineTo(w, y85); g.stroke();
+    g.beginPath(); g.moveTo(0, y90); g.lineTo(w, y90); g.stroke();
     g.restore();
   }
 
@@ -1143,7 +1148,7 @@ function drawTempCurve(cv, detailed) {
   if (pts.length < 2) return;
 
   const maxV = Math.max(...pts.map(p => p.v));
-  const strokeCol = maxV >= 85 ? cBad : maxV >= 72 ? cHot : cWarn;
+  const strokeCol = maxV >= 90 ? cBad : maxV >= 80 ? cHot : maxV >= 70 ? cWarn : cFig;
 
   const grad = g.createLinearGradient(0, 0, 0, h);
   grad.addColorStop(0, strokeCol);
@@ -1255,7 +1260,7 @@ function updateTelemetry(s) {
 
   const tempEl = document.getElementById('tc-temp');
   tempEl.textContent = linked && cpuT != null ? `${Math.round(cpuT)}°C` : '--°C';
-  tempEl.style.color = linked && cpuT != null ? (cpuT >= 82 ? 'var(--bad)' : cpuT >= 68 ? 'var(--warn)' : 'var(--warn)') : 'var(--val)';
+  tempEl.style.color = linked && cpuT != null ? heatColorCss(cpuT, 70, 90) : 'var(--fig)';
   document.getElementById('tc-temp-sr').textContent = linked && cpuT != null ? `CPU temperature ${Math.round(cpuT)} degrees Celsius` : 'Offline';
   document.getElementById('tc-load').textContent = linked && s.pc_load1 != null ? `ld ${Number(s.pc_load1).toFixed(2)}` : 'offline';
 
@@ -1275,7 +1280,7 @@ function updateTelemetry(s) {
   const cEl = document.getElementById('tc-cores');
   if (sortedCores.length) {
     cEl.innerHTML = sortedCores.slice(0, 20).map(v => {
-      const col = heatColorCss(v, 55, 85);
+      const col = heatColorCss(v, 75, 98);
       const pct = Math.max(6, Math.min(100, Math.round(v)));
       return `<span class="core-bar"><i style="block-size:${pct}%;background:${col}"></i></span>`;
     }).join('');
@@ -1287,7 +1292,7 @@ function updateTelemetry(s) {
   const procs = linked && Array.isArray(s.pc_procs) ? s.pc_procs : [];
   if (procs.length) {
     pEl.innerHTML = procs.slice(0, 3).map(([n, p]) => {
-      const col = heatColorCss(p, 50, 85);
+      const col = heatColorCss(p, 55, 90);
       const w = Math.max(3, Math.min(100, Math.round(p)));
       return `<div class="proc-row"><span>${escHtml(n)}</span><span style="color:${col};font-weight:700">${Math.round(p)}%</span><i class="proc-line" style="inline-size:${w}%;background:${col}"></i></div>`;
     }).join('');
@@ -1307,7 +1312,7 @@ function updateTelemetry(s) {
     : '-- <small>/ --G</small>';
   const barMem = document.getElementById('bar-mem');
   barMem.style.inlineSize = `${Math.max(0, Math.min(100, memPct))}%`;
-  barMem.style.background = heatColorCss(memPct, 78, 92);
+  barMem.style.background = meterColorCss(memPct, 80, 97);
 
   const dPair = fmtGBPair(s.pc_disk_used, s.pc_disk_total);
   const diskPct = linked ? (s.pc_disk_pct ?? (dPair ? Math.round((s.pc_disk_used / s.pc_disk_total) * 100) : 0)) : 0;
@@ -1348,18 +1353,22 @@ function updateTelemetry(s) {
 
   const kCpu = document.getElementById('st-kpi-cpu');
   kCpu.textContent = linked && cpuT != null ? `${cpuT.toFixed(1)}°C` : '--°C';
-  kCpu.style.color = linked && cpuT != null ? heatColorCss(cpuT, 68, 84) : 'var(--val)';
+  kCpu.style.color = linked && cpuT != null ? heatColorCss(cpuT, 70, 90) : 'var(--fig)';
   if (histTemp.length >= 2) {
     const mn = Math.round(Math.min(...histTemp)), mx = Math.round(Math.max(...histTemp));
     document.getElementById('st-kpi-cpu-sub').textContent = `min ${mn}° · peak ${mx}°`;
     document.getElementById('st-temp-range').textContent = `${histTemp.length * 2}s window · min ${mn}°C / peak ${mx}°C`;
   } else {
-    document.getElementById('st-kpi-cpu-sub').textContent = 'warm 70°C · red 85°C';
+    document.getElementById('st-kpi-cpu-sub').textContent = 'warm 70°C · red 90°C';
   }
 
-  document.getElementById('st-kpi-gpu').textContent = linked && s.pc_gpu_temp_c != null ? `${Math.round(s.pc_gpu_temp_c)}°C` : 'n/a';
+  const kGpu = document.getElementById('st-kpi-gpu');
+  kGpu.textContent = linked && s.pc_gpu_temp_c != null ? `${Math.round(s.pc_gpu_temp_c)}°C` : 'n/a';
+  kGpu.style.color = linked && s.pc_gpu_temp_c != null ? heatColorCss(s.pc_gpu_temp_c, 70, 90) : 'var(--fig)';
   document.getElementById('st-kpi-gpu-sub').textContent = linked && s.pc_gpu_pct != null ? `busy ${Math.round(s.pc_gpu_pct)}%` : 'sensor optional';
-  document.getElementById('st-kpi-nvme').textContent = linked && s.pc_nvme_temp_c != null ? `${Math.round(s.pc_nvme_temp_c)}°C` : 'n/a';
+  const kNvme = document.getElementById('st-kpi-nvme');
+  kNvme.textContent = linked && s.pc_nvme_temp_c != null ? `${Math.round(s.pc_nvme_temp_c)}°C` : 'n/a';
+  kNvme.style.color = linked && s.pc_nvme_temp_c != null ? heatColorCss(s.pc_nvme_temp_c, 70, 90) : 'var(--fig)';
   document.getElementById('st-kpi-load').textContent = linked && s.pc_load1 != null ? Number(s.pc_load1).toFixed(2) : '--';
   document.getElementById('st-kpi-threads').textContent = linked && ncpu ? `${ncpu} logical threads` : '-- threads';
 
@@ -1369,7 +1378,7 @@ function updateTelemetry(s) {
     : 'Waiting for host telemetry';
   const stBarMem = document.getElementById('st-bar-mem');
   stBarMem.style.inlineSize = `${Math.max(0, Math.min(100, memPct))}%`;
-  stBarMem.style.background = heatColorCss(memPct, 78, 92);
+  stBarMem.style.background = meterColorCss(memPct, 80, 97);
 
   document.getElementById('st-disk-title').textContent = linked && s.pc_disk_dev ? `Primary Storage (${s.pc_disk_dev})` : 'Host Primary Storage';
   document.getElementById('st-disk-pct').textContent = linked ? `${diskPct}%` : '--%';
@@ -1382,7 +1391,9 @@ function updateTelemetry(s) {
 
   // Pi Zero W Appliance & Radio Link (Page 4)
   document.getElementById('st-zero-ip').textContent = `Zero ${s.ip || '--'}`;
-  document.getElementById('st-z-temp').textContent = s.temp_c != null ? `${s.temp_c}°C` : '--°C';
+  const zTemp = document.getElementById('st-z-temp');
+  zTemp.textContent = s.temp_c != null ? `${s.temp_c}°C` : '--°C';
+  zTemp.style.color = s.temp_c != null ? heatColorCss(s.temp_c, 70, 90) : 'var(--fig)';
   document.getElementById('st-z-load').textContent = s.load1 != null ? `load ${s.load1}` : 'load --';
   document.getElementById('st-z-mem').textContent = s.mem_pct != null ? `${s.mem_pct}%` : '--%';
   document.getElementById('st-z-up').textContent = `up ${fmtUp(s.uptime_s)}`;
@@ -1402,7 +1413,7 @@ function updateTelemetry(s) {
     document.getElementById('st-cores-summary').textContent = `${rawCores.length} threads · avg ${avgCore}% · peak ${maxCore}%`;
     coreGrid.innerHTML = rawCores.map((v, idx) => {
       const pct = Math.max(0, Math.min(100, Math.round(v)));
-      const col = heatColorCss(pct, 55, 85);
+      const col = heatColorCss(pct, 75, 98);
       return `<div class="s-core-tile"><div class="s-core-top"><span>C${idx}</span><b style="color:${col}">${pct}%</b></div><div class="s-core-track"><i style="inline-size:${pct}%;background:${col}"></i></div></div>`;
     }).join('');
   } else {
@@ -1414,7 +1425,7 @@ function updateTelemetry(s) {
   if (procs.length) {
     cpuTbody.innerHTML = procs.slice(0, 8).map(([n, p]) => {
       const pct = Number(p) || 0;
-      const col = heatColorCss(pct, 50, 85);
+      const col = heatColorCss(pct, 55, 90);
       const w = Math.max(2, Math.min(100, Math.round(pct)));
       return `<tr>
         <td>${escHtml(n)}</td>
