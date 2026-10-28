@@ -105,7 +105,7 @@ on_fail() {
     echo "      sudo raspi-config nonint enable_overlayfs && sudo reboot     # once it is healthy" >&2
     if [ "$RO_ON_FAIL" = 1 ] && [ "$OVERLAY_WAS_ON" = 1 ]; then
       echo "    --ro-on-failure given: re-enabling the overlay anyway and rebooting." >&2
-      rsh "sudo raspi-config nonint enable_overlayfs && (sleep 1; sudo systemctl reboot) >/dev/null 2>&1 &" || true
+      rsh "sudo raspi-config nonint enable_overlayfs && if grep -qs 'LABEL=kvmdata' /etc/fstab /media/root-ro/etc/fstab; then for c in /boot/firmware/cmdline.txt /boot/cmdline.txt; do [ -f \"\$c\" ] && sudo sed -i 's/overlayroot=tmpfs[^ ]*/overlayroot=tmpfs:recurse=0/' \"\$c\"; done; fi && (sleep 1; sudo systemctl reboot) >/dev/null 2>&1 &" || true
     fi
   else
     echo "    The overlay was not touched; the Zero is as it was." >&2
@@ -176,7 +176,8 @@ update_zero() {
   if [ "$OVERLAY_WAS_ON" = 1 ] || [ "$DRY" = 1 ]; then
     log "Disable overlayfs and reboot"
     STATE="disabling the overlay"
-    rsh sudo raspi-config nonint disable_overlayfs
+    # raspi-config's sed only strips plain 'overlayroot=tmpfs '; also strip 'overlayroot=tmpfs:recurse=0 ' used by kvmdata.
+    rsh "sudo raspi-config nonint disable_overlayfs && for c in /boot/firmware/cmdline.txt /boot/cmdline.txt; do if [ -f \"\$c\" ] && grep -q 'overlayroot=tmpfs' \"\$c\"; then b=\$(dirname \"\$c\"); ro=0; findmnt -no OPTIONS \"\$b\" 2>/dev/null | grep -qw ro && { sudo mount -o remount,rw \"\$b\"; ro=1; }; sudo sed -i -E 's/overlayroot=tmpfs[^ ]* ?//g' \"\$c\"; [ \"\$ro\" = 1 ] && sudo mount -o remount,ro \"\$b\" || true; fi; done"
     OVERLAY_DISABLED=1
     reboot_and_wait
     if [ "$DRY" = 0 ] && overlay_on; then STATE="overlay still on after disable+reboot"; false; fi
@@ -198,7 +199,8 @@ update_zero() {
   if [ "$REBOOT_RO" = 1 ]; then
     log "Re-enable overlayfs and reboot"
     STATE="enabling the overlay"
-    rsh sudo raspi-config nonint enable_overlayfs
+    # Preserve overlayroot=tmpfs:recurse=0 when kvmdata (/var/lib/kvm) is configured in fstab.
+    rsh "sudo raspi-config nonint enable_overlayfs && if grep -qs 'LABEL=kvmdata' /etc/fstab /media/root-ro/etc/fstab; then for c in /boot/firmware/cmdline.txt /boot/cmdline.txt; do if [ -f \"\$c\" ]; then b=\$(dirname \"\$c\"); ro=0; findmnt -no OPTIONS \"\$b\" 2>/dev/null | grep -qw ro && { sudo mount -o remount,rw \"\$b\"; ro=1; }; sudo sed -i 's/overlayroot=tmpfs[^ ]*/overlayroot=tmpfs:recurse=0/' \"\$c\"; [ \"\$ro\" = 1 ] && sudo mount -o remount,ro \"\$b\" || true; fi; done; fi"
     reboot_and_wait
     STATE="checking root is overlay"
     if [ "$DRY" = 0 ]; then overlay_on || { echo "    root is not overlay after reboot" >&2; false; }; else rsh findmnt -n -o FSTYPE /; fi
