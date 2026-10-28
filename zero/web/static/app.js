@@ -1079,7 +1079,14 @@ const histTemp = [], histLoad = [], histRx = [], histTx = [];
 const MAX_HIST = 240; // 240 * 2s = 8 minutes (matches GEEK HIST = 240!)
 
 function cssVar(name) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#88b4f0';
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#989898';
+}
+function hexToRgba(hex, a) {
+  let h = (hex || '').trim().replace('#', '');
+  if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  const n = parseInt(h.slice(0, 6), 16);
+  if (!Number.isFinite(n)) return `rgba(240,240,240,${a})`;
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
 }
 
 // Cool figures stay bone (--fig) until `warm`, then warn → hot → bad. Same stops as the GEEK vHeat ramp.
@@ -1092,8 +1099,9 @@ function heatColorCss(val, warm, hot) {
 }
 function meterColorCss(val, warm, hot) {
   const c = heatColorCss(val, warm, hot);
-  return c === 'var(--fig)' ? 'var(--rx)' : c;
+  return c === 'var(--fig)' ? 'color-mix(in oklab, var(--fig) 55%, transparent)' : c;
 }
+let loadTop = 4;
 
 function prepHiDpiCanvas(cv) {
   if (!cv) return null;
@@ -1111,106 +1119,68 @@ function prepHiDpiCanvas(cv) {
   return {g, w: r.width, h: r.height};
 }
 
-function drawTempCurve(cv, detailed) {
-  const ctx = prepHiDpiCanvas(cv);
-  if (!ctx) return;
-  const {g, w, h} = ctx;
-  const cFig = cssVar('--fig'), cWarn = cssVar('--warn'), cHot = cssVar('--hot'), cBad = cssVar('--bad');
-
-  if (detailed) {
-    // Draw 70C warm and 90C red reference lines (same stops as the GEEK ramp)
-    const y70 = h - ((70 - 25) / 70) * (h - 8) - 4;
-    const y90 = h - ((90 - 25) / 70) * (h - 8) - 4;
-    g.save();
-    g.setLineDash([3, 4]);
-    g.lineWidth = 1;
-    g.strokeStyle = cWarn;
-    g.globalAlpha = 0.28;
-    g.beginPath(); g.moveTo(0, y70); g.lineTo(w, y70); g.stroke();
-    g.strokeStyle = cBad;
-    g.beginPath(); g.moveTo(0, y90); g.lineTo(w, y90); g.stroke();
-    g.restore();
-  }
-
-  const pts = [];
-  const n = histTemp.length;
-  const step = detailed ? Math.max(2.2, w / Math.max(60, n)) : 2.8;
-  for (let i = 0; i < n; i++) {
-    const v = histTemp[i];
-    if (!Number.isFinite(v)) continue;
-    const x = w - (n - 1 - i) * step;
-    if (x < -step) continue;
-    const norm = Math.max(0.06, Math.min(1, (v - 25) / 70));
-    const y = h - norm * (h - 6) - 2;
-    pts.push({x, y, v});
-  }
-  if (pts.length === 1) pts.unshift({x: Math.max(0, pts[0].x - 16), y: pts[0].y, v: pts[0].v});
-  if (pts.length < 2) return;
-
-  const maxV = Math.max(...pts.map(p => p.v));
-  const strokeCol = maxV >= 90 ? cBad : maxV >= 80 ? cHot : maxV >= 70 ? cWarn : cFig;
-
+// Fade wash: red at the top of the cell, yellow, then green, gone at the bottom.
+// Only the area under the line is painted. Same scale as the panel.
+function fadeGradient(g, h) {
   const grad = g.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, strokeCol);
-  grad.addColorStop(1, 'rgba(0,0,0,0)');
-
-  g.save();
+  grad.addColorStop(0, hexToRgba(cssVar('--bad'), 0.55));
+  grad.addColorStop(0.34, hexToRgba(cssVar('--warn'), 0.4));
+  grad.addColorStop(0.62, hexToRgba(cssVar('--ok'), 0.22));
+  grad.addColorStop(1, hexToRgba(cssVar('--ok'), 0));
+  return grad;
+}
+function seriesPoints(series, w, h, map) {
+  const n = series.length;
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const v = series[i];
+    if (!Number.isFinite(v)) continue;
+    const x = n === 1 ? w - 1 : (i / (n - 1)) * (w - 1);
+    const t = Math.max(0, Math.min(1, map(v)));
+    pts.push({x, y: h - 1 - t * (h - 1)});
+  }
+  return pts;
+}
+function fillUnder(g, pts, h) {
+  if (pts.length < 2) return;
   g.beginPath();
   g.moveTo(pts[0].x, h);
   for (const p of pts) g.lineTo(p.x, p.y);
   g.lineTo(pts[pts.length - 1].x, h);
   g.closePath();
-  g.globalAlpha = 0.24;
-  g.fillStyle = grad;
+  g.fillStyle = fadeGradient(g, h);
   g.fill();
-  g.restore();
-
-  g.beginPath();
-  pts.forEach((p, idx) => { if (idx === 0) g.moveTo(p.x, p.y); else g.lineTo(p.x, p.y); });
-  g.strokeStyle = strokeCol;
-  g.lineWidth = detailed ? 2 : 1.75;
-  g.lineJoin = 'round';
-  g.stroke();
 }
-
-function drawDuplexWaterfall(cv, detailed) {
+function drawFade(cv, series, map) {
   const ctx = prepHiDpiCanvas(cv);
   if (!ctx) return;
   const {g, w, h} = ctx;
-  const mid = Math.floor(h / 2);
-  g.fillStyle = cssVar('--div');
-  g.fillRect(0, mid, w, 1);
-
-  const cRx = cssVar('--rx'), cTx = cssVar('--tx');
-  const logR = bps => (!Number.isFinite(bps) || bps <= 300) ? 0 : Math.min(1, Math.max(0.04, Math.log10(bps / 300) / 5.5));
-  const n = histRx.length;
-  const barW = detailed ? 2.5 : 2;
-  const pitch = detailed ? 3.6 : 2.8;
-  for (let i = 0; i < n; i++) {
-    const x = w - (n - i) * pitch;
-    if (x < 0) continue;
-    const rh = Math.round(logR(histRx[i]) * (mid - 2));
-    const th = Math.round(logR(histTx[i]) * (mid - 3));
-    if (rh > 0) {
-      g.fillStyle = cRx;
-      g.globalAlpha = 0.88;
-      g.fillRect(x, mid - rh, barW, rh);
-    }
-    if (th > 0) {
-      g.fillStyle = cTx;
-      g.globalAlpha = 0.88;
-      g.fillRect(x, mid + 1, barW, th);
-    }
-  }
-  g.globalAlpha = 1;
+  fillUnder(g, seriesPoints(series, w, h, map), h);
 }
-
+const logRate = bps => (!Number.isFinite(bps) || bps <= 300) ? 0 : Math.min(1, Math.max(0, Math.log10(bps / 300) / 5.5));
+const tempLevel = v => (v - 40) / 50;
+function drawNetFade(cv) {
+  const ctx = prepHiDpiCanvas(cv);
+  if (!ctx) return;
+  const {g, w, h} = ctx;
+  fillUnder(g, seriesPoints(histRx, w, h, logRate), h);
+  const tx = seriesPoints(histTx, w, h, logRate);
+  if (tx.length < 2) return;
+  g.beginPath();
+  tx.forEach((p, i) => { if (i) g.lineTo(p.x, p.y); else g.moveTo(p.x, p.y); });
+  g.strokeStyle = hexToRgba(cssVar('--fig'), 0.75);
+  g.lineWidth = 1.25;
+  g.lineJoin = 'round';
+  g.lineCap = 'round';
+  g.stroke();
+}
 function drawSparks() {
-  drawTempCurve(document.getElementById('sp-temp'), false);
-  drawDuplexWaterfall(document.getElementById('sp-net'), false);
+  drawFade(document.getElementById('sp-temp'), histTemp, tempLevel);
+  drawNetFade(document.getElementById('sp-net'));
   if (activeDeck === 'stats') {
-    drawTempCurve(document.getElementById('st-canvas-temp'), true);
-    drawDuplexWaterfall(document.getElementById('st-canvas-net'), true);
+    drawFade(document.getElementById('st-canvas-temp'), histTemp, tempLevel);
+    drawFade(document.getElementById('st-canvas-load'), histLoad, v => v / loadTop);
+    drawNetFade(document.getElementById('st-canvas-net'));
   }
 }
 
@@ -1260,19 +1230,16 @@ function updateTelemetry(s) {
 
   const tempEl = document.getElementById('tc-temp');
   tempEl.textContent = linked && cpuT != null ? `${Math.round(cpuT)}°C` : '--°C';
-  tempEl.style.color = linked && cpuT != null ? heatColorCss(cpuT, 70, 90) : 'var(--fig)';
+  tempEl.style.color = 'var(--fig)';
   document.getElementById('tc-temp-sr').textContent = linked && cpuT != null ? `CPU temperature ${Math.round(cpuT)} degrees Celsius` : 'Offline';
-  document.getElementById('tc-load').textContent = linked && s.pc_load1 != null ? `ld ${Number(s.pc_load1).toFixed(2)}` : 'offline';
+  document.getElementById('tc-load').textContent = linked && s.pc_load1 != null ? Number(s.pc_load1).toFixed(2) : 'offline';
+  if (linked && ncpu) loadTop = Math.max(4, ncpu * 0.5);
 
-  const sens = [];
-  if (linked && s.pc_gpu_temp_c != null) {
-    sens.push(`GPU ${Math.round(s.pc_gpu_temp_c)}°C` + (s.pc_gpu_pct != null ? ` (${Math.round(s.pc_gpu_pct)}%)` : ''));
-  } else if (linked && s.pc_gpu_pct != null) {
-    sens.push(`GPU ${Math.round(s.pc_gpu_pct)}%`);
-  }
-  if (linked && s.pc_nvme_temp_c != null) sens.push(`NVMe ${Math.round(s.pc_nvme_temp_c)}°C`);
-  if (!sens.length) sens.push(linked ? `Host up ${fmtUp(s.pc_uptime_s)}` : `Zero ${s.temp_c ?? '--'}°C · up ${fmtUp(s.uptime_s)}`);
-  document.getElementById('tc-sensors').textContent = sens.join(' · ');
+  const top = linked && s.pc_top_proc
+    ? `${s.pc_top_proc}${s.pc_top_cpu_pct != null ? ` ${Math.round(s.pc_top_cpu_pct)}%` : ''}`
+    : '';
+  document.getElementById('tc-sensors').textContent = top
+    || (linked ? `up ${fmtUp(s.pc_uptime_s)}` : `Zero ${s.temp_c ?? '--'}°C · up ${fmtUp(s.uptime_s)}`);
 
   const rawCores = linked ? (s.pc_cores_all || s.pc_cores || []) : [];
   const sortedCores = rawCores.slice().sort((a, b) => b - a);
@@ -1282,7 +1249,7 @@ function updateTelemetry(s) {
     cEl.innerHTML = sortedCores.slice(0, 20).map(v => {
       const col = heatColorCss(v, 75, 98);
       const pct = Math.max(6, Math.min(100, Math.round(v)));
-      return `<span class="core-bar"><i style="block-size:${pct}%;background:${col}"></i></span>`;
+      return `<span class="core-bar"><i style="block-size:${pct}%;background:linear-gradient(to top, color-mix(in oklab, var(--ok) 20%, transparent), ${col})"></i></span>`;
     }).join('');
   } else {
     cEl.innerHTML = Array.from({length: 12}, () => `<span class="core-bar"><i style="block-size:6%;opacity:.25"></i></span>`).join('');
@@ -1316,7 +1283,7 @@ function updateTelemetry(s) {
 
   const dPair = fmtGBPair(s.pc_disk_used, s.pc_disk_total);
   const diskPct = linked ? (s.pc_disk_pct ?? (dPair ? Math.round((s.pc_disk_used / s.pc_disk_total) * 100) : 0)) : 0;
-  const diskDev = (linked && s.pc_disk_dev) ? `${s.pc_disk_dev.toUpperCase()} (/)` : 'DISK (/)';
+  const diskDev = (linked && s.pc_disk_dev) ? s.pc_disk_dev : 'disk';
   document.getElementById('tc-disk-lbl').textContent = diskDev;
   document.getElementById('tc-disk-pct').textContent = linked && diskPct ? `${diskPct}%` : '';
   document.getElementById('tc-disk').innerHTML = linked
@@ -1324,10 +1291,10 @@ function updateTelemetry(s) {
     : '-- <small>/ --G</small>';
   const barDisk = document.getElementById('bar-disk');
   barDisk.style.inlineSize = `${Math.max(0, Math.min(100, diskPct))}%`;
-  barDisk.style.background = diskPct >= 90 ? 'var(--bad)' : diskPct >= 80 ? 'var(--warn)' : 'var(--lab)';
+  barDisk.style.background = meterColorCss(diskPct, 90, 99);
 
   // Network card + cumulative totals
-  document.getElementById('tc-iface').textContent = (linked && s.pc_net_iface) ? `${s.pc_net_iface} · NET` : 'NETWORK';
+  document.getElementById('tc-iface').textContent = (linked && s.pc_net_iface) ? s.pc_net_iface : 'NET';
   document.getElementById('tc-net-ip').textContent = linked ? (s.pc_net_ip || s.pc_ip || '') : '';
   document.getElementById('tc-rx').textContent = linked ? `dn ${fmtRate(s.pc_rx_bps)}` : 'dn --';
   document.getElementById('tc-tx').textContent = linked ? `up ${fmtRate(s.pc_tx_bps)}` : 'up --';
@@ -1353,7 +1320,7 @@ function updateTelemetry(s) {
 
   const kCpu = document.getElementById('st-kpi-cpu');
   kCpu.textContent = linked && cpuT != null ? `${cpuT.toFixed(1)}°C` : '--°C';
-  kCpu.style.color = linked && cpuT != null ? heatColorCss(cpuT, 70, 90) : 'var(--fig)';
+  kCpu.style.color = 'var(--fig)';
   if (histTemp.length >= 2) {
     const mn = Math.round(Math.min(...histTemp)), mx = Math.round(Math.max(...histTemp));
     document.getElementById('st-kpi-cpu-sub').textContent = `min ${mn}° · peak ${mx}°`;
@@ -1364,11 +1331,11 @@ function updateTelemetry(s) {
 
   const kGpu = document.getElementById('st-kpi-gpu');
   kGpu.textContent = linked && s.pc_gpu_temp_c != null ? `${Math.round(s.pc_gpu_temp_c)}°C` : 'n/a';
-  kGpu.style.color = linked && s.pc_gpu_temp_c != null ? heatColorCss(s.pc_gpu_temp_c, 70, 90) : 'var(--fig)';
+  kGpu.style.color = 'var(--fig)';
   document.getElementById('st-kpi-gpu-sub').textContent = linked && s.pc_gpu_pct != null ? `busy ${Math.round(s.pc_gpu_pct)}%` : 'sensor optional';
   const kNvme = document.getElementById('st-kpi-nvme');
   kNvme.textContent = linked && s.pc_nvme_temp_c != null ? `${Math.round(s.pc_nvme_temp_c)}°C` : 'n/a';
-  kNvme.style.color = linked && s.pc_nvme_temp_c != null ? heatColorCss(s.pc_nvme_temp_c, 70, 90) : 'var(--fig)';
+  kNvme.style.color = 'var(--fig)';
   document.getElementById('st-kpi-load').textContent = linked && s.pc_load1 != null ? Number(s.pc_load1).toFixed(2) : '--';
   document.getElementById('st-kpi-threads').textContent = linked && ncpu ? `${ncpu} logical threads` : '-- threads';
 
@@ -1387,13 +1354,13 @@ function updateTelemetry(s) {
     : 'Waiting for host telemetry';
   const stBarDisk = document.getElementById('st-bar-disk');
   stBarDisk.style.inlineSize = `${Math.max(0, Math.min(100, diskPct))}%`;
-  stBarDisk.style.background = diskPct >= 90 ? 'var(--bad)' : diskPct >= 80 ? 'var(--warn)' : 'var(--lab)';
+  stBarDisk.style.background = meterColorCss(diskPct, 90, 99);
 
   // Pi Zero W Appliance & Radio Link (Page 4)
   document.getElementById('st-zero-ip').textContent = `Zero ${s.ip || '--'}`;
   const zTemp = document.getElementById('st-z-temp');
   zTemp.textContent = s.temp_c != null ? `${s.temp_c}°C` : '--°C';
-  zTemp.style.color = s.temp_c != null ? heatColorCss(s.temp_c, 70, 90) : 'var(--fig)';
+  zTemp.style.color = 'var(--fig)';
   document.getElementById('st-z-load').textContent = s.load1 != null ? `load ${s.load1}` : 'load --';
   document.getElementById('st-z-mem').textContent = s.mem_pct != null ? `${s.mem_pct}%` : '--%';
   document.getElementById('st-z-up').textContent = `up ${fmtUp(s.uptime_s)}`;
@@ -1481,6 +1448,24 @@ function updateTelemetry(s) {
   drawSparks();
 }
 
+function setGlance(id, state) {
+  const el = document.getElementById(id);
+  if (el) el.className = 'glance' + (state ? ' ' + state : '');
+}
+function updateGlance(s) {
+  let hid = '';
+  if (s) hid = !s.hid_ready ? 'bad' : (s.udc_state && s.udc_state !== 'configured' ? 'warn' : 'ok');
+  setGlance('zero-glance', hid);
+  const dbm = document.getElementById('radio-dbm');
+  let radio = '';
+  if (s && s.zero_wifi_rssi != null && Number.isFinite(Number(s.zero_wifi_rssi))) {
+    const n = Number(s.zero_wifi_rssi);
+    if (dbm) dbm.textContent = String(n);
+    radio = n >= -65 ? 'ok' : n >= -78 ? 'warn' : 'bad';
+  } else if (dbm) dbm.textContent = '--';
+  setGlance('radio-glance', radio);
+}
+
 async function poll() {
   const pill = document.getElementById('pill');
   const ip = document.getElementById('ip');
@@ -1504,6 +1489,7 @@ async function poll() {
       pill.className = 'pill ' + (s.link === 'LINKED' ? 'linked' : s.link === 'KEYS' ? 'keys' : s.link === 'NO HOST' ? 'nohost' : '');
     }
     showLeds(s.leds);
+    updateGlance(s);
 
     const hostLabel = s.pc_host
       ? (s.pc_net_ip || s.pc_ip ? `${s.pc_host} (${s.pc_net_ip || s.pc_ip})` : s.pc_host)
@@ -1536,6 +1522,7 @@ async function poll() {
     pill.className = 'pill';
     ip.textContent = 'Zero unreachable';
     barSub.textContent = '';
+    updateGlance(null);
   }
 }
 setInterval(poll, 2000);

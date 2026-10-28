@@ -7,21 +7,21 @@
 <style>
 :root {
   color-scheme: dark;
-  /* GEEK Hybrid. Ground steps are RGB565-exact so the panel and the page show the same tiles. */
+  /* Quiet. Charcoal cells, gray labels, white figures. RGB565-exact, same tiles as the panel. */
   --bg: #101010;
-  --cell: #303038;
-  --cell-hi: #484858;
-  --cell-lo: #080808;
-  --well: #181c20;
-  --zebra: #282830;
-  --lab: #88b4f0;
-  --val: #f0ece0;
-  --fig: #e8e8e0;
-  --grey: #b0aca0;
-  --dimg: #787888;
-  --div: #404050;
+  --cell: #202020;
+  --cell-hi: #303030;
+  --cell-lo: #101010;
+  --well: #181818;
+  --zebra: #282828;
+  --lab: #989898;
+  --val: #f0f0f0;
+  --fig: #f0f0f0;
+  --grey: #787878;
+  --dimg: #686868;
+  --div: #303030;
   --rx: #2dd4bf;
-  --tx: #818cf8;
+  --tx: #a0a0a8;
   --ok: #34d399;
   --warn: #ffca44;
   --hot: #ff8c34;
@@ -223,9 +223,29 @@ button.danger {
   text-transform: uppercase;
 }
 .pill.linked { background: var(--ok); color: #031b10; box-shadow: 0 0 10px color-mix(in oklab, var(--ok) 35%, transparent); }
-.pill.keys { background: var(--lab); color: #051124; }
+.pill.keys { background: var(--warn); color: #221600; }
 .pill.suspended { background: var(--warn); color: #221600; }
 .pill.nohost { background: var(--hot); color: #220b00; }
+.glance {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  color: var(--grey);
+  font: 700 11px/1 ui-monospace, SFMono-Regular, monospace;
+}
+.glance i {
+  inline-size: 7px;
+  block-size: 7px;
+  border-radius: 50%;
+  background: var(--dimg);
+}
+.glance.ok b { color: var(--ok); }
+.glance.ok i { background: var(--ok); }
+.glance.warn b { color: var(--warn); }
+.glance.warn i { background: var(--warn); }
+.glance.bad b { color: var(--bad); }
+.glance.bad i { background: var(--bad); }
 
 .host-stack {
   min-inline-size: 0;
@@ -536,6 +556,7 @@ button.danger {
 }
 
 .t-cell {
+  position: relative;
   padding-block: 7px;
   padding-inline: 9px;
   display: flex;
@@ -547,6 +568,15 @@ button.danger {
   overflow: clip;
   transition: border-color 120ms ease;
 }
+.cell-fade {
+  position: absolute;
+  inset: 0;
+  inline-size: 100%;
+  block-size: 100%;
+  pointer-events: none;
+  z-index: 0;
+}
+.t-cell > :not(.cell-fade) { position: relative; z-index: 1; }
 .t-cell:hover {
   border-color: color-mix(in oklab, var(--lab) 48%, var(--cell-hi));
 }
@@ -709,8 +739,7 @@ button.danger {
   font: 700 11.5px/1.15 ui-monospace, SFMono-Regular, monospace;
   font-variant-numeric: tabular-nums;
 }
-.rx-txt { color: var(--rx); }
-.tx-txt { color: var(--tx); }
+.rx-txt, .tx-txt { color: var(--fig); }
 
 /* ---- 3. Type / UTF-8 Clipboard Bar ---- */
 #type-form {
@@ -1097,6 +1126,22 @@ button.danger {
   position: relative;
 }
 .s-graph-well canvas { inline-size: 100%; block-size: 100%; }
+.s-graph-well.pair {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  block-size: 112px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+}
+.s-graph-well.pair canvas {
+  flex: 1 1 0;
+  min-block-size: 0;
+  background: var(--cell);
+  border-radius: 6px;
+}
 
 .s-cores-matrix {
   display: grid;
@@ -1531,6 +1576,8 @@ dialog::backdrop {
 <header class="topbar bevel">
   <div id="st">
     <span id="pill" class="pill">…</span>
+    <span id="zero-glance" class="glance" title="Zero HID"><i></i><b>HID</b></span>
+    <span id="radio-glance" class="glance" title="Zero Wi-Fi"><i></i><b id="radio-dbm">--</b></span>
     <div class="host-stack">
       <span id="ip">connecting…</span>
       <span id="bar-sub"></span>
@@ -1613,13 +1660,13 @@ dialog::backdrop {
   <section id="mini-telemetry" class="mini-telemetry-wrap" aria-label="Target PC Telemetry Summary">
     <div class="mini-telemetry">
       <div class="t-cell bevel" data-open-stats title="Open full GEEK telemetry &amp; stats dashboard">
+        <canvas id="sp-temp" class="cell-fade" width="320" height="120"></canvas>
         <div class="t-hdr"><span id="mc-cpu-hdr">CPU · CORES</span><span class="t-hdr-sub">Stats ↗</span></div>
         <div class="t-hero-row">
           <span id="tc-temp" class="t-hero">--°C</span>
           <span id="tc-load" class="t-load">ld --</span>
         </div>
-        <div id="tc-sensors" class="t-sub">GPU -- · NVMe --</div>
-        <div class="spark-well well"><canvas id="sp-temp" width="240" height="40"></canvas></div>
+        <div id="tc-sensors" class="t-sub">waiting for helper…</div>
         <span id="tc-temp-sr" class="sr-only"></span>
       </div>
 
@@ -1638,17 +1685,17 @@ dialog::backdrop {
         <div class="meter-block" style="margin-block-start:auto">
           <div class="meter-lbl"><span id="tc-disk-lbl">DISK (/)</span><span id="tc-disk-pct"></span></div>
           <div class="meter-val" id="tc-disk">-- <small>/ --G</small></div>
-          <div class="meter-well well"><i id="bar-disk" style="background:var(--lab)"></i></div>
+          <div class="meter-well well"><i id="bar-disk"></i></div>
         </div>
       </div>
 
       <div class="t-cell bevel" data-open-stats title="Open full GEEK telemetry &amp; stats dashboard">
-        <div class="t-hdr"><span id="tc-iface">NETWORK</span><span id="tc-net-ip" class="t-hdr-sub">--</span></div>
+        <canvas id="sp-net" class="cell-fade" width="320" height="120"></canvas>
+        <div class="t-hdr"><span id="tc-iface">NET</span><span id="tc-net-ip" class="t-hdr-sub">--</span></div>
         <div class="net-rates">
           <span id="tc-rx" class="rx-txt">dn --</span>
           <span id="tc-tx" class="tx-txt">up --</span>
         </div>
-        <div class="spark-well well"><canvas id="sp-net" width="240" height="40"></canvas></div>
         <div id="tc-net-tot" class="t-sub">Total: -- / --</div>
       </div>
     </div>
@@ -1793,8 +1840,9 @@ dialog::backdrop {
             <span id="st-kpi-threads" class="s-kpi-sub">-- threads</span>
           </div>
         </div>
-        <div class="s-graph-well well">
-          <canvas id="st-canvas-temp" width="560" height="104"></canvas>
+        <div class="s-graph-well pair">
+          <canvas id="st-canvas-temp" width="560" height="52"></canvas>
+          <canvas id="st-canvas-load" width="560" height="52"></canvas>
         </div>
       </article>
 
@@ -1814,7 +1862,7 @@ dialog::backdrop {
         <div class="meter-block">
           <div class="meter-lbl"><span id="st-disk-title">Host Primary Storage</span><span id="st-disk-pct">--%</span></div>
           <div class="meter-val" id="st-disk-detail">-- / --</div>
-          <div class="meter-well well" style="block-size:9px"><i id="st-bar-disk" style="background:var(--lab)"></i></div>
+          <div class="meter-well well" style="block-size:9px"><i id="st-bar-disk"></i></div>
         </div>
 
         <div class="s-panel-hdr" style="margin-block-start:4px">
@@ -1928,7 +1976,7 @@ dialog::backdrop {
   <div class="dlg-sec">
     <h3>Synced GEEK Lineage Theme (Web + GEEK)</h3>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px">
-      <button type="button" data-theme-pick="slate" class="chip-on">GEEK Hybrid</button>
+      <button type="button" data-theme-pick="slate" class="chip-on">Quiet</button>
       <button type="button" data-theme-pick="braun">Warm Braun</button>
       <button type="button" data-theme-pick="cobalt">Deep Cobalt</button>
     </div>
@@ -1985,6 +2033,6 @@ dialog::backdrop {
   </form>
 </dialog>
 
-<script src="app.js?v=20261028b"></script>
+<script src="app.js?v=20261028c"></script>
 </body>
 </html>
