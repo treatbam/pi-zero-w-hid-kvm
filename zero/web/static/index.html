@@ -7,26 +7,29 @@
 <style>
 :root {
   color-scheme: dark;
-  --bg: #0b0e14;
-  --cell: #131822;
-  --cell-hi: #242d3e;
-  --cell-lo: #05070b;
-  --well: #080a0f;
-  --zebra: #0f141d;
-  --lab: #5edaf2;
-  --val: #f2f5fa;
-  --grey: #828ea2;
-  --dimg: #303846;
-  --div: #1e2634;
-  --rx: #3ee8b5;
-  --tx: #52a8ff;
-  --ok: #38d878;
-  --warn: #ffc436;
-  --hot: #ff8424;
-  --bad: #f84848;
+  /* GEEK Hybrid Default: #2 matte charcoal ground + bone figures, #3 studio cobalt/mint/indigo/heat telemetry */
+  --bg: #09090a;
+  --cell: #161519;
+  --cell-hi: #292730;
+  --cell-lo: #040405;
+  --well: #0d0c0f;
+  --zebra: #121116;
+  --lab: #74a8ee;
+  --val: #f4efe6;
+  --grey: #96918b;
+  --dimg: #3a3842;
+  --div: #222028;
+  --rx: #2dd4bf;
+  --tx: #818cf8;
+  --ok: #34d399;
+  --warn: #ffca44;
+  --hot: #ff8c34;
+  --bad: #ff4e60;
   --in-oklab: ;
+  --scrollbar-thumb: var(--dimg);
+  --scrollbar-track: var(--well);
   accent-color: var(--lab);
-  scrollbar-color: var(--grey) var(--well);
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 @supports (background: linear-gradient(in oklab, white, black)) {
   :root { --in-oklab: in oklab; }
@@ -43,27 +46,27 @@
   --grey: #948c80;
   --dimg: #3e3832;
   --div: #2a2622;
-  --rx: #f5ac38;
-  --tx: #76ceb4;
+  --rx: #7ad68c;
+  --tx: #e8a838;
   --ok: #6cd076;
   --warn: #f8c440;
   --hot: #f67a2a;
   --bad: #ee443a;
 }
 :where([data-theme="cobalt"]) {
-  --bg: #080d18;
-  --cell: #0f1728;
-  --cell-hi: #20304e;
-  --cell-lo: #04070e;
-  --well: #050912;
-  --zebra: #0c1322;
-  --lab: #72baff;
+  --bg: #050810;
+  --cell: #0e1525;
+  --cell-hi: #1f2f4d;
+  --cell-lo: #020409;
+  --well: #080d18;
+  --zebra: #0b1120;
+  --lab: #74a8ee;
   --val: #eef4ff;
   --grey: #7c90b0;
   --dimg: #2a3852;
   --div: #1a2844;
-  --rx: #4cdcff;
-  --tx: #a884ff;
+  --rx: #2dd4bf;
+  --tx: #818cf8;
   --ok: #40e098;
   --warn: #ffca44;
   --hot: #ff8c34;
@@ -80,15 +83,28 @@ canvas { display: block; }
   block-size: 1px;
   padding: 0;
   margin: -1px;
-  overflow: hidden;
+  overflow: clip;
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
 }
 
+.scroller {
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: thin;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+@supports not (scrollbar-color: auto) {
+  .scroller::-webkit-scrollbar { width: 8px; height: 8px; }
+  .scroller::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 4px; }
+  .scroller::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+}
+
 body {
   margin: 0;
-  padding: 6px;
+  padding-block: 6px calc(6px + env(safe-area-inset-bottom, 0px));
+  padding-inline: calc(6px + env(safe-area-inset-left, 0px)) calc(6px + env(safe-area-inset-right, 0px));
   min-block-size: 100dvh;
   block-size: 100dvh;
   display: flex;
@@ -98,18 +114,19 @@ body {
   color: var(--val);
   font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
   font-size: 13px;
-  overflow: hidden;
+  overflow: clip;
   touch-action: manipulation;
 }
 
-/* Raised GEEK-lineage beveled cell & recessed well */
+/* GEEK-lineage raised beveled instrument card & recessed well */
 .bevel {
-  background: linear-gradient(to bottom var(--in-oklab), color-mix(in oklab, var(--cell) 88%, white 6%), var(--cell));
+  background: linear-gradient(to bottom var(--in-oklab), color-mix(in oklab, var(--cell) 90%, white 6%), var(--cell));
   border-top: 1px solid var(--cell-hi);
   border-left: 1px solid var(--cell-hi);
   border-right: 1px solid var(--cell-lo);
   border-bottom: 1px solid var(--cell-lo);
-  border-radius: 8px;
+  border-radius: 9px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
 }
 .well {
   background: var(--well);
@@ -118,78 +135,133 @@ body {
   border-right: 1px solid var(--div);
   border-bottom: 1px solid var(--div);
   border-radius: 7px;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.55);
 }
 
-button, select {
+button, select, input {
   margin: 0;
   min-inline-size: 0;
   font-family: inherit;
+}
+button, select {
   font-size: 12px;
+  font-weight: 500;
   color: var(--val);
-  background: linear-gradient(to bottom var(--in-oklab), color-mix(in oklab, var(--cell) 82%, white 10%), var(--cell));
+  background: linear-gradient(to bottom var(--in-oklab), color-mix(in oklab, var(--cell) 85%, white 9%), var(--cell));
   border-top: 1px solid var(--cell-hi);
   border-left: 1px solid var(--cell-hi);
   border-right: 1px solid var(--cell-lo);
   border-bottom: 1px solid var(--cell-lo);
   border-radius: 6px;
-  padding: 5px 9px;
+  padding-block: 5px;
+  padding-inline: 9px;
   cursor: pointer;
   touch-action: manipulation;
+  transition: border-color 120ms ease, background-color 120ms ease;
 }
+button:hover { border-color: color-mix(in oklab, var(--lab) 42%, var(--cell-hi)); }
 button:active { transform: translateY(1px); }
 button.chip-on, button.latched {
-  background: color-mix(in oklab, var(--lab) 24%, var(--cell));
+  background: color-mix(in oklab, var(--lab) 22%, var(--cell));
   border-color: var(--lab);
   color: var(--val);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--lab) 32%, transparent);
+}
+button.locked {
+  background: color-mix(in oklab, var(--rx) 24%, var(--cell));
+  border-color: var(--rx);
+  color: var(--val);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--rx) 45%, transparent);
 }
 button.go {
-  background: color-mix(in oklab, var(--ok) 28%, var(--cell));
-  border-color: var(--ok);
+  background: linear-gradient(to bottom var(--in-oklab), color-mix(in oklab, var(--ok) 36%, var(--cell)), color-mix(in oklab, var(--ok) 24%, var(--cell)));
+  border-color: color-mix(in oklab, var(--ok) 75%, white 10%);
   color: var(--val);
   font-weight: 600;
 }
+button.warn-chip {
+  background: color-mix(in oklab, var(--warn) 18%, var(--cell));
+  border-color: color-mix(in oklab, var(--warn) 65%, var(--cell-hi));
+  color: var(--warn);
+}
 button.danger {
-  background: color-mix(in oklab, var(--bad) 26%, var(--cell));
+  background: color-mix(in oklab, var(--bad) 24%, var(--cell));
   border-color: var(--bad);
 }
 
-/* Top Status Bar */
+/* ---- Top Instrument Status Bar ---- */
 .topbar {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
+  gap: 7px;
+  padding-block: 5px;
+  padding-inline: 9px;
   min-inline-size: 0;
   flex-shrink: 0;
   user-select: none;
 }
 #st {
-  flex: 1;
+  flex: 1 1 auto;
   min-inline-size: 0;
   display: flex;
   align-items: center;
-  gap: 7px;
-  overflow: hidden;
+  gap: 8px;
+  overflow: clip;
 }
 .pill {
-  font-weight: 800;
-  letter-spacing: .06em;
-  font-size: 11px;
-  padding: 2px 7px;
-  border-radius: 4px;
+  font: 800 11px/1 ui-monospace, SFMono-Regular, monospace;
+  letter-spacing: 0.06em;
+  padding-block: 4px;
+  padding-inline: 8px;
+  border-radius: 5px;
   background: var(--dimg);
   color: var(--val);
   flex-shrink: 0;
+  text-transform: uppercase;
 }
-.pill.linked { background: var(--ok); color: #04180c; }
-.pill.keys { background: var(--tx); color: #041022; }
+.pill.linked { background: var(--ok); color: #031b10; box-shadow: 0 0 10px color-mix(in oklab, var(--ok) 35%, transparent); }
+.pill.keys { background: var(--lab); color: #051124; }
 .pill.suspended { background: var(--warn); color: #221600; }
 .pill.nohost { background: var(--hot); color: #220b00; }
+
+.host-stack {
+  min-inline-size: 0;
+  display: flex;
+  align-items: baseline;
+  column-gap: 8px;
+  row-gap: 1px;
+  overflow: clip;
+}
+@media (max-width: 679px) {
+  .host-stack {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+#ip {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  color: var(--val);
+  font: 700 12.5px/1.2 ui-sans-serif, system-ui, sans-serif;
+  white-space: nowrap;
+  overflow: clip;
+  text-overflow: ellipsis;
+}
+#bar-sub {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  color: var(--grey);
+  font: 500 11px/1.2 ui-monospace, SFMono-Regular, monospace;
+  white-space: nowrap;
+  overflow: clip;
+  text-overflow: ellipsis;
+}
 
 .leds { display: inline-flex; gap: 3px; flex-shrink: 0; }
 .led {
   font: 700 10px/1 ui-monospace, monospace;
-  padding: 2px 4px;
+  padding-block: 3px;
+  padding-inline: 4px;
   border-radius: 3px;
   background: var(--well);
   color: var(--dimg);
@@ -201,47 +273,62 @@ button.danger {
   border-color: var(--rx);
 }
 
-#ip {
-  min-inline-size: 0;
-  color: var(--lab);
-  font: 600 12px/1.2 ui-monospace, SFMono-Regular, monospace;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 .xport-badge {
   font: 600 11px/1 ui-monospace, monospace;
   color: var(--grey);
-  padding: 3px 6px;
+  padding-block: 4px;
+  padding-inline: 6px;
   border-radius: 4px;
   background: var(--well);
   border: 1px solid var(--div);
   flex-shrink: 0;
 }
-.xport-badge.ws-live { color: var(--rx); border-color: color-mix(in oklab, var(--rx) 45%, var(--div)); }
+.xport-badge.ws-live {
+  color: var(--rx);
+  border-color: color-mix(in oklab, var(--rx) 45%, var(--div));
+}
 
-.theme-seg {
+/* Desktop inline workspace switcher */
+.top-nav {
   display: none;
-  gap: 2px;
+  gap: 3px;
   padding: 2px;
+  flex-shrink: 0;
 }
-@media (min-width: 640px) {
-  .theme-seg { display: inline-flex; }
-}
-.theme-seg button {
-  padding: 3px 7px;
-  font-size: 11px;
-  border-radius: 4px;
+.top-nav button {
+  padding-block: 4px;
+  padding-inline: 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  border-radius: 5px;
 }
 
-/* Auto-Helper Pairing Banner */
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+#tablet-btn {
+  font-weight: 600;
+  display: none;
+}
+@media (min-width: 500px) {
+  #tablet-btn { display: inline-flex; align-items: center; gap: 4px; }
+}
+@media (max-width: 679px) {
+  #mode, #ping-top, .xport-badge { display: none; }
+}
+
+/* ---- Auto-Helper Pairing Banner ---- */
 #pair-banner {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 6px 10px;
+  padding-block: 6px;
+  padding-inline: 10px;
   border-left: 3px solid var(--warn);
   flex-shrink: 0;
 }
@@ -251,92 +338,7 @@ button.danger {
 .pair-copy span { color: var(--grey); font-size: 11px; }
 .pair-actions { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 
-/* Main Cockpit Grid */
-.cockpit {
-  flex: 1 1 auto;
-  min-block-size: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.col-left, .col-right {
-  min-inline-size: 0;
-  min-block-size: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-/* Pinned 16:9 Live Desktop Stage */
-.stage-card {
-  padding: 5px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  flex-shrink: 0;
-}
-.stage-well {
-  position: relative;
-  inline-size: 100%;
-  aspect-ratio: 16 / 9;
-  max-block-size: 28dvh;
-  overflow: hidden;
-  display: grid;
-  place-items: center;
-}
-#pvc {
-  inline-size: 100%;
-  block-size: 100%;
-  object-fit: contain;
-}
-#stage-empty {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  text-align: center;
-  padding: 12px;
-  color: var(--grey);
-  font-size: 12px;
-  pointer-events: none;
-}
-#loupe-wrap {
-  position: absolute;
-  inset-block-end: 6px;
-  inset-inline-end: 6px;
-  inline-size: clamp(96px, 26%, 168px);
-  aspect-ratio: 16 / 9;
-  border: 1px solid var(--lab);
-  border-radius: 5px;
-  overflow: hidden;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, .65);
-  background: #000;
-}
-#loupe-wrap[hidden] { display: none; }
-#loupe-cv { inline-size: 100%; block-size: 100%; image-rendering: pixelated; }
-
-.stage-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--grey);
-  user-select: none;
-}
-.stage-bar-left, .stage-bar-right {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  min-inline-size: 0;
-}
-#pvst {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Portrait Deck Switcher */
+/* ---- Mobile & Tablet Deck Switcher ---- */
 .deck-tabs {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -351,125 +353,462 @@ button.danger {
   font-size: 12px;
 }
 
-/* Telemetry 2x2 Grid (GEEK Lineage) */
-.telemetry {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
+/* ---- Main Cockpit Grid ---- */
+.cockpit {
+  flex: 1 1 auto;
   min-block-size: 0;
-  overflow: auto;
+  min-inline-size: 0;
+  display: grid;
+  gap: 7px;
 }
-.t-cell {
-  padding: 7px 8px;
+
+/* Named Grid Regions */
+#stage-card     { grid-area: stage; }
+#mini-telemetry { grid-area: ministats; }
+#type-form      { grid-area: typebar; }
+#quick-strip    { grid-area: quickkeys; }
+#kb-wrap        { grid-area: keyboard; }
+#drawer-bar     { grid-area: drawerbar; }
+#pad            { grid-area: trackpad; }
+#term-card      { grid-area: terminal; }
+#stats-dash     { grid-area: statsdash; }
+
+/* ---- 1. Pinned 16:9 Live Desktop Stage ---- */
+.stage-card {
+  padding: 6px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
   min-inline-size: 0;
+  min-block-size: 0;
+  overflow: clip;
+}
+.stage-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--grey);
+  user-select: none;
+  flex-shrink: 0;
+}
+.stage-bar-left, .stage-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-inline-size: 0;
+}
+.stage-title {
+  font: 600 11px/1.2 ui-monospace, SFMono-Regular, monospace;
+  color: var(--lab);
+  white-space: nowrap;
+  overflow: clip;
+  text-overflow: ellipsis;
+}
+#pvst {
+  font: 500 11px/1.2 ui-monospace, SFMono-Regular, monospace;
+  color: var(--grey);
+  white-space: nowrap;
+  overflow: clip;
+  text-overflow: ellipsis;
+}
+.stage-bar select, .stage-bar button {
+  padding-block: 3px;
+  padding-inline: 7px;
+  font-size: 11px;
+}
+
+.stage-well {
+  position: relative;
+  flex: 1 1 0;
+  inline-size: 100%;
+  min-block-size: 72px;
+  overflow: clip;
+  display: grid;
+  place-items: center;
+  background: #040406;
+}
+#pvc {
+  inline-size: 100%;
+  block-size: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+}
+#stage-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-align: center;
+  padding: 14px;
+  color: var(--grey);
+  font-size: 12px;
+  pointer-events: none;
+}
+#stage-empty[hidden] { display: none; }
+.empty-tag {
+  font: 700 10px/1 ui-monospace, monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--lab);
+  padding: 3px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--div);
+  background: color-mix(in oklab, var(--cell) 80%, transparent);
+}
+
+#loupe-wrap {
+  position: absolute;
+  inset-block-end: 7px;
+  inset-inline-end: 7px;
+  inline-size: clamp(108px, 27%, 184px);
+  aspect-ratio: 16 / 9;
+  border: 1.5px solid var(--rx);
+  border-radius: 6px;
+  overflow: clip;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.78);
+  background: #000;
+}
+#loupe-wrap[hidden] { display: none; }
+#loupe-cv { inline-size: 100%; block-size: 100%; image-rendering: pixelated; }
+.loupe-tag {
+  position: absolute;
+  inset-block-end: 3px;
+  inset-inline-start: 5px;
+  font: 800 9px/1 ui-monospace, monospace;
+  letter-spacing: 0.06em;
+  color: var(--rx);
+  text-shadow: 0 1px 2px #000;
+  pointer-events: none;
+}
+
+/* ---- 2. Mini Telemetry Strip (4 GEEK Beveled Instrument Cards) ---- */
+.mini-telemetry-wrap {
+  container: ministats / inline-size;
+  min-inline-size: 0;
+  min-block-size: 0;
+  display: flex;
+}
+.mini-telemetry {
+  flex: 1 1 auto;
+  inline-size: 100%;
+  min-block-size: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+@container ministats (max-width: 620px) {
+  .mini-telemetry {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 5px;
+  }
+  .mini-telemetry .t-cell { padding-block: 5px; padding-inline: 7px; gap: 3px; }
+  .mini-telemetry .t-hero { font-size: 20px; }
+  .mini-telemetry .spark-well { block-size: 26px; }
+  .mini-telemetry .cores-strip { block-size: 26px; }
+}
+
+.t-cell {
+  padding-block: 7px;
+  padding-inline: 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-inline-size: 0;
+  min-block-size: 0;
+  cursor: pointer;
+  overflow: clip;
+  transition: border-color 120ms ease;
+}
+.t-cell:hover {
+  border-color: color-mix(in oklab, var(--lab) 48%, var(--cell-hi));
 }
 .t-hdr {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
   gap: 4px;
-  font: 700 10px/1.1 ui-monospace, monospace;
-  letter-spacing: .06em;
+  font: 700 10px/1.1 ui-monospace, SFMono-Regular, monospace;
+  letter-spacing: 0.06em;
   color: var(--lab);
   text-transform: uppercase;
+  flex-shrink: 0;
+}
+.t-hdr-sub {
+  color: var(--grey);
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.t-hero-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
 }
 .t-hero {
-  font: 800 22px/1.05 ui-sans-serif, system-ui, sans-serif;
-  text-shadow: 1px 1px 0 #000;
+  font: 800 25px/1 ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: -0.02em;
+  text-shadow: 0 1px 0 #000;
+  font-variant-numeric: tabular-nums;
+}
+.t-load {
+  font: 700 12px/1.1 ui-monospace, SFMono-Regular, monospace;
+  color: var(--val);
+  font-variant-numeric: tabular-nums;
 }
 .t-sub {
-  font: 11px/1.25 ui-monospace, monospace;
+  font: 11px/1.25 ui-monospace, SFMono-Regular, monospace;
   color: var(--grey);
   white-space: nowrap;
-  overflow: hidden;
+  overflow: clip;
   text-overflow: ellipsis;
 }
 .spark-well {
-  block-size: 38px;
+  margin-block-start: auto;
+  block-size: 40px;
   inline-size: 100%;
-  overflow: hidden;
+  overflow: clip;
 }
 .spark-well canvas { inline-size: 100%; block-size: 100%; }
+
+/* Core Heat Vertical Bar Strip */
 .cores-strip {
   display: flex;
   align-items: flex-end;
   gap: 2px;
-  block-size: 30px;
+  block-size: 38px;
   padding: 3px;
+  flex-shrink: 0;
 }
 .core-bar {
   flex: 1 1 0;
-  min-inline-size: 3px;
+  min-inline-size: 2px;
   block-size: 100%;
-  background: var(--bg);
+  background: color-mix(in oklab, var(--bg) 82%, var(--div));
   position: relative;
-  border-radius: 1px;
+  border-radius: 1.5px;
+  overflow: clip;
 }
 .core-bar i {
   position: absolute;
   inset-inline: 0;
   inset-block-end: 0;
   background: var(--rx);
+  border-radius: 1px;
 }
+
 .proc-list {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font: 11px/1.3 ui-monospace, monospace;
+  font: 11px/1.28 ui-monospace, SFMono-Regular, monospace;
+  font-variant-numeric: tabular-nums;
+  overflow: clip;
 }
 .proc-row {
+  position: relative;
   display: flex;
   justify-content: space-between;
+  align-items: baseline;
   gap: 6px;
-  padding: 1px 4px;
+  padding-block: 1.5px 2.5px;
+  padding-inline: 4px;
   border-radius: 3px;
+  overflow: clip;
 }
 .proc-row:nth-child(odd) { background: var(--zebra); }
 .proc-row span:first-child {
   min-inline-size: 0;
-  overflow: hidden;
+  overflow: clip;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.proc-row i.proc-line {
+  position: absolute;
+  inset-inline-start: 0;
+  inset-block-end: 0;
+  block-size: 1.5px;
+  background: var(--rx);
+  opacity: 0.85;
+}
 
-/* Type / Clipboard Form */
+/* Memory & Disk Progress Meters */
+.meter-block {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.meter-lbl {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 4px;
+  font: 700 9.5px/1.1 ui-monospace, monospace;
+  color: var(--grey);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.meter-val {
+  font: 800 14.5px/1.1 ui-sans-serif, system-ui, sans-serif;
+  color: var(--val);
+  font-variant-numeric: tabular-nums;
+}
+.meter-val small {
+  font-weight: 600;
+  font-size: 11.5px;
+  color: var(--grey);
+}
+.meter-well {
+  block-size: 7px;
+  inline-size: 100%;
+  border-radius: 4px;
+  overflow: clip;
+}
+.meter-well i {
+  display: block;
+  block-size: 100%;
+  inline-size: 0%;
+  background: var(--rx);
+  border-radius: 3px;
+  transition: inline-size 240ms ease;
+}
+
+.net-rates {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  font: 700 11.5px/1.15 ui-monospace, SFMono-Regular, monospace;
+  font-variant-numeric: tabular-nums;
+}
+.rx-txt { color: var(--rx); }
+.tx-txt { color: var(--tx); }
+
+/* ---- 3. Type / UTF-8 Clipboard Bar ---- */
 #type-form {
   display: flex;
-  gap: 4px;
+  gap: 5px;
   min-inline-size: 0;
   flex-shrink: 0;
 }
 #txt {
-  flex: 1;
+  flex: 1 1 auto;
   min-inline-size: 0;
-  font-size: 14px;
-  padding: 6px 8px;
+  font-size: 13.5px;
+  padding-block: 6px;
+  padding-inline: 10px;
   color: var(--val);
-  border-radius: 6px;
+  border-radius: 7px;
 }
+#txt::placeholder { color: var(--grey); opacity: 0.78; }
 
-/* Quick-Key Strip */
+/* ---- 4. Quick-Key, Sticky Modifier & Clipboard Strip (Mobile & Tablet) ---- */
 .quick-strip {
   display: grid;
-  grid-template-columns: repeat(8, minmax(0, 1fr));
-  gap: 4px;
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+  gap: 3.5px;
   flex-shrink: 0;
   user-select: none;
 }
 .quick-strip button {
-  padding-block: 6px;
+  padding-block: 7px;
+  padding-inline: 2px;
   font-weight: 600;
   font-size: 11px;
+  white-space: nowrap;
 }
 
-/* Generous Recessed Relative Trackpad Well */
-.pad-shell {
-  flex: 1 1 auto;
-  min-block-size: 155px;
+/* ---- 5. 16-Column Tactile Keyboard ---- */
+.kb-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   padding: 6px;
+  flex-shrink: 0;
+  user-select: none;
+}
+#kb {
+  display: flex;
+  flex-direction: column;
+  gap: 3.5px;
+}
+.row {
+  display: grid;
+  grid-template-columns: repeat(16, minmax(0, 1fr));
+  gap: 3.5px;
+}
+#kb button {
+  padding-block: 8.5px;
+  padding-inline: 0;
+  font-size: clamp(0.6875rem, 0.52rem + 0.6vw, 0.825rem);
+  font-weight: 600;
+  line-height: 1.1;
+  border-radius: 5px;
+  background: linear-gradient(to bottom var(--in-oklab), color-mix(in oklab, var(--cell) 82%, white 8%), color-mix(in oklab, var(--cell) 92%, black 8%));
+}
+#kb button.mod {
+  color: var(--grey);
+  background: linear-gradient(to bottom var(--in-oklab), color-mix(in oklab, var(--well) 70%, var(--cell)), var(--well));
+}
+#kb button.fn {
+  color: var(--lab);
+  font-weight: 700;
+  border-color: color-mix(in oklab, var(--lab) 42%, var(--cell-hi));
+}
+#kb button.sp {
+  background: linear-gradient(to bottom var(--in-oklab), color-mix(in oklab, var(--cell) 78%, white 11%), var(--cell));
+}
+#kb button.hw { opacity: 0.58; }
+
+/* ---- 6. Desktop Right-Pane Drawer Switcher ---- */
+.drawer-bar {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding-inline: 3px;
+  user-select: none;
+}
+.drawer-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  padding-block: 3px;
+  padding-inline: 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--grey);
+  border-radius: 999px;
+}
+.drawer-pill::before {
+  content: "";
+  inline-size: 7px;
+  block-size: 7px;
+  border-radius: 50%;
+  border: 1.5px solid var(--grey);
+}
+.drawer-pill.chip-on {
+  color: var(--val);
+  background: color-mix(in oklab, var(--lab) 16%, var(--cell));
+  border-color: color-mix(in oklab, var(--lab) 50%, var(--div));
+  box-shadow: none;
+}
+.drawer-pill.chip-on::before {
+  background: var(--rx);
+  border-color: var(--rx);
+  box-shadow: 0 0 6px var(--rx);
+}
+
+/* ---- 7. Generous Recessed Relative Trackpad Well ---- */
+.pad-shell {
+  min-block-size: 145px;
+  padding: 7px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -482,29 +821,34 @@ button.danger {
   gap: 4px;
   flex-wrap: wrap;
 }
-.pad-toolbar-group { display: flex; gap: 4px; align-items: center; }
-.pad-toolbar button { padding: 3px 7px; font-size: 11px; }
+.pad-toolbar-group { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.pad-toolbar button {
+  padding-block: 3px;
+  padding-inline: 8px;
+  font-size: 11px;
+  border-radius: 5px;
+}
 
 .pad-main {
   flex: 1 1 auto;
-  min-block-size: 110px;
+  min-block-size: 96px;
   display: flex;
-  gap: 5px;
 }
 #surface {
   position: relative;
-  flex: 1;
+  flex: 1 1 auto;
   min-inline-size: 0;
   display: grid;
   place-items: center;
   touch-action: none;
-  overflow: hidden;
+  overflow: clip;
   background-color: var(--well);
-  background-image: radial-gradient(color-mix(in oklab, var(--lab) 16%, transparent) 1px, transparent 1px);
-  background-size: 16px 16px;
+  background-image: radial-gradient(color-mix(in oklab, var(--lab) 18%, transparent) 1px, transparent 1px);
+  background-size: 18px 18px;
+  border-radius: 8px;
 }
 #surface.dragging {
-  box-shadow: inset 0 0 0 1px var(--rx);
+  box-shadow: inset 0 0 0 1.5px var(--rx), inset 0 2px 10px rgba(0, 0, 0, 0.6);
 }
 #view {
   position: absolute;
@@ -514,175 +858,595 @@ button.danger {
   object-fit: contain;
   image-rendering: pixelated;
   pointer-events: none;
-  opacity: .84;
+  opacity: 0.84;
 }
 #view[hidden] { display: none; }
-#pad-label {
-  color: var(--dimg);
-  font: 700 11px/1.3 ui-monospace, monospace;
-  letter-spacing: .12em;
-  text-align: center;
-  pointer-events: none;
-}
-.scrolls {
+
+.pad-center-mark {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+  text-align: center;
+  padding-inline: 12px;
 }
-.scrolls button {
-  flex: 1;
-  padding-inline: 11px;
-  font-weight: 700;
+.pad-center-mark[hidden] { display: none; }
+.pad-arc {
+  inline-size: 86px;
+  block-size: 32px;
+  color: var(--rx);
+  opacity: 0.72;
 }
+#pad-label {
+  color: var(--grey);
+  font: 600 10.5px/1.35 ui-monospace, SFMono-Regular, monospace;
+  letter-spacing: 0.08em;
+  opacity: 0.72;
+}
+#pad-touch-ring {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  inline-size: 28px;
+  block-size: 28px;
+  margin-inline-start: -14px;
+  margin-block-start: -14px;
+  border-radius: 50%;
+  border: 2px solid var(--rx);
+  background: color-mix(in oklab, var(--rx) 16%, transparent);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+#pad-touch-ring.active { opacity: 1; }
+
 .pad-btns {
   display: grid;
-  grid-template-columns: 1.3fr .8fr 1.3fr;
-  gap: 5px;
+  grid-template-columns: 1.25fr 0.85fr 1.25fr;
+  gap: 6px;
 }
 .pad-btns button {
   padding-block: 9px;
   font-weight: 600;
-  border-radius: 6px;
+  font-size: 12px;
+  border-radius: 7px;
 }
 
-/* 16-Column Tactile Keyboard */
-.drawer-bar {
-  display: none;
-  gap: 4px;
-  user-select: none;
-}
-#kb {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  flex-shrink: 0;
-  user-select: none;
-}
-.row {
-  display: grid;
-  grid-template-columns: repeat(16, minmax(0, 1fr));
-  gap: 3px;
-}
-#kb button {
-  padding-block: 8px;
-  padding-inline: 0;
-  font-size: clamp(0.625rem, 0.5rem + 0.8vw, 0.8125rem);
-  line-height: 1.1;
-  border-radius: 5px;
-}
-#kb button.mod { color: var(--grey); }
-#kb button.fn { color: var(--lab); font-weight: 700; }
-#kb button.sp { background: color-mix(in oklab, var(--cell) 75%, white 12%); }
-#kb button.hw { opacity: .55; }
-
-/* Inline Serial Terminal Deck / Drawer */
+/* ---- 8. Integrated USB Serial Terminal ---- */
 #term-card {
-  flex: 1 1 auto;
   min-block-size: 150px;
-  padding: 6px;
+  padding: 7px;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
 }
 .term-hdr {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  font-size: 11px;
+  font-size: 11.5px;
+}
+.term-qkeys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  user-select: none;
+}
+.term-qkeys button {
+  padding-block: 4px;
+  padding-inline: 8px;
+  font: 600 11px/1.1 ui-monospace, monospace;
 }
 #term-out {
   flex: 1 1 auto;
   min-block-size: 90px;
   margin: 0;
-  padding: 6px 8px;
-  font: 12px/1.35 ui-monospace, SFMono-Regular, monospace;
+  padding: 8px 10px;
+  font: 12px/1.38 ui-monospace, SFMono-Regular, monospace;
   color: var(--rx);
-  overflow: auto;
+  overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-word;
 }
 #term-form {
   display: flex;
-  gap: 4px;
+  gap: 5px;
   min-inline-size: 0;
 }
 #term-cmd {
-  flex: 1;
+  flex: 1 1 auto;
   min-inline-size: 0;
   font: 13px/1.2 ui-monospace, monospace;
-  padding: 5px 8px;
+  padding: 6px 9px;
   color: var(--val);
+  border-radius: 6px;
 }
 
+/* ---- 9. Dedicated Proper Stats Dashboard (#stats-dash) ---- */
+.stats-dash {
+  min-block-size: 0;
+  min-inline-size: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-inline-end: 2px;
+}
+.stats-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  flex-shrink: 0;
+}
+.stats-banner-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  font: 600 12px/1.3 ui-monospace, SFMono-Regular, monospace;
+}
+.stats-banner-meta strong {
+  font: 800 14px/1.2 ui-sans-serif, system-ui, sans-serif;
+  color: var(--val);
+}
+.stats-kv-chip {
+  color: var(--grey);
+  font-size: 11.5px;
+}
+.stats-kv-chip b { color: var(--lab); font-weight: 700; }
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 8px;
+}
+.s-panel {
+  grid-column: span 6;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-inline-size: 0;
+}
+@media (max-width: 900px) {
+  .s-panel { grid-column: span 12; }
+}
+.s-panel-hdr {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  padding-block-end: 5px;
+  border-bottom: 1px solid var(--div);
+}
+.s-panel-title {
+  font: 800 11px/1.2 ui-monospace, SFMono-Regular, monospace;
+  letter-spacing: 0.08em;
+  color: var(--lab);
+  text-transform: uppercase;
+}
+.s-panel-sub {
+  font: 600 11px/1.2 ui-monospace, SFMono-Regular, monospace;
+  color: var(--grey);
+}
+
+.s-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+@media (max-width: 520px) {
+  .s-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.s-kpi {
+  padding: 7px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.s-kpi-lbl {
+  font: 700 9.5px/1.1 ui-monospace, monospace;
+  letter-spacing: 0.05em;
+  color: var(--grey);
+  text-transform: uppercase;
+}
+.s-kpi-val {
+  font: 800 20px/1.1 ui-sans-serif, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+.s-kpi-sub {
+  font: 10.5px/1.2 ui-monospace, monospace;
+  color: var(--grey);
+}
+
+.s-graph-well {
+  block-size: 104px;
+  inline-size: 100%;
+  overflow: clip;
+  position: relative;
+}
+.s-graph-well canvas { inline-size: 100%; block-size: 100%; }
+
+.s-cores-matrix {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
+  gap: 5px;
+  padding: 6px;
+}
+.s-core-tile {
+  padding: 4px 5px;
+  border-radius: 4px;
+  background: var(--zebra);
+  border: 1px solid var(--div);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font: 600 10px/1 ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+.s-core-top {
+  display: flex;
+  justify-content: space-between;
+  color: var(--grey);
+}
+.s-core-top b { color: var(--val); }
+.s-core-track {
+  block-size: 4px;
+  background: var(--bg);
+  border-radius: 2px;
+  overflow: clip;
+}
+.s-core-track i {
+  display: block;
+  block-size: 100%;
+  background: var(--rx);
+}
+
+.s-table {
+  inline-size: 100%;
+  border-collapse: collapse;
+  font: 11.5px/1.35 ui-monospace, SFMono-Regular, monospace;
+  font-variant-numeric: tabular-nums;
+}
+.s-table th {
+  text-align: start;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--grey);
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--div);
+}
+.s-table th.num, .s-table td.num { text-align: end; }
+.s-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid color-mix(in oklab, var(--div) 55%, transparent);
+}
+.s-table tbody tr:nth-child(odd) { background: var(--zebra); }
+.s-share-bar {
+  display: flex;
+  block-size: 5px;
+  min-inline-size: 48px;
+  background: var(--bg);
+  border-radius: 3px;
+  overflow: clip;
+}
+.s-share-rx { background: var(--rx); block-size: 100%; }
+.s-share-tx { background: var(--tx); block-size: 100%; }
+
+.s-appliance-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+@media (max-width: 560px) {
+  .s-appliance-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* Footer toast line */
 #pwr {
-  font: 11px/1.2 ui-monospace, monospace;
+  font: 11px/1.2 ui-monospace, SFMono-Regular, monospace;
   color: var(--grey);
   min-block-size: 1.2em;
   padding-inline: 4px;
   flex-shrink: 0;
   white-space: nowrap;
-  overflow: hidden;
+  overflow: clip;
   text-overflow: ellipsis;
 }
+#pwr:empty { display: none; }
 
-/* Portrait deck visibility */
-@media (max-width: 919px) {
-  body[data-deck="pad"] .telemetry,
-  body[data-deck="pad"] #type-form,
-  body[data-deck="pad"] #kb,
-  body[data-deck="pad"] #term-card { display: none; }
+/* ============================================================================
+   RESPONSIVE & EXPLICIT LAYOUT MODES (stats | desktop | tablet | mobile)
+   ============================================================================ */
 
-  body[data-deck="keys"] .telemetry,
-  body[data-deck="keys"] .quick-strip,
-  body[data-deck="keys"] #term-card { display: none; }
-  body[data-deck="keys"] .stage-well { max-block-size: 19dvh; }
-  body[data-deck="keys"] .pad-shell { min-block-size: 110px; }
-  body[data-deck="keys"] .pad-toolbar { display: none; }
+/* A. Full Stats Deck overrides all layouts cleanly */
+body[data-deck="stats"] #stage-card,
+body[data-deck="stats"] #mini-telemetry,
+body[data-deck="stats"] #type-form,
+body[data-deck="stats"] #quick-strip,
+body[data-deck="stats"] #kb-wrap,
+body[data-deck="stats"] #drawer-bar,
+body[data-deck="stats"] #pad,
+body[data-deck="stats"] #term-card { display: none; }
 
-  body[data-deck="term"] .telemetry,
-  body[data-deck="term"] #type-form,
-  body[data-deck="term"] .quick-strip,
-  body[data-deck="term"] .pad-shell,
-  body[data-deck="term"] #kb { display: none; }
-
-  body[data-deck="stats"] #type-form,
-  body[data-deck="stats"] .quick-strip,
-  body[data-deck="stats"] .pad-shell,
-  body[data-deck="stats"] #kb,
-  body[data-deck="stats"] #term-card { display: none; }
-  body[data-deck="stats"] .telemetry { flex: 1 1 auto; }
+body[data-deck="stats"] .cockpit {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "statsdash";
 }
 
-/* Wide Laptop / Tablet Side-by-Side Split Cockpit */
-@media (min-width: 920px) {
-  .deck-tabs { display: none; }
-  .cockpit {
-    display: grid;
-    grid-template-columns: minmax(0, 1.28fr) minmax(370px, 1fr);
-    gap: 8px;
+/* B. Desktop Split Cockpit (matches Mockup B right-side layout) */
+body[data-resolved-layout="desktop"] .deck-tabs { display: none; }
+body[data-resolved-layout="desktop"] .top-nav { display: inline-flex; }
+
+body[data-resolved-layout="desktop"]:not([data-deck="stats"]) #stats-dash,
+body[data-resolved-layout="desktop"]:not([data-deck="stats"]) #quick-strip { display: none; }
+
+body[data-resolved-layout="desktop"]:is([data-deck="pad"], [data-deck="keys"]) .cockpit {
+  grid-template-columns: minmax(0, 1.38fr) minmax(392px, 0.96fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr) minmax(154px, 182px);
+  grid-template-areas:
+    "stage     typebar"
+    "stage     keyboard"
+    "stage     drawerbar"
+    "stage     trackpad"
+    "ministats trackpad";
+}
+body[data-resolved-layout="desktop"]:is([data-deck="pad"], [data-deck="keys"]) .drawer-bar {
+  display: flex;
+}
+body[data-resolved-layout="desktop"]:is([data-deck="pad"], [data-deck="keys"])[data-drawer="pad"] #term-card {
+  display: none;
+}
+body[data-resolved-layout="desktop"]:is([data-deck="pad"], [data-deck="keys"])[data-drawer="term"] .cockpit {
+  grid-template-areas:
+    "stage     typebar"
+    "stage     keyboard"
+    "stage     drawerbar"
+    "stage     terminal"
+    "ministats terminal";
+}
+body[data-resolved-layout="desktop"]:is([data-deck="pad"], [data-deck="keys"])[data-drawer="term"] #pad {
+  display: none;
+}
+
+body[data-resolved-layout="desktop"][data-deck="term"] #type-form,
+body[data-resolved-layout="desktop"][data-deck="term"] #kb-wrap,
+body[data-resolved-layout="desktop"][data-deck="term"] #drawer-bar,
+body[data-resolved-layout="desktop"][data-deck="term"] #pad { display: none; }
+
+body[data-resolved-layout="desktop"][data-deck="term"] .cockpit {
+  grid-template-columns: minmax(0, 1.18fr) minmax(420px, 1fr);
+  grid-template-rows: minmax(0, 1fr) minmax(154px, 182px);
+  grid-template-areas:
+    "stage     terminal"
+    "ministats terminal";
+}
+
+/* C. Tablet-Friendly Touch Mode (42px+ touch ergonomics, portrait & landscape) */
+body[data-resolved-layout="tablet"] .topbar button,
+body[data-resolved-layout="tablet"] .deck-tabs button {
+  min-block-size: 40px;
+  padding-block: 8px;
+  font-size: 13px;
+}
+body[data-resolved-layout="tablet"] #txt,
+body[data-resolved-layout="tablet"] #type-form button {
+  min-block-size: 40px;
+  padding-block: 8px;
+  font-size: 14px;
+}
+body[data-resolved-layout="tablet"] .pad-btns button {
+  min-block-size: 44px;
+  padding-block: 12px;
+  font-size: 13.5px;
+}
+body[data-resolved-layout="tablet"] .pad-toolbar button {
+  min-block-size: 34px;
+  padding-block: 6px;
+  padding-inline: 10px;
+  font-size: 12px;
+}
+body[data-resolved-layout="tablet"] #kb button {
+  min-block-size: 42px;
+  padding-block: 11px;
+  font-size: clamp(0.8125rem, 0.65rem + 0.65vw, 0.95rem);
+  border-radius: 7px;
+}
+body[data-resolved-layout="tablet"] .quick-strip button {
+  min-block-size: 42px;
+  padding-block: 10px;
+  font-size: 12.5px;
+  border-radius: 7px;
+}
+
+body[data-resolved-layout="tablet"]:not([data-deck="stats"]) #stats-dash,
+body[data-resolved-layout="tablet"]:not([data-deck="stats"]) #drawer-bar { display: none; }
+
+/* Tablet 1: Trackpad Deck (Two-Hand Thumb Ergonomics) */
+body[data-resolved-layout="tablet"][data-deck="pad"] #kb-wrap,
+body[data-resolved-layout="tablet"][data-deck="pad"] #term-card { display: none; }
+
+body[data-resolved-layout="tablet"][data-deck="pad"] .cockpit {
+  grid-template-columns: minmax(0, 1.18fr) minmax(300px, 0.92fr);
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-areas:
+    "stage     typebar"
+    "stage     trackpad"
+    "ministats trackpad"
+    "quickkeys trackpad";
+}
+@media (max-width: 859px) {
+  body[data-resolved-layout="tablet"][data-deck="pad"] .cockpit {
+    grid-template-columns: 210px minmax(0, 1fr);
+    grid-template-rows: minmax(185px, 35dvh) auto auto minmax(180px, 1fr);
+    grid-template-areas:
+      "stage     stage"
+      "ministats ministats"
+      "typebar   typebar"
+      "quickkeys trackpad";
   }
-  .stage-well { max-block-size: 46dvh; }
-  .telemetry { flex: 1 1 auto; }
-  .drawer-bar { display: flex; }
-  body[data-drawer="kb"] #term-card { display: none; }
-  body[data-drawer="term"] #kb { display: none; }
+  body[data-resolved-layout="tablet"][data-deck="pad"] .quick-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-content: stretch;
+  }
+}
+@media (max-width: 599px) {
+  body[data-resolved-layout="tablet"][data-deck="pad"] .cockpit {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(150px, 28dvh) auto minmax(170px, 1fr);
+    grid-template-areas:
+      "stage"
+      "quickkeys"
+      "trackpad";
+  }
+  body[data-resolved-layout="tablet"][data-deck="pad"] #mini-telemetry { display: none; }
+  body[data-resolved-layout="tablet"][data-deck="pad"]:not([data-clip-open="1"]) #type-form { display: none; }
+  body[data-resolved-layout="tablet"][data-deck="pad"][data-clip-open="1"] .cockpit {
+    grid-template-rows: minmax(135px, 24dvh) auto auto minmax(155px, 1fr);
+    grid-template-areas:
+      "stage"
+      "typebar"
+      "quickkeys"
+      "trackpad";
+  }
+  body[data-resolved-layout="tablet"][data-deck="pad"] .quick-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
-/* Modal Dialogs (light-dismiss enabled) */
+/* Tablet 2: Pad + Keys Deck (Stand Mode: Stage + Trackpad on top, Full-Width Big Keyboard below) */
+body[data-resolved-layout="tablet"][data-deck="keys"] #mini-telemetry,
+body[data-resolved-layout="tablet"][data-deck="keys"] #quick-strip,
+body[data-resolved-layout="tablet"][data-deck="keys"] #term-card { display: none; }
+
+body[data-resolved-layout="tablet"][data-deck="keys"] .cockpit {
+  grid-template-columns: minmax(0, 1.22fr) minmax(260px, 1fr);
+  grid-template-rows: auto minmax(130px, 1fr) auto;
+  grid-template-areas:
+    "stage    typebar"
+    "stage    trackpad"
+    "keyboard keyboard";
+}
+@media (max-width: 679px) {
+  body[data-resolved-layout="tablet"][data-deck="keys"] .cockpit {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(115px, 20dvh) auto minmax(105px, 1fr) auto;
+    grid-template-areas:
+      "stage"
+      "typebar"
+      "trackpad"
+      "keyboard";
+  }
+}
+
+/* Tablet 3: Terminal Deck */
+body[data-resolved-layout="tablet"][data-deck="term"] #mini-telemetry,
+body[data-resolved-layout="tablet"][data-deck="term"] #type-form,
+body[data-resolved-layout="tablet"][data-deck="term"] #quick-strip,
+body[data-resolved-layout="tablet"][data-deck="term"] #kb-wrap,
+body[data-resolved-layout="tablet"][data-deck="term"] #pad { display: none; }
+
+body[data-resolved-layout="tablet"][data-deck="term"] .cockpit {
+  grid-template-columns: minmax(0, 1.05fr) minmax(320px, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "stage terminal";
+}
+@media (max-width: 859px) {
+  body[data-resolved-layout="tablet"][data-deck="term"] .cockpit {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(150px, 27dvh) minmax(0, 1fr);
+    grid-template-areas:
+      "stage"
+      "terminal";
+  }
+}
+
+/* D. Mobile Portrait Mode (matches Mockup B left-side layout) */
+body[data-resolved-layout="mobile"]:not([data-deck="stats"]) #stats-dash,
+body[data-resolved-layout="mobile"]:not([data-deck="stats"]) #mini-telemetry,
+body[data-resolved-layout="mobile"]:not([data-deck="stats"]) #drawer-bar { display: none; }
+
+body[data-resolved-layout="mobile"][data-deck="pad"]:not([data-clip-open="1"]) #type-form,
+body[data-resolved-layout="mobile"][data-deck="pad"] #kb-wrap,
+body[data-resolved-layout="mobile"][data-deck="pad"] #term-card { display: none; }
+
+body[data-resolved-layout="mobile"][data-deck="pad"] .cockpit {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(135px, 28dvh) auto minmax(165px, 1fr);
+  grid-template-areas:
+    "stage"
+    "quickkeys"
+    "trackpad";
+}
+body[data-resolved-layout="mobile"][data-deck="pad"][data-clip-open="1"] .cockpit {
+  grid-template-rows: minmax(120px, 24dvh) auto auto minmax(150px, 1fr);
+  grid-template-areas:
+    "stage"
+    "typebar"
+    "quickkeys"
+    "trackpad";
+}
+
+body[data-resolved-layout="mobile"][data-deck="keys"] #quick-strip,
+body[data-resolved-layout="mobile"][data-deck="keys"] #term-card { display: none; }
+body[data-resolved-layout="mobile"][data-deck="keys"] .pad-toolbar,
+body[data-resolved-layout="mobile"][data-deck="keys"] .pad-arc { display: none; }
+body[data-resolved-layout="mobile"][data-deck="keys"] .pad-shell { min-block-size: 98px; padding: 5px; }
+body[data-resolved-layout="mobile"][data-deck="keys"] .pad-main { min-block-size: 56px; }
+body[data-resolved-layout="mobile"][data-deck="keys"] .pad-btns button { padding-block: 6px; }
+body[data-resolved-layout="mobile"][data-deck="keys"] #kb button { padding-block: 7px; }
+
+body[data-resolved-layout="mobile"][data-deck="keys"] .cockpit {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(105px, 19dvh) auto minmax(98px, 1fr) auto;
+  grid-template-areas:
+    "stage"
+    "typebar"
+    "trackpad"
+    "keyboard";
+}
+
+body[data-resolved-layout="mobile"][data-deck="term"] #type-form,
+body[data-resolved-layout="mobile"][data-deck="term"] #quick-strip,
+body[data-resolved-layout="mobile"][data-deck="term"] #kb-wrap,
+body[data-resolved-layout="mobile"][data-deck="term"] #pad { display: none; }
+
+body[data-resolved-layout="mobile"][data-deck="term"] .cockpit {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(115px, 21dvh) minmax(0, 1fr);
+  grid-template-areas:
+    "stage"
+    "terminal";
+}
+
+/* ---- Modal Dialogs (light-dismiss & scroll-chaining containment) ---- */
 dialog {
   color: var(--val);
   background: var(--cell);
   border: 1px solid var(--cell-hi);
-  border-radius: 10px;
-  padding: 14px;
-  max-inline-size: min(440px, calc(100% - 24px));
+  border-radius: 11px;
+  padding: 15px;
+  max-inline-size: min(460px, calc(100% - 24px));
   inline-size: 100%;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, .75);
+  box-shadow: 0 22px 54px rgba(0, 0, 0, 0.8);
+}
+dialog:modal {
+  overscroll-behavior: contain;
 }
 dialog::backdrop {
-  background-color: rgba(0, 0, 0, 0.58);
-  backdrop-filter: blur(2px);
+  overflow: hidden;
+  overscroll-behavior: contain;
+  background-color: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(3px);
 }
 .dlg-hdr {
   display: flex;
@@ -692,55 +1456,69 @@ dialog::backdrop {
 }
 .dlg-hdr h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: 13.5px;
   color: var(--lab);
-  letter-spacing: .04em;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
 }
 .dlg-sec {
-  margin-block: 10px;
-  padding-block-start: 8px;
+  margin-block: 11px;
+  padding-block-start: 9px;
   border-top: 1px solid var(--div);
 }
 .dlg-sec h3 {
   margin: 0 0 6px;
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--grey);
   text-transform: uppercase;
-  letter-spacing: .06em;
+  letter-spacing: 0.06em;
 }
 .dlg-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
 }
+.dlg-grid-4 {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+}
 .dlg-links {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
   font-size: 12px;
 }
 .dlg-links a { color: var(--lab); }
 </style>
 </head>
-<body data-deck="pad" data-drawer="kb">
+<body data-layout="auto" data-resolved-layout="desktop" data-deck="pad" data-drawer="pad">
 
 <header class="topbar bevel">
   <div id="st">
     <span id="pill" class="pill">…</span>
+    <div class="host-stack">
+      <span id="ip">connecting…</span>
+      <span id="bar-sub"></span>
+    </div>
+  </div>
+
+  <nav class="top-nav well" role="tablist" aria-label="Desktop Workspace">
+    <button type="button" role="tab" data-deck-btn="pad" class="chip-on" aria-selected="true">Cockpit</button>
+    <button type="button" role="tab" data-deck-btn="stats" aria-selected="false">Stats</button>
+    <button type="button" role="tab" data-deck-btn="term" aria-selected="false">Terminal</button>
+  </nav>
+
+  <div class="topbar-actions">
     <span id="leds" class="leds" title="Host Keyboard LEDs (Num / Caps / Scroll)">
       <span id="led-num" class="led">N</span><span id="led-caps" class="led">C</span><span id="led-scroll" class="led">S</span>
     </span>
-    <span id="ip">connecting…</span>
+    <span id="xport" class="xport-badge" title="Active HID input transport">http</span>
+    <button type="button" id="tablet-btn" aria-pressed="false" title="Toggle touch-ergonomic Tablet Mode (44px keys, two-hand thumb pad &amp; stand keyboard)">Tablet</button>
+    <button type="button" id="mode" title="Switch host serial between telemetry helper and interactive shell">serial: …</button>
+    <button type="button" id="ping-top" title="Bounce CapsLock LED to verify host responsiveness">Ping</button>
+    <button type="button" id="menu-btn" aria-haspopup="dialog">⚡ Menu</button>
   </div>
-  <span id="xport" class="xport-badge" title="Active HID input transport">http</span>
-  <div class="theme-seg well" role="group" aria-label="Color Theme">
-    <button type="button" data-theme-pick="slate" class="chip-on">Slate</button>
-    <button type="button" data-theme-pick="braun">Braun</button>
-    <button type="button" data-theme-pick="cobalt">Cobalt</button>
-  </div>
-  <button type="button" id="mode" title="Switch host serial between telemetry helper and interactive shell">serial: …</button>
-  <button type="button" id="menu-btn" aria-haspopup="dialog">⚡ Menu</button>
 </header>
 
 <section id="pair-banner" class="bevel" hidden aria-live="polite">
@@ -758,158 +1536,365 @@ dialog::backdrop {
 <div class="deck-tabs bevel" role="tablist" aria-label="Console Deck">
   <button type="button" role="tab" data-deck-btn="pad" class="chip-on" aria-selected="true">Trackpad</button>
   <button type="button" role="tab" data-deck-btn="keys" aria-selected="false">Pad + Keys</button>
-  <button type="button" role="tab" data-deck-btn="term" aria-selected="false">Terminal</button>
   <button type="button" role="tab" data-deck-btn="stats" aria-selected="false">Stats</button>
+  <button type="button" role="tab" data-deck-btn="term" aria-selected="false">Terminal</button>
 </div>
 
 <main class="cockpit">
-  <div class="col-left">
-    <section class="stage-card bevel" aria-label="Target Desktop Preview">
-      <div class="stage-well well" id="stage-well">
-        <canvas id="pvc" width="960" height="540"></canvas>
-        <div id="stage-empty">Live Desktop Preview — select Low / Med / High below when LINKED</div>
-        <div id="loupe-wrap" hidden>
-          <canvas id="loupe-cv" width="240" height="135"></canvas>
-        </div>
+  <!-- 1. Pinned 16:9 Live Desktop Stage -->
+  <section id="stage-card" class="stage-card bevel" aria-label="Target Desktop Preview">
+    <div class="stage-bar">
+      <div class="stage-bar-left">
+        <span id="stage-host" class="stage-title">Live Desktop</span>
+        <span id="pvst">idle</span>
       </div>
-      <div class="stage-bar">
-        <div class="stage-bar-left">
-          <label for="pvq" class="sr-only">Preview quality</label>
-          <select id="pvq" title="Desktop preview stream quality">
-            <option value="off">Preview: Off</option>
-            <option value="low">Low (640×360)</option>
-            <option value="med" selected>Med (960×540)</option>
-            <option value="high">High (1280×720)</option>
-          </select>
-          <button type="button" id="loupe-inset-btn" title="Show 1:1 cursor loupe inset">Loupe 1:1</button>
-          <span id="pvst">idle</span>
-        </div>
-        <div class="stage-bar-right">
-          <button type="button" id="fs-btn" title="Fullscreen desktop stage">⛶</button>
-        </div>
+      <div class="stage-bar-right">
+        <label for="pvq" class="sr-only">Preview stream quality</label>
+        <select id="pvq" title="Desktop preview stream quality">
+          <option value="off">Preview: Off</option>
+          <option value="low">Low 360p</option>
+          <option value="med" selected>Med 540p</option>
+          <option value="high">High 720p</option>
+        </select>
+        <button type="button" id="loupe-inset-btn" title="Show 1:1 cursor loupe inset">1:1 Loupe</button>
+        <button type="button" id="fs-btn" title="Fullscreen desktop stage" aria-label="Fullscreen desktop stage">⛶</button>
       </div>
-    </section>
+    </div>
+    <div class="stage-well well" id="stage-well">
+      <canvas id="pvc" width="960" height="540"></canvas>
+      <div id="stage-empty">
+        <span class="empty-tag">Tile Stream Standby</span>
+        <span id="stage-empty-msg">Live desktop tiles appear automatically once target helper is LINKED</span>
+      </div>
+      <div id="loupe-wrap" hidden>
+        <canvas id="loupe-cv" width="240" height="135"></canvas>
+        <span class="loupe-tag">1:1 LOUPE</span>
+      </div>
+    </div>
+  </section>
 
-    <section class="telemetry" aria-label="Target PC Telemetry">
-      <div class="t-cell bevel">
-        <div class="t-hdr"><span>CPU Thermal</span><span id="tc-sensors">--</span></div>
-        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px">
+  <!-- 2. GEEK-Lineage 4-Card Telemetry Strip (click any card to open Full Stats) -->
+  <section id="mini-telemetry" class="mini-telemetry-wrap" aria-label="Target PC Telemetry Summary">
+    <div class="mini-telemetry">
+      <div class="t-cell bevel" data-open-stats title="Open full GEEK telemetry &amp; stats dashboard">
+        <div class="t-hdr"><span id="mc-cpu-hdr">CPU · CORES</span><span class="t-hdr-sub">Stats ↗</span></div>
+        <div class="t-hero-row">
           <span id="tc-temp" class="t-hero">--°C</span>
-          <span id="tc-load" class="t-sub">-- load</span>
+          <span id="tc-load" class="t-load">ld --</span>
         </div>
-        <div class="spark-well well"><canvas id="sp-temp" width="220" height="38"></canvas></div>
+        <div id="tc-sensors" class="t-sub">GPU -- · NVMe --</div>
+        <div class="spark-well well"><canvas id="sp-temp" width="240" height="40"></canvas></div>
         <span id="tc-temp-sr" class="sr-only"></span>
       </div>
 
-      <div class="t-cell bevel">
-        <div class="t-hdr"><span>Cores &amp; Procs</span><span id="tc-ncpu">--</span></div>
+      <div class="t-cell bevel" data-open-stats title="Open full GEEK telemetry &amp; stats dashboard">
+        <div class="t-hdr"><span>CORE HEAT + TOP</span><span id="tc-ncpu" class="t-hdr-sub">--</span></div>
         <div id="tc-cores" class="cores-strip well" aria-hidden="true"></div>
-        <div id="tc-procs" class="proc-list"><div class="t-sub">waiting for LINKED…</div></div>
+        <div id="tc-procs" class="proc-list"><div class="t-sub">waiting for helper…</div></div>
       </div>
 
-      <div class="t-cell bevel">
-        <div class="t-hdr"><span>Memory &amp; Disk</span><span id="tc-up">--</span></div>
-        <div id="tc-mem" class="t-hero" style="font-size:17px">RAM --</div>
-        <div id="tc-disk" class="t-sub">DISK --</div>
-        <div id="tc-host" class="t-sub">--</div>
+      <div class="t-cell bevel" data-open-stats title="Open full GEEK telemetry &amp; stats dashboard">
+        <div class="t-hdr"><span>MEMORY &amp; DISK</span><span id="tc-up" class="t-hdr-sub">--</span></div>
+        <div class="meter-block">
+          <div class="meter-val" id="tc-mem">-- <small>/ --G</small></div>
+          <div class="meter-well well"><i id="bar-mem"></i></div>
+        </div>
+        <div class="meter-block" style="margin-block-start:auto">
+          <div class="meter-lbl"><span id="tc-disk-lbl">DISK (/)</span><span id="tc-disk-pct"></span></div>
+          <div class="meter-val" id="tc-disk">-- <small>/ --G</small></div>
+          <div class="meter-well well"><i id="bar-disk" style="background:var(--lab)"></i></div>
+        </div>
       </div>
 
-      <div class="t-cell bevel">
-        <div class="t-hdr"><span id="tc-iface">Network</span><span id="tc-rates">↓-- ↑--</span></div>
-        <div class="spark-well well"><canvas id="sp-net" width="220" height="38"></canvas></div>
-        <div id="tc-netp" class="proc-list"></div>
+      <div class="t-cell bevel" data-open-stats title="Open full GEEK telemetry &amp; stats dashboard">
+        <div class="t-hdr"><span id="tc-iface">NETWORK</span><span id="tc-net-ip" class="t-hdr-sub">--</span></div>
+        <div class="net-rates">
+          <span id="tc-rx" class="rx-txt">dn --</span>
+          <span id="tc-tx" class="tx-txt">up --</span>
+        </div>
+        <div class="spark-well well"><canvas id="sp-net" width="240" height="40"></canvas></div>
+        <div id="tc-net-tot" class="t-sub">Total: -- / --</div>
       </div>
-    </section>
+    </div>
+  </section>
+
+  <!-- 3. Smart Type / UTF-8 Clipboard Bar -->
+  <form id="type-form" autocomplete="off">
+    <label for="txt" class="sr-only">Type text or push/pull UTF-8 clipboard</label>
+    <input id="txt" class="well" placeholder="Type text or push/pull UTF-8 clipboard…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+    <button type="submit" id="send" class="go" title="Type text as US HID keystrokes">Type ⏎</button>
+    <button type="button" id="clip-push" title="Push UTF-8 text to host clipboard">Clip ↑</button>
+    <button type="button" id="clip-pull" title="Pull UTF-8 text from host clipboard">Clip ↓</button>
+  </form>
+
+  <!-- 4. Quick-Key & Sticky Modifier Strip (Mobile & Tablet Trackpad Mode) -->
+  <div id="quick-strip" class="quick-strip" role="toolbar" aria-label="Quick Modifiers and Keys">
+    <button type="button" data-qk="esc">Esc</button>
+    <button type="button" data-qk="tab">Tab</button>
+    <button type="button" data-qm="ctrl" title="Tap to latch, double-tap to lock Ctrl">Ctrl</button>
+    <button type="button" data-qm="alt" title="Tap to latch, double-tap to lock Alt">Alt</button>
+    <button type="button" data-qm="win" title="Tap to latch, double-tap to lock Win/Super">Win</button>
+    <button type="button" data-qm="shift" title="Tap to latch, double-tap to lock Shift">⇧</button>
+    <button type="button" data-qk="backspace" aria-label="Backspace">⌫</button>
+    <button type="button" data-qk="enter" class="go" aria-label="Enter">⏎</button>
   </div>
 
-  <div class="col-right">
-    <form id="type-form" autocomplete="off">
-      <label for="txt" class="sr-only">Type text or sync host clipboard</label>
-      <input id="txt" class="well" placeholder="Type text to host or sync clipboard…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-      <button type="submit" id="send" class="go" title="Type as US HID keystrokes">Type ⏎</button>
-      <button type="button" id="clip-push" title="Push text to host clipboard">Clip ↑</button>
-      <button type="button" id="clip-pull" title="Pull text from host clipboard">Clip ↓</button>
+  <!-- 5. 16-Column Tactile Keyboard -->
+  <section id="kb-wrap" class="kb-wrap bevel" aria-label="Tactile US Keyboard">
+    <div id="kb"></div>
+  </section>
+
+  <!-- 6. Desktop Right-Lower Drawer Switcher -->
+  <div id="drawer-bar" class="drawer-bar" role="tablist" aria-label="Lower Cockpit Panel">
+    <button type="button" role="tab" class="drawer-pill chip-on" data-drawer-btn="pad" aria-selected="true">Trackpad Deck</button>
+    <button type="button" role="tab" class="drawer-pill" data-drawer-btn="term" aria-selected="false">Serial Terminal Drawer</button>
+    <button type="button" id="qk-cad" style="margin-inline-start:auto;padding:3px 7px;font-size:10.5px" title="Send Ctrl+Alt+Del">Ctrl+Alt+Del</button>
+  </div>
+
+  <!-- 7. Generous Recessed Relative Trackpad Well -->
+  <section id="pad" class="pad-shell bevel" aria-label="Relative Trackpad">
+    <div class="pad-toolbar">
+      <div class="pad-toolbar-group">
+        <button type="button" id="drag-lock" title="Latch left mouse button for effortless dragging">Drag-Lock</button>
+        <button type="button" id="accel-btn" class="chip-on" title="Cycle pointer velocity acceleration curve">Accel: 1.6x</button>
+        <button type="button" id="scroll-dir-btn" class="chip-on" title="Toggle two-finger scroll direction">2F Scroll</button>
+      </div>
+      <div class="pad-toolbar-group">
+        <button type="button" id="su" aria-label="Scroll up" title="Hold to scroll up">↑</button>
+        <button type="button" id="sd" aria-label="Scroll down" title="Hold to scroll down">↓</button>
+        <button type="button" id="loupe" title="Overlay 240x135 still or 1:1 loupe inside trackpad">Pad View: Off</button>
+      </div>
+    </div>
+    <div class="pad-main">
+      <div id="surface" class="well">
+        <canvas id="view" width="240" height="135" hidden></canvas>
+        <div id="pad-center" class="pad-center-mark">
+          <svg class="pad-arc" viewBox="0 0 110 38" fill="none" aria-hidden="true">
+            <path d="M12 31 C 34 6, 76 6, 98 31" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <circle cx="96" cy="29" r="5" fill="#0d0c0f" stroke="currentColor" stroke-width="2"/>
+          </svg>
+          <span id="pad-label">RELATIVE TRACKPAD · 1F Move/Tap · 2F Scroll &amp; Right-Click</span>
+        </div>
+        <span id="pad-touch-ring" aria-hidden="true"></span>
+      </div>
+    </div>
+    <div class="pad-btns">
+      <button type="button" data-b="1">Left Click</button>
+      <button type="button" data-b="4">Middle</button>
+      <button type="button" data-b="2">Right Click</button>
+    </div>
+  </section>
+
+  <!-- 8. Integrated USB Serial Terminal -->
+  <section id="term-card" class="bevel" aria-label="USB Serial Terminal">
+    <div class="term-hdr">
+      <span id="term-st" style="color:var(--lab);font-family:ui-monospace,monospace">● USB serial</span>
+      <div style="display:flex;gap:5px;align-items:center">
+        <button type="button" id="term-mode-btn">Switch helper ⇄ shell</button>
+        <a href="term.html" style="color:var(--lab);font-size:11px;text-decoration:none;padding-inline:4px">Full Term ↗</a>
+      </div>
+    </div>
+    <div class="term-qkeys" role="toolbar" aria-label="Terminal Control Keys">
+      <button type="button" data-tctl="&#x09;">Tab</button>
+      <button type="button" class="danger" data-tctl="&#x03;">^C</button>
+      <button type="button" data-tctl="&#x04;">^D</button>
+      <button type="button" data-tctl="&#x1a;">^Z</button>
+      <button type="button" data-tctl="&#x0c;">^L</button>
+      <button type="button" data-tctl="&#x1b;">Esc</button>
+      <button type="button" id="term-hist-up" title="Previous command">↑ Prev</button>
+      <button type="button" id="term-copy" title="Copy recent terminal output">Copy</button>
+    </div>
+    <pre id="term-out" class="well scroller"></pre>
+    <form id="term-form" autocomplete="off">
+      <label for="term-cmd" class="sr-only">Serial terminal command</label>
+      <input id="term-cmd" class="well" placeholder="Send command to serial shell…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+      <button type="submit" class="go">Send ⏎</button>
     </form>
+  </section>
 
-    <div class="quick-strip" role="toolbar" aria-label="Quick Modifiers and Keys">
-      <button type="button" data-qk="esc">Esc</button>
-      <button type="button" data-qk="tab">Tab</button>
-      <button type="button" data-qm="ctrl">Ctrl</button>
-      <button type="button" data-qm="alt">Alt</button>
-      <button type="button" data-qm="win">Win</button>
-      <button type="button" data-qk="backspace" aria-label="Backspace">⌫</button>
-      <button type="button" data-qk="enter" aria-label="Enter">⏎</button>
-      <button type="button" id="qk-cad" title="Send Ctrl+Alt+Del">C-A-D</button>
+  <!-- 9. Proper Full-Featured GEEK Telemetry & Appliance Stats Dashboard -->
+  <section id="stats-dash" class="stats-dash scroller" aria-label="Full Telemetry and Appliance Statistics">
+    <div class="stats-banner bevel">
+      <div class="stats-banner-meta">
+        <strong id="st-host-name">Target Host</strong>
+        <span class="stats-kv-chip">IP <b id="st-host-ip">--</b></span>
+        <span class="stats-kv-chip">OS <b id="st-host-os">--</b></span>
+        <span class="stats-kv-chip">Uptime <b id="st-host-up">--</b></span>
+        <span class="stats-kv-chip">Host ID <b id="st-host-id">--</b></span>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button type="button" id="st-refresh">↻ Refresh</button>
+        <button type="button" id="stats-back" class="go">← Back to Console</button>
+      </div>
     </div>
 
-    <section id="pad" class="pad-shell bevel" aria-label="Relative Trackpad">
-      <div class="pad-toolbar">
-        <div class="pad-toolbar-group">
-          <button type="button" id="drag-lock" title="Latch left mouse button for effortless dragging">Drag-Lock</button>
-          <button type="button" id="accel-btn" title="Cycle pointer acceleration curve">Accel: 1.6x</button>
+    <div class="stats-grid">
+      <!-- Panel A: Thermal & Compute History (GEEK Page 1) -->
+      <article class="s-panel bevel">
+        <div class="s-panel-hdr">
+          <span class="s-panel-title">Page 1 · Thermal &amp; Compute History</span>
+          <span id="st-temp-range" class="s-panel-sub">8-min rolling window</span>
         </div>
-        <div class="pad-toolbar-group">
-          <button type="button" id="loupe" title="Overlay 240x135 still or 1:1 loupe inside trackpad">Pad View: Off</button>
+        <div class="s-kpi-grid">
+          <div class="s-kpi well">
+            <span class="s-kpi-lbl">CPU Temp</span>
+            <span id="st-kpi-cpu" class="s-kpi-val">--°C</span>
+            <span id="st-kpi-cpu-sub" class="s-kpi-sub">warm 70°C</span>
+          </div>
+          <div class="s-kpi well">
+            <span class="s-kpi-lbl">GPU Sensor</span>
+            <span id="st-kpi-gpu" class="s-kpi-val">--</span>
+            <span id="st-kpi-gpu-sub" class="s-kpi-sub">busy --</span>
+          </div>
+          <div class="s-kpi well">
+            <span class="s-kpi-lbl">NVMe Sensor</span>
+            <span id="st-kpi-nvme" class="s-kpi-val">--</span>
+            <span class="s-kpi-sub">drive thermal</span>
+          </div>
+          <div class="s-kpi well">
+            <span class="s-kpi-lbl">Load (1m)</span>
+            <span id="st-kpi-load" class="s-kpi-val">--</span>
+            <span id="st-kpi-threads" class="s-kpi-sub">-- threads</span>
+          </div>
         </div>
-      </div>
-      <div class="pad-main">
-        <div id="surface" class="well">
-          <canvas id="view" width="240" height="135" hidden></canvas>
-          <span id="pad-label">RELATIVE TRACKPAD<br><small style="letter-spacing:.04em;opacity:.75">1F tap = L-click · 2F scroll &amp; R-tap</small></span>
+        <div class="s-graph-well well">
+          <canvas id="st-canvas-temp" width="560" height="104"></canvas>
         </div>
-        <div class="scrolls">
-          <button type="button" id="su" aria-label="Scroll up">↑</button>
-          <button type="button" id="sd" aria-label="Scroll down">↓</button>
-        </div>
-      </div>
-      <div class="pad-btns">
-        <button type="button" data-b="1">Left</button>
-        <button type="button" data-b="4">Mid</button>
-        <button type="button" data-b="2">Right</button>
-      </div>
-    </section>
+      </article>
 
-    <div class="drawer-bar">
-      <button type="button" data-drawer-btn="kb" class="chip-on">⌨ Tactile Keyboard</button>
-      <button type="button" data-drawer-btn="term">>_ USB Serial Terminal</button>
-      <a href="term.html" style="margin-inline-start:auto;align-self:center;color:var(--lab);font-size:11px">Full Term ↗</a>
+      <!-- Panel B: Memory, Storage & Pi Zero W Appliance (GEEK Page 1 + Page 4) -->
+      <article class="s-panel bevel">
+        <div class="s-panel-hdr">
+          <span class="s-panel-title">Page 4 · Memory, Disk &amp; Zero Appliance</span>
+          <span id="st-zero-link" class="s-panel-sub">USB + Radio Link</span>
+        </div>
+
+        <div class="meter-block">
+          <div class="meter-lbl"><span>Host System Memory (RAM)</span><span id="st-mem-pct">--%</span></div>
+          <div class="meter-val" id="st-mem-detail">-- / --</div>
+          <div class="meter-well well" style="block-size:9px"><i id="st-bar-mem"></i></div>
+        </div>
+
+        <div class="meter-block">
+          <div class="meter-lbl"><span id="st-disk-title">Host Primary Storage</span><span id="st-disk-pct">--%</span></div>
+          <div class="meter-val" id="st-disk-detail">-- / --</div>
+          <div class="meter-well well" style="block-size:9px"><i id="st-bar-disk" style="background:var(--lab)"></i></div>
+        </div>
+
+        <div class="s-panel-hdr" style="margin-block-start:4px">
+          <span class="s-panel-title">Pi Zero W KVM Appliance &amp; Mesh</span>
+          <span id="st-zero-ip" class="s-panel-sub">--</span>
+        </div>
+        <div class="s-appliance-grid">
+          <div class="s-kpi well">
+            <span class="s-kpi-lbl">Zero SoC</span>
+            <span id="st-z-temp" class="s-kpi-val" style="font-size:16px">--°C</span>
+            <span id="st-z-load" class="s-kpi-sub">load --</span>
+          </div>
+          <div class="s-kpi well">
+            <span class="s-kpi-lbl">Zero RAM &amp; Up</span>
+            <span id="st-z-mem" class="s-kpi-val" style="font-size:16px">--%</span>
+            <span id="st-z-up" class="s-kpi-sub">up --</span>
+          </div>
+          <div class="s-kpi well">
+            <span class="s-kpi-lbl">USB UDC / HID</span>
+            <span id="st-z-udc" class="s-kpi-val" style="font-size:15px">--</span>
+            <span id="st-z-xport" class="s-kpi-sub">HID --</span>
+          </div>
+          <div class="s-kpi well">
+            <span class="s-kpi-lbl">Zero Wi-Fi RSSI</span>
+            <span id="st-z-rssi" class="s-kpi-val" style="font-size:16px">--</span>
+            <span class="s-kpi-sub">wlan0 signal</span>
+          </div>
+          <div class="s-kpi well">
+            <span class="s-kpi-lbl">Tailscale</span>
+            <span id="st-z-ts" class="s-kpi-val" style="font-size:16px">--</span>
+            <span id="st-z-tsip" class="s-kpi-sub">--</span>
+          </div>
+          <div class="s-kpi well">
+            <span class="s-kpi-lbl">Helper Link</span>
+            <span id="st-z-helper" class="s-kpi-val" style="font-size:15px">--</span>
+            <span id="st-z-serial" class="s-kpi-sub">serial: --</span>
+          </div>
+        </div>
+      </article>
+
+      <!-- Panel C: Per-Core Heat Matrix & Top 8 CPU Processes (GEEK Page 2) -->
+      <article class="s-panel bevel">
+        <div class="s-panel-hdr">
+          <span class="s-panel-title">Page 2 · Per-Core Utilization &amp; Top CPU Processes</span>
+          <span id="st-cores-summary" class="s-panel-sub">--</span>
+        </div>
+        <div id="st-cores-grid" class="s-cores-matrix well"></div>
+        <table class="s-table" aria-label="Top CPU Processes">
+          <thead>
+            <tr><th scope="col">Process</th><th scope="col">Load Share</th><th scope="col" class="num">CPU %</th></tr>
+          </thead>
+          <tbody id="st-cpu-tbody">
+            <tr><td colspan="3" style="color:var(--grey)">Waiting for LINKED telemetry…</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <!-- Panel D: Duplex Network Waterfall & Cumulative Per-Process Traffic (GEEK Page 3) -->
+      <article class="s-panel bevel">
+        <div class="s-panel-hdr">
+          <span id="st-net-title" class="s-panel-title">Page 3 · Duplex Network &amp; Traffic History</span>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span id="st-net-rates" class="s-panel-sub">↓-- ↑--</span>
+            <button type="button" id="st-rst-hist" style="padding:2px 7px;font-size:10.5px" title="Wipe saved cumulative network history for this PC">↺ Reset</button>
+          </div>
+        </div>
+        <div class="s-graph-well well">
+          <canvas id="st-canvas-net" width="560" height="104"></canvas>
+        </div>
+        <div id="st-net-live" class="t-sub">Active sockets: --</div>
+        <div class="s-panel-hdr" style="padding-block-end:2px;border-bottom:0">
+          <span class="s-panel-sub" id="st-hist-since">Cumulative per-process TCP traffic</span>
+          <span class="s-panel-sub" id="st-hist-totals">Σ --</span>
+        </div>
+        <table class="s-table" aria-label="Cumulative Per-Process Network Traffic">
+          <thead>
+            <tr>
+              <th scope="col">Process</th>
+              <th scope="col" class="num">↓ RX</th>
+              <th scope="col" class="num">↑ TX</th>
+              <th scope="col">Duplex Share</th>
+            </tr>
+          </thead>
+          <tbody id="st-net-hist-tbody">
+            <tr><td colspan="4" style="color:var(--grey)">No cumulative history recorded yet.</td></tr>
+          </tbody>
+        </table>
+      </article>
     </div>
-
-    <div id="kb" aria-label="Tactile US Keyboard"></div>
-
-    <section id="term-card" class="bevel" aria-label="USB Serial Terminal">
-      <div class="term-hdr">
-        <span id="term-st" style="color:var(--lab)">● USB serial</span>
-        <div style="display:flex;gap:4px">
-          <button type="button" id="term-mode-btn">Switch helper ⇄ shell</button>
-          <button type="button" data-tctl="&#x03;">^C</button>
-          <button type="button" data-tctl="&#x04;">^D</button>
-        </div>
-      </div>
-      <pre id="term-out" class="well"></pre>
-      <form id="term-form" autocomplete="off">
-        <label for="term-cmd" class="sr-only">Serial terminal command</label>
-        <input id="term-cmd" class="well" placeholder="Send command to serial shell…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-        <button type="submit" class="go">Send ⏎</button>
-      </form>
-    </section>
-  </div>
+  </section>
 </main>
 
 <div id="pwr" role="status" aria-live="polite"></div>
 
 <dialog id="menu-dlg" closedby="any" aria-labelledby="menu-dlg-title">
   <div class="dlg-hdr">
-    <h2 id="menu-dlg-title">KVM System &amp; Power</h2>
+    <h2 id="menu-dlg-title">KVM Console, Layout &amp; Power</h2>
     <form method="dialog"><button type="submit">Close</button></form>
   </div>
 
   <div class="dlg-sec">
-    <h3>Synced Display Theme (Web + GEEK)</h3>
+    <h3>Responsive Layout Mode (Tablet-Friendly Option)</h3>
+    <div class="dlg-grid-4">
+      <button type="button" data-layout-pick="auto" class="chip-on">Auto</button>
+      <button type="button" data-layout-pick="tablet">Tablet</button>
+      <button type="button" data-layout-pick="mobile">Phone</button>
+      <button type="button" data-layout-pick="desktop">Desktop</button>
+    </div>
+  </div>
+
+  <div class="dlg-sec">
+    <h3>Synced GEEK Lineage Theme (Web + GEEK)</h3>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px">
-      <button type="button" data-theme-pick="slate">Instrument Slate</button>
+      <button type="button" data-theme-pick="slate" class="chip-on">GEEK Hybrid</button>
       <button type="button" data-theme-pick="braun">Warm Braun</button>
-      <button type="button" data-theme-pick="cobalt">Machined Cobalt</button>
+      <button type="button" data-theme-pick="cobalt">Deep Cobalt</button>
     </div>
   </div>
 
@@ -958,12 +1943,12 @@ dialog::backdrop {
     <p id="pin-msg" style="margin:0 0 8px;color:var(--grey);font-size:12px">Enter the 8-digit PIN from <code>/etc/pi-zero-w-hid-kvm/pin</code>.</p>
     <div style="display:flex;gap:6px">
       <label for="pin-inp" class="sr-only">8-digit Console PIN</label>
-      <input id="pin-inp" class="well" type="password" inputmode="numeric" placeholder="Console PIN" style="flex:1;padding:7px 9px;color:var(--val);font-size:15px" autocomplete="current-password">
+      <input id="pin-inp" class="well" type="password" inputmode="numeric" placeholder="Console PIN" style="flex:1;padding:8px 10px;color:var(--val);font-size:15px;border-radius:6px" autocomplete="current-password">
       <button type="submit" class="go">Unlock</button>
     </div>
   </form>
 </dialog>
 
-<script src="app.js"></script>
+<script src="app.js?v=20261028b"></script>
 </body>
 </html>

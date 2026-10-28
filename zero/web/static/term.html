@@ -7,11 +7,12 @@
 <style>
 :root {
   color-scheme: dark;
-  --bg: #0b0e14; --cell: #131822; --cell-hi: #242d3e; --cell-lo: #05070b;
-  --well: #080a0f; --lab: #5edaf2; --val: #f2f5fa; --grey: #828ea2;
-  --div: #1e2634; --rx: #3ee8b5; --ok: #38d878; --bad: #f84848;
+  --bg: #09090a; --cell: #161519; --cell-hi: #292730; --cell-lo: #040405;
+  --well: #0d0c0f; --lab: #74a8ee; --val: #f4efe6; --grey: #96918b;
+  --div: #222028; --rx: #2dd4bf; --tx: #818cf8; --ok: #34d399; --bad: #ff4e60;
+  --scrollbar-thumb: var(--grey); --scrollbar-track: var(--well);
   accent-color: var(--lab);
-  scrollbar-color: var(--grey) var(--well);
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 :where([data-theme="braun"]) {
   --bg: #100f0e; --cell: #1a1816; --cell-hi: #302c27; --cell-lo: #080706;

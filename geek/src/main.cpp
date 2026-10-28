@@ -1096,11 +1096,11 @@ struct VTheme {
   uint8_t baseR, baseG, baseB;
 };
 static const VTheme VTHEMES[3] = {
-  // 0: Instrument Slate
-  { rgb(11,14,20),  rgb(19,24,34),  rgb(36,45,62),  rgb(5,7,11),    rgb(8,10,15),   rgb(15,20,29),
-    rgb(94,218,242), rgb(242,245,250), rgb(130,142,162), rgb(48,56,70), rgb(30,38,52),
-    rgb(62,232,181), rgb(82,168,255), rgb(56,216,120), rgb(255,196,54), rgb(255,132,36), rgb(248,72,72),
-    228, 232, 238 },
+  // 0: GEEK Hybrid Default (#2 matte charcoal ground + #3 studio graphs/bars/warning ramp)
+  { rgb(9,9,10),    rgb(22,21,25),  rgb(41,39,48),  rgb(4,4,5),     rgb(13,12,15),  rgb(18,17,22),
+    rgb(116,168,238), rgb(244,239,230), rgb(150,145,139), rgb(58,56,66), rgb(34,32,40),
+    rgb(45,212,191), rgb(129,140,248), rgb(52,211,153), rgb(255,202,68), rgb(255,140,52), rgb(255,78,96),
+    236, 232, 224 },
   // 1: Warm Braun
   { rgb(16,15,14),  rgb(26,24,22),  rgb(48,44,39),  rgb(8,7,6),     rgb(11,10,9),   rgb(21,19,17),
     rgb(238,168,72), rgb(246,241,230), rgb(148,140,128), rgb(62,56,50), rgb(42,38,34),

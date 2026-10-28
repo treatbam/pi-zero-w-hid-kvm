@@ -241,11 +241,30 @@ class ServerWsAndThemeTest(unittest.TestCase):
             self.assertEqual(st["ui_theme"], "braun")
             self.assertIn("helper_state", st)
 
-            # 3. /setup/install-linux.sh download
+            # 3. /setup/install-linux.sh download preserves explicit Cache-Control: no-store
             conn.request("GET", "/setup/install-linux.sh")
             r3 = conn.getresponse()
             self.assertEqual(r3.status, 200)
+            self.assertEqual(r3.getheader("Cache-Control"), "no-store")
             self.assertIn(b"kvm_stub.py", r3.read())
+
+            # 3b. Static index.html + app.js emit Cache-Control: no-cache over same keep-alive socket
+            conn.request("GET", "/")
+            r_html = conn.getresponse()
+            html_bytes = r_html.read()
+            self.assertEqual(r_html.status, 200)
+            self.assertEqual(r_html.getheader("Cache-Control"), "no-cache")
+            self.assertIs(conn.sock, sock1)
+            self.assertIn(b'id="tablet-btn"', html_bytes)
+            self.assertIn(b'id="stats-dash"', html_bytes)
+            self.assertIn(b'id="st-net-hist-tbody"', html_bytes)
+
+            conn.request("GET", "/app.js?v=20261028b")
+            r_js = conn.getresponse()
+            js_bytes = r_js.read()
+            self.assertEqual(r_js.status, 200)
+            self.assertEqual(r_js.getheader("Cache-Control"), "no-cache")
+            self.assertIn(b"computeResolvedLayout", js_bytes)
 
             # 4. S3 suspended state: mouse returns 409, but host wake succeeds with 200!
             with open(self.udc_file, "w") as f:

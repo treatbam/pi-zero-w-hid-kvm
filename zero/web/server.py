@@ -326,6 +326,17 @@ class H(SimpleHTTPRequestHandler):
 
     def __init__(self, *a, **k): super().__init__(*a, directory=STATIC, **k)
 
+    def send_header(self, keyword, value):
+        if keyword.lower() == "cache-control":
+            self._has_cc = True
+        super().send_header(keyword, value)
+
+    def end_headers(self):
+        if not getattr(self, "_has_cc", False):
+            super().send_header("Cache-Control", "no-cache")
+        self._has_cc = False
+        super().end_headers()
+
     def _json(self, code, obj):
         b = json.dumps(obj).encode()
         self.send_response(code); self.send_header("Content-Type", "application/json")

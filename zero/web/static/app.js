@@ -1,11 +1,21 @@
-// Trackpad-first KVM cockpit (mobile portrait + wide split cockpit).
-// Shares the 3-palette GEEK visual lineage (slate / braun / cobalt), low-latency /api/ws
-// WebSocket HID transport with HTTP/1.1 keep-alive fallback, 2-finger scroll + right-tap,
-// Drag-Lock, acceleration curves, and supervised 1-tap target host pairing.
+// Trackpad-first KVM cockpit (Phone Portrait, Touch-Ergonomic Tablet Mode, Wide Split Cockpit & Full Stats Dashboard).
+// Shares the GEEK visual lineage (#2 matte charcoal ground + #3 studio periwinkle/mint-teal/indigo/warning ramp),
+// low-latency /api/ws WebSocket HID transport with HTTP/1.1 keep-alive fallback, 2-finger scroll + right-tap,
+// sticky/locked modifiers, Drag-Lock, acceleration curves, and supervised 1-tap target host pairing.
 
+const escHtml = s => String(s ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;');
+
+let noteTimer = null;
 const statusNote = msg => {
   const el = document.getElementById('pwr');
-  if (el) el.textContent = msg;
+  if (!el) return;
+  el.textContent = msg || '';
+  if (noteTimer) clearTimeout(noteTimer);
+  if (msg) noteTimer = setTimeout(() => { if (el.textContent === msg) el.textContent = ''; }, 6500);
 };
 
 // ---- Modal light-dismiss fallback (Safari / pre-closedby browsers) ----------------------
@@ -25,6 +35,115 @@ for (const dlg of [menuDlg, pinDlg]) {
 }
 
 document.getElementById('menu-btn').onclick = () => menuDlg.showModal();
+
+// ---- Responsive & Explicit Layout Mode (Auto | Tablet | Phone | Desktop) ----------------
+let layoutPref = localStorage.getItem('kvmLayout') || 'auto';
+if (!['auto', 'tablet', 'mobile', 'desktop'].includes(layoutPref)) layoutPref = 'auto';
+
+function computeResolvedLayout() {
+  if (layoutPref !== 'auto') return layoutPref;
+  const w = window.innerWidth;
+  if (w < 680) return 'mobile';
+  if (w < 960) return 'tablet';
+  const coarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+  if (coarse && w <= 1280) return 'tablet';
+  return 'desktop';
+}
+
+function syncLayoutUI() {
+  const resolved = computeResolvedLayout();
+  document.body.dataset.layout = layoutPref;
+  document.body.dataset.resolvedLayout = resolved;
+
+  const tabBtn = document.getElementById('tablet-btn');
+  if (tabBtn) {
+    const isTab = resolved === 'tablet';
+    tabBtn.classList.toggle('chip-on', isTab);
+    tabBtn.setAttribute('aria-pressed', isTab ? 'true' : 'false');
+    tabBtn.textContent = layoutPref === 'tablet' ? 'Tablet ●' : 'Tablet';
+  }
+  document.querySelectorAll('[data-layout-pick]').forEach(btn => {
+    btn.classList.toggle('chip-on', btn.dataset.layoutPick === layoutPref);
+  });
+  syncDeckButtons();
+  requestAnimationFrame(drawSparks);
+}
+
+function setLayoutPref(pref, announce) {
+  if (!['auto', 'tablet', 'mobile', 'desktop'].includes(pref)) return;
+  layoutPref = pref;
+  localStorage.setItem('kvmLayout', pref);
+  syncLayoutUI();
+  if (announce) {
+    const resolved = document.body.dataset.resolvedLayout;
+    const names = {tablet: 'Tablet touch layout', mobile: 'Phone compact layout', desktop: 'Desktop split cockpit'};
+    statusNote(pref === 'auto' ? `Layout: Auto (${names[resolved] || resolved})` : `Layout: ${names[pref] || pref}`);
+  }
+}
+
+document.getElementById('tablet-btn').onclick = () => {
+  const cur = document.body.dataset.resolvedLayout;
+  if (cur === 'tablet') {
+    setLayoutPref(window.innerWidth < 680 ? 'mobile' : 'desktop', true);
+  } else {
+    setLayoutPref('tablet', true);
+  }
+};
+document.querySelectorAll('[data-layout-pick]').forEach(btn => {
+  btn.onclick = () => {
+    setLayoutPref(btn.dataset.layoutPick, true);
+    menuDlg.close();
+  };
+});
+window.addEventListener('resize', () => syncLayoutUI());
+
+// ---- Deck & Drawer Switching ------------------------------------------------------------
+let activeDeck = 'pad';
+let prevConsoleDeck = 'pad';
+let activeDrawer = 'pad';
+
+function syncDeckButtons() {
+  const resolved = document.body.dataset.resolvedLayout;
+  document.querySelectorAll('[data-deck-btn]').forEach(x => {
+    const d = x.dataset.deckBtn;
+    const on = (resolved === 'desktop' && activeDeck === 'keys' && d === 'pad') ? true : (d === activeDeck);
+    x.classList.toggle('chip-on', on);
+    x.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+}
+
+function setDeck(deck) {
+  if (!['pad', 'keys', 'stats', 'term'].includes(deck)) return;
+  if (activeDeck !== 'stats' && deck === 'stats') prevConsoleDeck = activeDeck;
+  activeDeck = deck;
+  document.body.dataset.deck = activeDeck;
+  syncDeckButtons();
+  requestAnimationFrame(drawSparks);
+}
+
+document.querySelectorAll('[data-deck-btn]').forEach(btn => {
+  btn.onclick = () => setDeck(btn.dataset.deckBtn);
+});
+document.querySelectorAll('[data-open-stats]').forEach(el => {
+  el.onclick = () => setDeck('stats');
+});
+document.getElementById('stats-back').onclick = () => setDeck(prevConsoleDeck || 'pad');
+document.getElementById('st-refresh').onclick = () => {
+  poll();
+  statusNote('Telemetry refreshed');
+};
+
+document.querySelectorAll('[data-drawer-btn]').forEach(btn => {
+  btn.onclick = () => {
+    activeDrawer = btn.dataset.drawerBtn;
+    document.body.dataset.drawer = activeDrawer;
+    document.querySelectorAll('[data-drawer-btn]').forEach(x => {
+      const on = x === btn;
+      x.classList.toggle('chip-on', on);
+      x.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+  };
+});
 
 // ---- PIN auth & modal dialog ------------------------------------------------------------
 let pin = localStorage.getItem('kvmPin') || '';
@@ -100,48 +219,30 @@ function applyTheme(t, pushServer) {
   document.querySelectorAll('[data-theme-pick]').forEach(btn => {
     btn.classList.toggle('chip-on', btn.dataset.themePick === t);
   });
-  drawSparks();
+  requestAnimationFrame(drawSparks);
   if (pushServer && pin) post('/api/theme', {theme: t}).catch(() => {});
 }
 applyTheme(currentTheme, false);
 document.querySelectorAll('[data-theme-pick]').forEach(btn => {
   btn.onclick = () => applyTheme(btn.dataset.themePick, true);
 });
-
-// ---- Deck & Drawer Switching ------------------------------------------------------------
-let activeDeck = 'pad';
-let activeDrawer = 'kb';
-document.querySelectorAll('[data-deck-btn]').forEach(btn => {
-  btn.onclick = () => {
-    activeDeck = btn.dataset.deckBtn;
-    document.body.dataset.deck = activeDeck;
-    document.querySelectorAll('[data-deck-btn]').forEach(x => {
-      const on = x === btn;
-      x.classList.toggle('chip-on', on);
-      x.setAttribute('aria-selected', on ? 'true' : 'false');
-    });
-  };
-});
-document.querySelectorAll('[data-drawer-btn]').forEach(btn => {
-  btn.onclick = () => {
-    activeDrawer = btn.dataset.drawerBtn;
-    document.body.dataset.drawer = activeDrawer;
-    document.querySelectorAll('[data-drawer-btn]').forEach(x => x.classList.toggle('chip-on', x === btn));
-  };
-});
+syncLayoutUI();
 
 // ---- Low-Latency WebSocket Transport (/api/ws) + HTTP/1.1 Fallback ----------------------
 let ws = null, wsAuthed = false, wsRtt = null, wsPingTimer = null, wsRetryTimer = null;
 const xportEl = document.getElementById('xport');
 
-function updateXportBadge() {
+function xportText() {
   if (wsAuthed && ws && ws.readyState === WebSocket.OPEN) {
-    xportEl.textContent = wsRtt != null ? `ws ${wsRtt}ms` : 'ws live';
-    xportEl.classList.add('ws-live');
-  } else {
-    xportEl.textContent = 'http';
-    xportEl.classList.remove('ws-live');
+    return wsRtt != null ? `WS ${wsRtt}ms` : 'WS live';
   }
+  return 'HTTP/1.1';
+}
+
+function updateXportBadge() {
+  const live = wsAuthed && ws && ws.readyState === WebSocket.OPEN;
+  xportEl.textContent = xportText();
+  xportEl.classList.toggle('ws-live', live);
 }
 
 function closeWs() {
@@ -195,6 +296,7 @@ function connectWs() {
   };
 }
 if (pin) connectWs();
+updateXportBadge();
 
 // ---- Power, Macros, Ping & Host Pairing -------------------------------------------------
 async function power(target, action, label) {
@@ -226,13 +328,16 @@ document.getElementById('qk-cad').onclick = () => {
   if (confirm('Send Ctrl+Alt+Del to target host?')) post('/api/macro', {name: 'ctrl_alt_del'});
 };
 
-document.getElementById('rst-hist').onclick = async () => {
+async function resetNetHist() {
   if (!confirm('Reset saved cumulative network history for this PC?')) return;
   menuDlg.close();
   const r = await post('/api/net_hist/reset', {});
   const j = await r.json().catch(() => ({}));
   statusNote(r.ok ? 'Network history reset' : `History reset: ${j.error || r.status}`);
-};
+  if (r.ok) poll();
+}
+document.getElementById('rst-hist').onclick = resetNetHist;
+document.getElementById('st-rst-hist').onclick = resetNetHist;
 
 async function pairHost(osName) {
   const pretty = osName === 'windows' ? 'Windows (PowerShell)' : 'Linux / macOS';
@@ -253,13 +358,13 @@ document.getElementById('pair-probe').onclick = async () => {
   setTimeout(poll, 500);
 };
 
-// ---- Serial Mode Toggle & Inline Serial Terminal ----------------------------------------
+// ---- Serial Mode Toggle & Integrated Serial Terminal ------------------------------------
 let serialMode = null;
 function showMode(s) {
   const b = document.getElementById('mode');
   serialMode = s.serial_mode;
   const pend = s.serial_mode_requested && s.serial_mode_requested !== s.serial_mode;
-  b.textContent = 'serial: ' + (serialMode || 'idle') + (pend ? ' → ' + s.serial_mode_requested : '');
+  b.textContent = 'serial: ' + (serialMode || 'idle') + (pend ? ' → ' + s.serial_mode_requested : ' ⇄');
   b.classList.toggle('chip-on', serialMode === 'shell');
 }
 async function toggleSerialMode() {
@@ -277,31 +382,45 @@ const termOut = document.getElementById('term-out');
 const termCmd = document.getElementById('term-cmd');
 const termSt = document.getElementById('term-st');
 let lastTermTxt = '';
+const termHist = [];
+let termHistIdx = -1;
+
+function isTermVisible() {
+  const resolved = document.body.dataset.resolvedLayout;
+  if (activeDeck === 'stats') return false;
+  if (activeDeck === 'term') return true;
+  if (resolved === 'desktop' && activeDrawer === 'term') return true;
+  return false;
+}
 
 async function pollInlineTerm() {
-  const visible = (window.innerWidth >= 920 && activeDrawer === 'term') || (window.innerWidth < 920 && activeDeck === 'term');
-  if (!visible || !pin) {
+  if (!isTermVisible() || !pin) {
     setTimeout(pollInlineTerm, 900);
     return;
   }
   try {
-    const r = await fetch('/api/term?n=120', {headers: {'X-KVM-PIN': pin}});
+    const r = await fetch('/api/term?n=160', {headers: {'X-KVM-PIN': pin}});
     if (r.ok) {
       const j = await r.json();
       const txt = (j.lines || []).concat([j.partial || '']).join('\n');
-      termSt.textContent = (j.open ? '● serial open' : '○ ' + (j.error || 'serial closed')) + (serialMode ? ` (${serialMode})` : '');
+      termSt.textContent = (j.open ? '● ttyGS0 open' : '○ ' + (j.error || 'serial closed')) + (serialMode ? ` (${serialMode})` : '');
       if (txt !== lastTermTxt) {
-        const stick = termOut.scrollTop + termOut.clientHeight >= termOut.scrollHeight - 24;
+        const stick = termOut.scrollTop + termOut.clientHeight >= termOut.scrollHeight - 28;
         termOut.textContent = lastTermTxt = txt;
         if (stick) termOut.scrollTop = termOut.scrollHeight;
       }
     }
   } catch (e) {}
-  setTimeout(pollInlineTerm, 750);
+  setTimeout(pollInlineTerm, 700);
 }
 pollInlineTerm();
 
 async function sendTerm(text, newline) {
+  if (newline && text.trim()) {
+    if (termHist[termHist.length - 1] !== text) termHist.push(text);
+    if (termHist.length > 40) termHist.shift();
+    termHistIdx = termHist.length;
+  }
   const r = await post('/api/term', {text, newline});
   if (!r.ok) {
     const j = await r.json().catch(() => ({}));
@@ -319,13 +438,34 @@ termCmd.addEventListener('keydown', e => {
     e.preventDefault();
     sendTerm(termCmd.value, true);
     termCmd.value = '';
+  } else if (e.key === 'ArrowUp' && termHist.length) {
+    e.preventDefault();
+    termHistIdx = Math.max(0, (termHistIdx < 0 ? termHist.length : termHistIdx) - 1);
+    termCmd.value = termHist[termHistIdx] || '';
+  } else if (e.key === 'ArrowDown' && termHist.length) {
+    e.preventDefault();
+    termHistIdx = Math.min(termHist.length, termHistIdx + 1);
+    termCmd.value = termHist[termHistIdx] || '';
   }
 });
 document.querySelectorAll('[data-tctl]').forEach(btn => {
   btn.onclick = () => sendTerm(btn.dataset.tctl, false);
 });
+document.getElementById('term-hist-up').onclick = () => {
+  if (!termHist.length) return;
+  termHistIdx = Math.max(0, (termHistIdx <= 0 ? termHist.length : termHistIdx) - 1);
+  termCmd.value = termHist[termHistIdx] || '';
+  termCmd.focus();
+};
+document.getElementById('term-copy').onclick = () => {
+  if (!lastTermTxt || !navigator.clipboard) return;
+  navigator.clipboard.writeText(lastTermTxt).then(
+    () => statusNote('Copied serial buffer to clipboard'),
+    () => statusNote('Clipboard copy blocked by browser')
+  );
+};
 
-// ---- Tactile 16-Column Keyboard + Quick-Key Strip ---------------------------------------
+// ---- Tactile 16-Column Keyboard + Sticky/Locked Modifiers -------------------------------
 const SYM = {
   '`': '~', '1': '!', '2': '@', '3': '#', '4': '$', '5': '%', '6': '^', '7': '&', '8': '*',
   '9': '(', '0': ')', '-': '_', '=': '+', '[': '{', ']': '}', '\\': '|', ';': ':', "'": '"',
@@ -378,7 +518,24 @@ const FN = [
   ],
 ];
 
-let shiftOn = false, ctrlOn = false, altOn = false, winOn = false, fnOn = false;
+// Modifiers: 0 = off, 1 = one-shot latched, 2 = double-tap locked
+const modState = {shift: 0, ctrl: 0, alt: 0, win: 0};
+const modTapAt = {shift: 0, ctrl: 0, alt: 0, win: 0};
+let fnOn = false;
+
+function toggleModifier(m) {
+  const now = performance.now();
+  if (modState[m] === 1 && now - modTapAt[m] < 380) {
+    modState[m] = 2; // double-tap locks modifier
+    statusNote(`${m.toUpperCase()} locked (tap again to release)`);
+  } else if (modState[m] > 0) {
+    modState[m] = 0;
+  } else {
+    modState[m] = 1;
+  }
+  modTapAt[m] = now;
+  drawKeys();
+}
 
 function sendKeyCombo(keys, mods) {
   if (wsAuthed && ws && ws.readyState === WebSocket.OPEN) {
@@ -391,21 +548,28 @@ function sendKeyCombo(keys, mods) {
 function syncQuickMods() {
   document.querySelectorAll('[data-qm]').forEach(btn => {
     const m = btn.dataset.qm;
-    const on = (m === 'ctrl' && ctrlOn) || (m === 'alt' && altOn) || (m === 'win' && winOn);
-    btn.classList.toggle('latched', on);
+    const st = modState[m] || 0;
+    btn.classList.toggle('latched', st === 1);
+    btn.classList.toggle('locked', st === 2);
   });
 }
 
 function face(k) {
   if (k.kind !== 'key') return k.label;
-  if (shiftOn && SYM[k.key]) return SYM[k.key];
-  if (shiftOn && k.key.length === 1 && k.key >= 'a' && k.key <= 'z') return k.key.toUpperCase();
+  const sh = modState.shift > 0;
+  if (sh && SYM[k.key]) return SYM[k.key];
+  if (sh && k.key.length === 1 && k.key >= 'a' && k.key <= 'z') return k.key.toUpperCase();
   return k.label;
 }
-function latched(k) {
-  return (k.kind === 'fn' && fnOn) || (k.kind === 'shift' && shiftOn) || (k.kind === 'ctrl' && ctrlOn)
-    || (k.kind === 'alt' && altOn) || (k.kind === 'win' && winOn);
+
+function modClass(k) {
+  if (k.kind === 'fn') return fnOn ? 'latched' : '';
+  if (k.kind in modState) {
+    return modState[k.kind] === 2 ? 'locked' : modState[k.kind] === 1 ? 'latched' : '';
+  }
+  return '';
 }
+
 function drawKeys() {
   const kb = document.getElementById('kb');
   kb.replaceChildren();
@@ -420,7 +584,7 @@ function drawKeys() {
       b.type = 'button';
       b.textContent = face(k);
       b.style.gridColumn = 'span ' + (k.span || 1);
-      b.className = [k.cls || '', latched(k) ? 'latched' : ''].filter(Boolean).join(' ');
+      b.className = [k.cls || '', modClass(k)].filter(Boolean).join(' ');
       if (k.aria) b.setAttribute('aria-label', k.aria);
       b.onclick = () => onKey(k);
       d.appendChild(b);
@@ -429,22 +593,23 @@ function drawKeys() {
   }
   syncQuickMods();
 }
+
 function onKey(k) {
   if (k.kind === 'fn') { fnOn = !fnOn; drawKeys(); return; }
-  if (k.kind === 'shift') { shiftOn = !shiftOn; drawKeys(); return; }
-  if (k.kind === 'ctrl') { ctrlOn = !ctrlOn; drawKeys(); return; }
-  if (k.kind === 'alt') { altOn = !altOn; drawKeys(); return; }
-  if (k.kind === 'win') { winOn = !winOn; drawKeys(); return; }
+  if (k.kind in modState) { toggleModifier(k.kind); return; }
   if (k.kind === 'macro') { post('/api/macro', {name: k.key}); return; }
   if (k.kind === 'power') { power(k.target, k.action, k.confirm); return; }
   const mods = [];
-  if (shiftOn) mods.push('shift');
-  if (ctrlOn) mods.push('ctrl');
-  if (altOn) mods.push('alt');
-  if (winOn) mods.push('gui');
+  if (modState.shift > 0) mods.push('shift');
+  if (modState.ctrl > 0) mods.push('ctrl');
+  if (modState.alt > 0) mods.push('alt');
+  if (modState.win > 0) mods.push('gui');
   sendKeyCombo([k.key], mods);
-  shiftOn = ctrlOn = altOn = winOn = false;
-  drawKeys();
+  let changed = false;
+  for (const m of ['shift', 'ctrl', 'alt', 'win']) {
+    if (modState[m] === 1) { modState[m] = 0; changed = true; }
+  }
+  if (changed) drawKeys();
 }
 drawKeys();
 
@@ -452,7 +617,7 @@ document.querySelectorAll('[data-qk]').forEach(btn => {
   btn.onclick = () => onKey({kind: 'key', key: btn.dataset.qk});
 });
 document.querySelectorAll('[data-qm]').forEach(btn => {
-  btn.onclick = () => onKey({kind: btn.dataset.qm});
+  btn.onclick = () => toggleModifier(btn.dataset.qm);
 });
 
 // ---- Type / Clipboard Form (IME-safe Enter submit) --------------------------------------
@@ -506,19 +671,24 @@ function showLeds(leds) {
   document.getElementById('led-scroll').className = 'led' + (l.scroll ? ' on' : '');
 }
 
-document.getElementById('ping').onclick = async () => {
+async function runCapsPing() {
   menuDlg.close();
+  const topBtn = document.getElementById('ping-top');
   statusNote('Pinging host via CapsLock LED…');
   const r = await post('/api/ping', {});
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { statusNote(`Ping: ${j.error || r.status}`); return; }
   if (j.leds) showLeds(j.leds);
+  if (topBtn && j.alive) topBtn.textContent = `Ping ${j.latency_ms}ms`;
   statusNote(j.alive ? `Host alive: USB LED echo in ${j.latency_ms} ms` : 'Host unresponsive (no LED echo)');
-};
+}
+document.getElementById('ping').onclick = runCapsPing;
+document.getElementById('ping-top').onclick = runCapsPing;
 
 // ---- Relative Trackpad: WS + HTTP/1.1, Multi-Touch, Accel & Drag-Lock -------------------
 let held = 0;
 let dragLock = false;
+let naturalScroll = localStorage.getItem('kvmNaturalScroll') !== '0';
 const ACCELS = [
   {label: '1.0x', base: 1.0, k: 0.0, cap: 1.0},
   {label: '1.6x', base: 1.05, k: 0.08, cap: 2.3},
@@ -527,8 +697,23 @@ const ACCELS = [
 let accelIdx = 1;
 
 const pad = document.getElementById('surface');
+const touchRing = document.getElementById('pad-touch-ring');
 const dragLockBtn = document.getElementById('drag-lock');
 const accelBtn = document.getElementById('accel-btn');
+const scrollDirBtn = document.getElementById('scroll-dir-btn');
+
+function syncScrollBtn() {
+  scrollDirBtn.textContent = naturalScroll ? '2F Scroll' : '2F Classic';
+  scrollDirBtn.classList.toggle('chip-on', naturalScroll);
+}
+syncScrollBtn();
+
+scrollDirBtn.onclick = () => {
+  naturalScroll = !naturalScroll;
+  localStorage.setItem('kvmNaturalScroll', naturalScroll ? '1' : '0');
+  syncScrollBtn();
+  statusNote(naturalScroll ? 'Two-finger scroll: Natural' : 'Two-finger scroll: Classic');
+};
 
 dragLockBtn.onclick = () => {
   dragLock = !dragLock;
@@ -540,6 +725,7 @@ dragLockBtn.onclick = () => {
 accelBtn.onclick = () => {
   accelIdx = (accelIdx + 1) % ACCELS.length;
   accelBtn.textContent = 'Accel: ' + ACCELS[accelIdx].label;
+  accelBtn.classList.toggle('chip-on', accelIdx > 0);
 };
 
 let httpQueue = Promise.resolve();
@@ -617,9 +803,20 @@ document.querySelectorAll('[data-b]').forEach(b => {
 const ptrs = new Map();
 let gesture = {maxCount: 0, moved: false, dist: 0, startAt: 0, scrollCarry: 0};
 
+function updateTouchRing(clientX, clientY, show) {
+  if (!touchRing) return;
+  if (!show) { touchRing.classList.remove('active'); return; }
+  const r = pad.getBoundingClientRect();
+  const x = Math.max(14, Math.min(r.width - 14, clientX - r.left));
+  const y = Math.max(14, Math.min(r.height - 14, clientY - r.top));
+  touchRing.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+  touchRing.classList.add('active');
+}
+
 pad.addEventListener('pointerdown', e => {
   ptrs.set(e.pointerId, {x: e.clientX, y: e.clientY});
   try { pad.setPointerCapture(e.pointerId); } catch (_) {}
+  updateTouchRing(e.clientX, e.clientY, true);
   if (ptrs.size === 1) {
     gesture = {maxCount: 1, moved: false, dist: 0, startAt: performance.now(), scrollCarry: 0};
   } else if (ptrs.size >= 2) {
@@ -632,6 +829,7 @@ pad.addEventListener('pointermove', e => {
   if (!prev) return;
   const rx = e.clientX - prev.x, ry = e.clientY - prev.y;
   prev.x = e.clientX; prev.y = e.clientY;
+  updateTouchRing(e.clientX, e.clientY, true);
   gesture.dist += Math.abs(rx) + Math.abs(ry);
   if (gesture.dist > 5) gesture.moved = true;
 
@@ -643,13 +841,12 @@ pad.addEventListener('pointermove', e => {
     acc.dy += ry * gain;
     scheduleFlush();
   } else if (ptrs.size >= 2) {
-    // Average dy across 2 pointers -> vertical wheel ticks
     gesture.scrollCarry += ry / ptrs.size;
     const step = 18;
     if (Math.abs(gesture.scrollCarry) >= step) {
       const ticks = Math.trunc(gesture.scrollCarry / step);
       gesture.scrollCarry -= ticks * step;
-      acc.w += -ticks;
+      acc.w += naturalScroll ? -ticks : ticks;
       scheduleFlush();
     }
   }
@@ -659,6 +856,7 @@ function onPtrEnd(e) {
   if (!ptrs.has(e.pointerId)) return;
   ptrs.delete(e.pointerId);
   if (ptrs.size === 0) {
+    updateTouchRing(0, 0, false);
     flushMotion(true);
     const dur = performance.now() - gesture.startAt;
     if (!gesture.moved && dur < 280) {
@@ -694,12 +892,12 @@ function bindWheel(id, dir) {
 bindWheel('su', 1);
 bindWheel('sd', -1);
 document.addEventListener('contextmenu', e => {
-  if (e.target.closest('#pad, #kb, .topbar, .quick-strip')) e.preventDefault();
+  if (e.target.closest('#pad, #kb-wrap, .topbar, .quick-strip, .deck-tabs')) e.preventDefault();
 });
 
 // ---- 240x135 Still & 1:1 Cursor Loupe (Stage Inset + Optional Trackpad Overlay) ---------
 const viewCanvas = document.getElementById('view');
-const padLabel = document.getElementById('pad-label');
+const padCenter = document.getElementById('pad-center');
 const loupeBtn = document.getElementById('loupe');
 const loupeWrap = document.getElementById('loupe-wrap');
 const loupeCv = document.getElementById('loupe-cv');
@@ -725,7 +923,7 @@ loupeBtn.onclick = () => {
   loupeBtn.classList.toggle('chip-on', padViewMode !== 'off');
   if (padViewMode === 'off') {
     viewCanvas.hidden = true;
-    padLabel.hidden = false;
+    padCenter.hidden = false;
   } else {
     pollFrame();
   }
@@ -753,7 +951,7 @@ async function pollFrame() {
         if (padViewMode !== 'off' && viewCtx) {
           viewCtx.putImageData(frameImg, 0, 0);
           viewCanvas.hidden = false;
-          padLabel.hidden = true;
+          padCenter.hidden = true;
         }
       }
     }
@@ -768,6 +966,7 @@ let pvSeq = 0, pvQuality = 'med', pvBusy = false, pvHasFrame = false;
 const pvSelect = document.getElementById('pvq');
 const pvSt = document.getElementById('pvst');
 const stageEmpty = document.getElementById('stage-empty');
+const stageEmptyMsg = document.getElementById('stage-empty-msg');
 
 document.getElementById('fs-btn').onclick = () => {
   const el = document.getElementById('stage-well');
@@ -791,7 +990,7 @@ pvSelect.onchange = e => {
   if (q === 'off') {
     pvHasFrame = false;
     stageEmpty.hidden = false;
-    stageEmpty.textContent = 'Preview paused (Off)';
+    stageEmptyMsg.textContent = 'Desktop preview paused (select Low / Med / High above)';
   }
   askQuality(q);
 };
@@ -802,7 +1001,7 @@ window.addEventListener('pagehide', () => {
 
 async function pvPoll() {
   const wantQ = pvSelect.value;
-  if (wantQ === 'off' || !pin || pvBusy || serialMode === 'shell') {
+  if (wantQ === 'off' || !pin || pvBusy || serialMode === 'shell' || activeDeck === 'stats') {
     if (serialMode === 'shell') pvSt.textContent = 'paused (shell mode)';
     return setTimeout(pvPoll, 500);
   }
@@ -810,7 +1009,7 @@ async function pvPoll() {
   try {
     const r = await fetch('/api/preview?since=' + pvSeq, {headers: {'X-KVM-PIN': pin}});
     if (r.status === 204) {
-      if (!pvHasFrame) pvSt.textContent = 'waiting for helper tiles…';
+      if (!pvHasFrame) pvSt.textContent = 'awaiting helper tiles…';
     } else if (r.ok) {
       const j = await r.json(), c = document.getElementById('pvc'), g = c.getContext('2d');
       if (c.width !== j.w || c.height !== j.h) { c.width = j.w; c.height = j.h; }
@@ -844,67 +1043,169 @@ function checkQualityAck(s) {
   }
 }
 
-// ---- GEEK-Lineage Telemetry Cells & Canvas Sparklines -----------------------------------
+// ---- Formatting & GEEK Heat-Ramp Helpers ------------------------------------------------
 const fmtRate = bps => {
   if (bps == null || !Number.isFinite(bps) || bps < 0) return '--';
-  if (bps < 999.5) return Math.round(bps) + 'B/s';
-  if (bps < 999500) return (bps / 1000).toFixed(bps < 9950 ? 1 : 0) + 'K/s';
-  if (bps < 999500000) return (bps / 1e6).toFixed(bps < 9950000 ? 1 : 0) + 'M/s';
-  return (bps / 1e9).toFixed(1) + 'G/s';
+  if (bps < 999.5) return Math.round(bps) + ' B/s';
+  if (bps < 999500) return (bps / 1000).toFixed(bps < 9950 ? 1 : 0) + ' K/s';
+  if (bps < 999500000) return (bps / 1e6).toFixed(bps < 9950000 ? 1 : 0) + ' M/s';
+  return (bps / 1e9).toFixed(1) + ' G/s';
 };
-const fmtGB = b => (b == null || !Number.isFinite(b)) ? null : (b >= 1099511627776 ? (b / 1099511627776).toFixed(1) + 'T' : (b / 1073741824).toFixed(b < 10737418240 ? 1 : 0) + 'G');
+const fmtBytes = b => {
+  if (b == null || !Number.isFinite(b) || b < 0) return '--';
+  if (b < 1024) return Math.round(b) + 'B';
+  if (b < 1048576) return (b / 1024).toFixed(b < 10240 ? 1 : 0) + 'K';
+  if (b < 1073741824) return (b / 1048576).toFixed(b < 10485760 ? 1 : 0) + 'M';
+  if (b < 1099511627776) return (b / 1073741824).toFixed(b < 10737418240 ? 1 : 0) + 'G';
+  return (b / 1099511627776).toFixed(2) + 'T';
+};
+const fmtGBPair = (used, tot) => {
+  if (used == null || tot == null || !Number.isFinite(used) || !Number.isFinite(tot) || tot <= 0) return null;
+  if (tot >= 1099511627776) {
+    return {u: (used / 1099511627776).toFixed(2), t: (tot / 1099511627776).toFixed(2), unit: 'T'};
+  }
+  const dec = tot < 10737418240 ? 1 : 1;
+  return {u: (used / 1073741824).toFixed(dec), t: Math.round(tot / 1073741824), unit: 'G'};
+};
 const fmtUp = s => {
   if (s == null || s < 0) return '--';
+  if (s < 60) return Math.floor(s) + 's';
   if (s < 3600) return Math.floor(s / 60) + 'm';
   if (s < 86400) return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
   return Math.floor(s / 86400) + 'd ' + Math.floor((s % 86400) / 3600) + 'h';
 };
 
-const histTemp = [], histRx = [], histTx = [];
-const MAX_HIST = 90;
+const histTemp = [], histLoad = [], histRx = [], histTx = [];
+const MAX_HIST = 240; // 240 * 2s = 8 minutes (matches GEEK HIST = 240!)
 
 function cssVar(name) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#5edaf2';
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#74a8ee';
+}
+
+function heatColorCss(val, warm, hot) {
+  if (val == null || !Number.isFinite(val)) return 'var(--val)';
+  if (val >= hot) return 'var(--bad)';
+  if (val >= (warm + hot) * 0.5) return 'var(--hot)';
+  if (val >= warm) return 'var(--warn)';
+  return 'var(--rx)';
+}
+
+function prepHiDpiCanvas(cv) {
+  if (!cv) return null;
+  const r = cv.getBoundingClientRect();
+  if (r.width < 8 || r.height < 8) return null;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const pw = Math.round(r.width * dpr), ph = Math.round(r.height * dpr);
+  if (cv.width !== pw || cv.height !== ph) {
+    cv.width = pw;
+    cv.height = ph;
+  }
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, r.width, r.height);
+  return {g, w: r.width, h: r.height};
+}
+
+function drawTempCurve(cv, detailed) {
+  const ctx = prepHiDpiCanvas(cv);
+  if (!ctx) return;
+  const {g, w, h} = ctx;
+  const cWarn = cssVar('--warn'), cHot = cssVar('--hot'), cBad = cssVar('--bad'), cDiv = cssVar('--div');
+
+  if (detailed) {
+    // Draw 70C warm and 85C hot reference lines
+    const y70 = h - ((70 - 25) / 70) * (h - 8) - 4;
+    const y85 = h - ((85 - 25) / 70) * (h - 8) - 4;
+    g.save();
+    g.setLineDash([3, 4]);
+    g.lineWidth = 1;
+    g.strokeStyle = cWarn;
+    g.globalAlpha = 0.28;
+    g.beginPath(); g.moveTo(0, y70); g.lineTo(w, y70); g.stroke();
+    g.strokeStyle = cBad;
+    g.beginPath(); g.moveTo(0, y85); g.lineTo(w, y85); g.stroke();
+    g.restore();
+  }
+
+  const pts = [];
+  const n = histTemp.length;
+  const step = detailed ? Math.max(2.2, w / Math.max(60, n)) : 2.8;
+  for (let i = 0; i < n; i++) {
+    const v = histTemp[i];
+    if (!Number.isFinite(v)) continue;
+    const x = w - (n - 1 - i) * step;
+    if (x < -step) continue;
+    const norm = Math.max(0.06, Math.min(1, (v - 25) / 70));
+    const y = h - norm * (h - 6) - 2;
+    pts.push({x, y, v});
+  }
+  if (pts.length === 1) pts.unshift({x: Math.max(0, pts[0].x - 16), y: pts[0].y, v: pts[0].v});
+  if (pts.length < 2) return;
+
+  const maxV = Math.max(...pts.map(p => p.v));
+  const strokeCol = maxV >= 85 ? cBad : maxV >= 72 ? cHot : cWarn;
+
+  const grad = g.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, strokeCol);
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+
+  g.save();
+  g.beginPath();
+  g.moveTo(pts[0].x, h);
+  for (const p of pts) g.lineTo(p.x, p.y);
+  g.lineTo(pts[pts.length - 1].x, h);
+  g.closePath();
+  g.globalAlpha = 0.24;
+  g.fillStyle = grad;
+  g.fill();
+  g.restore();
+
+  g.beginPath();
+  pts.forEach((p, idx) => { if (idx === 0) g.moveTo(p.x, p.y); else g.lineTo(p.x, p.y); });
+  g.strokeStyle = strokeCol;
+  g.lineWidth = detailed ? 2 : 1.75;
+  g.lineJoin = 'round';
+  g.stroke();
+}
+
+function drawDuplexWaterfall(cv, detailed) {
+  const ctx = prepHiDpiCanvas(cv);
+  if (!ctx) return;
+  const {g, w, h} = ctx;
+  const mid = Math.floor(h / 2);
+  g.fillStyle = cssVar('--div');
+  g.fillRect(0, mid, w, 1);
+
+  const cRx = cssVar('--rx'), cTx = cssVar('--tx');
+  const logR = bps => (!Number.isFinite(bps) || bps <= 300) ? 0 : Math.min(1, Math.max(0.04, Math.log10(bps / 300) / 5.5));
+  const n = histRx.length;
+  const barW = detailed ? 2.5 : 2;
+  const pitch = detailed ? 3.6 : 2.8;
+  for (let i = 0; i < n; i++) {
+    const x = w - (n - i) * pitch;
+    if (x < 0) continue;
+    const rh = Math.round(logR(histRx[i]) * (mid - 2));
+    const th = Math.round(logR(histTx[i]) * (mid - 3));
+    if (rh > 0) {
+      g.fillStyle = cRx;
+      g.globalAlpha = 0.88;
+      g.fillRect(x, mid - rh, barW, rh);
+    }
+    if (th > 0) {
+      g.fillStyle = cTx;
+      g.globalAlpha = 0.88;
+      g.fillRect(x, mid + 1, barW, th);
+    }
+  }
+  g.globalAlpha = 1;
 }
 
 function drawSparks() {
-  const ct = document.getElementById('sp-temp');
-  if (ct) {
-    const g = ct.getContext('2d'), w = ct.width, h = ct.height;
-    g.clearRect(0, 0, w, h);
-    const cLab = cssVar('--lab'), cWarn = cssVar('--warn'), cBad = cssVar('--bad');
-    const n = histTemp.length;
-    for (let i = 0; i < n; i++) {
-      const v = histTemp[i];
-      if (!Number.isFinite(v)) continue;
-      const t = Math.max(0.08, Math.min(1, (v - 30) / 65));
-      const bh = Math.max(2, Math.round(t * (h - 2)));
-      const x = w - (n - i) * 2.4;
-      if (x < 0) continue;
-      g.fillStyle = v >= 82 ? cBad : v >= 68 ? cWarn : cLab;
-      g.globalAlpha = 0.35;
-      g.fillRect(x, h - bh, 2, bh);
-      g.globalAlpha = 1;
-      g.fillRect(x, h - bh, 2, 2);
-    }
-  }
-  const cn = document.getElementById('sp-net');
-  if (cn) {
-    const g = cn.getContext('2d'), w = cn.width, h = cn.height, mid = Math.floor(h / 2);
-    g.clearRect(0, 0, w, h);
-    g.fillStyle = cssVar('--div');
-    g.fillRect(0, mid, w, 1);
-    const cRx = cssVar('--rx'), cTx = cssVar('--tx');
-    const logR = bps => (!Number.isFinite(bps) || bps <= 500) ? 0 : Math.min(1, Math.max(0, Math.log10(bps / 500) / 5.3));
-    const n = histRx.length;
-    for (let i = 0; i < n; i++) {
-      const x = w - (n - i) * 2.4;
-      if (x < 0) continue;
-      const rh = Math.round(logR(histRx[i]) * (mid - 1));
-      const th = Math.round(logR(histTx[i]) * (mid - 2));
-      if (rh > 0) { g.fillStyle = cRx; g.fillRect(x, mid - rh, 2, rh); }
-      if (th > 0) { g.fillStyle = cTx; g.fillRect(x, mid + 1, 2, th); }
-    }
+  drawTempCurve(document.getElementById('sp-temp'), false);
+  drawDuplexWaterfall(document.getElementById('sp-net'), false);
+  if (activeDeck === 'stats') {
+    drawTempCurve(document.getElementById('st-canvas-temp'), true);
+    drawDuplexWaterfall(document.getElementById('st-canvas-net'), true);
   }
 }
 
@@ -943,59 +1244,237 @@ function updateTelemetry(s) {
   const cpuT = s.pc_cpu_temp_c ?? s.pc_temp_c;
   if (linked && cpuT != null) {
     histTemp.push(cpuT); if (histTemp.length > MAX_HIST) histTemp.shift();
+    histLoad.push(s.pc_load1 ?? 0); if (histLoad.length > MAX_HIST) histLoad.shift();
     histRx.push(s.pc_rx_bps ?? 0); if (histRx.length > MAX_HIST) histRx.shift();
     histTx.push(s.pc_tx_bps ?? 0); if (histTx.length > MAX_HIST) histTx.shift();
   }
-  document.getElementById('tc-temp').textContent = linked && cpuT != null ? `${Math.round(cpuT)}°C` : '--°C';
-  document.getElementById('tc-temp-sr').textContent = linked && cpuT != null ? `CPU temperature ${Math.round(cpuT)} degrees Celsius` : 'Offline';
-  document.getElementById('tc-load').textContent = linked && s.pc_load1 != null ? `${s.pc_load1} load` : 'offline';
-  const sens = [];
-  if (s.pc_gpu_temp_c != null) sens.push(`GPU ${Math.round(s.pc_gpu_temp_c)}°`);
-  if (s.pc_nvme_temp_c != null) sens.push(`NVMe ${Math.round(s.pc_nvme_temp_c)}°`);
-  document.getElementById('tc-sensors').textContent = sens.join(' · ') || (s.pc_gpu_pct != null ? `GPU ${Math.round(s.pc_gpu_pct)}%` : '');
 
-  const cores = linked ? (s.pc_cores_all || s.pc_cores || []) : [];
-  document.getElementById('tc-ncpu').textContent = linked && s.pc_ncpu ? `${s.pc_ncpu} threads` : '--';
+  // ---- Mini Telemetry Strip (4 GEEK Cards under Desktop/Tablet Stage) ----
+  const ncpu = s.pc_ncpu || (Array.isArray(s.pc_cores_all) ? s.pc_cores_all.length : null);
+  document.getElementById('mc-cpu-hdr').textContent = linked && ncpu ? `CPU · ${ncpu} CORES` : 'CPU · THERMAL';
+
+  const tempEl = document.getElementById('tc-temp');
+  tempEl.textContent = linked && cpuT != null ? `${Math.round(cpuT)}°C` : '--°C';
+  tempEl.style.color = linked && cpuT != null ? (cpuT >= 82 ? 'var(--bad)' : cpuT >= 68 ? 'var(--warn)' : 'var(--warn)') : 'var(--val)';
+  document.getElementById('tc-temp-sr').textContent = linked && cpuT != null ? `CPU temperature ${Math.round(cpuT)} degrees Celsius` : 'Offline';
+  document.getElementById('tc-load').textContent = linked && s.pc_load1 != null ? `ld ${Number(s.pc_load1).toFixed(2)}` : 'offline';
+
+  const sens = [];
+  if (linked && s.pc_gpu_temp_c != null) {
+    sens.push(`GPU ${Math.round(s.pc_gpu_temp_c)}°C` + (s.pc_gpu_pct != null ? ` (${Math.round(s.pc_gpu_pct)}%)` : ''));
+  } else if (linked && s.pc_gpu_pct != null) {
+    sens.push(`GPU ${Math.round(s.pc_gpu_pct)}%`);
+  }
+  if (linked && s.pc_nvme_temp_c != null) sens.push(`NVMe ${Math.round(s.pc_nvme_temp_c)}°C`);
+  if (!sens.length) sens.push(linked ? `Host up ${fmtUp(s.pc_uptime_s)}` : `Zero ${s.temp_c ?? '--'}°C · up ${fmtUp(s.uptime_s)}`);
+  document.getElementById('tc-sensors').textContent = sens.join(' · ');
+
+  const rawCores = linked ? (s.pc_cores_all || s.pc_cores || []) : [];
+  const sortedCores = rawCores.slice().sort((a, b) => b - a);
+  document.getElementById('tc-ncpu').textContent = linked && ncpu ? `${ncpu}t` : '--';
   const cEl = document.getElementById('tc-cores');
-  cEl.innerHTML = cores.slice(0, 24).map(v => {
-    const col = v >= 85 ? 'var(--bad)' : v >= 65 ? 'var(--warn)' : 'var(--rx)';
-    return `<span class="core-bar"><i style="block-size:${Math.round(v)}%;background:${col}"></i></span>`;
-  }).join('');
+  if (sortedCores.length) {
+    cEl.innerHTML = sortedCores.slice(0, 20).map(v => {
+      const col = heatColorCss(v, 55, 85);
+      const pct = Math.max(6, Math.min(100, Math.round(v)));
+      return `<span class="core-bar"><i style="block-size:${pct}%;background:${col}"></i></span>`;
+    }).join('');
+  } else {
+    cEl.innerHTML = Array.from({length: 12}, () => `<span class="core-bar"><i style="block-size:6%;opacity:.25"></i></span>`).join('');
+  }
 
   const pEl = document.getElementById('tc-procs');
-  const procs = linked && Array.isArray(s.pc_procs) ? s.pc_procs.slice(0, 4) : [];
+  const procs = linked && Array.isArray(s.pc_procs) ? s.pc_procs : [];
   if (procs.length) {
-    pEl.innerHTML = procs.map(([n, p]) => `<div class="proc-row"><span>${n.replace(/</g, '&lt;')}</span><span>${Math.round(p)}%</span></div>`).join('');
+    pEl.innerHTML = procs.slice(0, 3).map(([n, p]) => {
+      const col = heatColorCss(p, 50, 85);
+      const w = Math.max(3, Math.min(100, Math.round(p)));
+      return `<div class="proc-row"><span>${escHtml(n)}</span><span style="color:${col};font-weight:700">${Math.round(p)}%</span><i class="proc-line" style="inline-size:${w}%;background:${col}"></i></div>`;
+    }).join('');
   } else if (linked && s.pc_top_proc) {
-    pEl.innerHTML = `<div class="proc-row"><span>${s.pc_top_proc.replace(/</g, '&lt;')}</span><span>${s.pc_top_cpu_pct != null ? Math.round(s.pc_top_cpu_pct) + '%' : ''}</span></div>`;
+    const p = s.pc_top_cpu_pct ?? 0;
+    pEl.innerHTML = `<div class="proc-row"><span>${escHtml(s.pc_top_proc)}</span><span>${Math.round(p)}%</span></div>`;
   } else {
     pEl.innerHTML = `<div class="t-sub">${linked ? 'idle' : 'waiting for helper…'}</div>`;
   }
 
-  const mUsed = fmtGB(s.pc_mem_used), mTot = fmtGB(s.pc_mem_total);
-  document.getElementById('tc-mem').textContent = linked
-    ? (mUsed && mTot ? `RAM ${mUsed} / ${mTot}` : s.pc_mem_pct != null ? `RAM ${s.pc_mem_pct}%` : 'RAM --')
-    : 'RAM --';
-  const dUsed = fmtGB(s.pc_disk_used), dTot = fmtGB(s.pc_disk_total);
-  document.getElementById('tc-disk').textContent = linked
-    ? (dUsed && dTot ? `${s.pc_disk_dev || 'DISK'} ${dUsed} / ${dTot}` : s.pc_disk_pct != null ? `DISK ${s.pc_disk_pct}%` : 'DISK --')
-    : `Zero ${s.temp_c != null ? s.temp_c + '°C' : ''} · up ${fmtUp(s.uptime_s)}`;
+  // Memory & Disk meters
+  const mPair = fmtGBPair(s.pc_mem_used, s.pc_mem_total);
+  const memPct = linked ? (s.pc_mem_pct ?? (mPair ? Math.round((s.pc_mem_used / s.pc_mem_total) * 100) : 0)) : 0;
   document.getElementById('tc-up').textContent = linked ? `up ${fmtUp(s.pc_uptime_s)}` : '';
-  document.getElementById('tc-host').textContent = linked
-    ? [s.pc_host, s.pc_net_ip || s.pc_ip].filter(Boolean).join(' · ')
-    : `Zero IP ${s.tailscale_ip || s.ip || '--'}`;
+  document.getElementById('tc-mem').innerHTML = linked
+    ? (mPair ? `${mPair.u} <small>/ ${mPair.t}${mPair.unit}</small>` : s.pc_mem_pct != null ? `${s.pc_mem_pct}% <small>RAM</small>` : '--')
+    : '-- <small>/ --G</small>';
+  const barMem = document.getElementById('bar-mem');
+  barMem.style.inlineSize = `${Math.max(0, Math.min(100, memPct))}%`;
+  barMem.style.background = heatColorCss(memPct, 78, 92);
 
-  document.getElementById('tc-iface').textContent = (linked && s.pc_net_iface) ? s.pc_net_iface : 'Network';
-  document.getElementById('tc-rates').textContent = linked ? `↓${fmtRate(s.pc_rx_bps)} ↑${fmtRate(s.pc_tx_bps)}` : '↓-- ↑--';
-  const npEl = document.getElementById('tc-netp');
-  const netp = linked && Array.isArray(s.pc_net_procs) ? s.pc_net_procs.slice(0, 2) : [];
-  npEl.innerHTML = netp.map(([n, b]) => `<div class="proc-row"><span>${n.replace(/</g, '&lt;')}</span><span>${fmtRate(b)}</span></div>`).join('');
+  const dPair = fmtGBPair(s.pc_disk_used, s.pc_disk_total);
+  const diskPct = linked ? (s.pc_disk_pct ?? (dPair ? Math.round((s.pc_disk_used / s.pc_disk_total) * 100) : 0)) : 0;
+  const diskDev = (linked && s.pc_disk_dev) ? `${s.pc_disk_dev.toUpperCase()} (/)` : 'DISK (/)';
+  document.getElementById('tc-disk-lbl').textContent = diskDev;
+  document.getElementById('tc-disk-pct').textContent = linked && diskPct ? `${diskPct}%` : '';
+  document.getElementById('tc-disk').innerHTML = linked
+    ? (dPair ? `${dPair.u} <small>/ ${dPair.t}${dPair.unit}</small>` : s.pc_disk_pct != null ? `${s.pc_disk_pct}% <small>used</small>` : '--')
+    : '-- <small>/ --G</small>';
+  const barDisk = document.getElementById('bar-disk');
+  barDisk.style.inlineSize = `${Math.max(0, Math.min(100, diskPct))}%`;
+  barDisk.style.background = diskPct >= 90 ? 'var(--bad)' : diskPct >= 80 ? 'var(--warn)' : 'var(--lab)';
+
+  // Network card + cumulative totals
+  document.getElementById('tc-iface').textContent = (linked && s.pc_net_iface) ? `${s.pc_net_iface} · NET` : 'NETWORK';
+  document.getElementById('tc-net-ip').textContent = linked ? (s.pc_net_ip || s.pc_ip || '') : '';
+  document.getElementById('tc-rx').textContent = linked ? `dn ${fmtRate(s.pc_rx_bps)}` : 'dn --';
+  document.getElementById('tc-tx').textContent = linked ? `up ${fmtRate(s.pc_tx_bps)}` : 'up --';
+
+  const netHist = Array.isArray(s.net_hist) ? s.net_hist : [];
+  let sumRx = 0, sumTx = 0;
+  for (const row of netHist) {
+    sumRx += Number(row.rx) || 0;
+    sumTx += Number(row.tx) || 0;
+  }
+  document.getElementById('tc-net-tot').textContent = netHist.length
+    ? `Total: ↓${fmtBytes(sumRx)} / ↑${fmtBytes(sumTx)}`
+    : (linked && Array.isArray(s.pc_net_procs) && s.pc_net_procs[0]
+        ? `${s.pc_net_procs[0][0]}: ${fmtRate(s.pc_net_procs[0][1])}`
+        : 'Total: -- / --');
+
+  // ---- Full Proper Stats Dashboard (#stats-dash) ----
+  document.getElementById('st-host-name').textContent = s.pc_host || (linked ? 'Linked Host' : 'Host Unlinked');
+  document.getElementById('st-host-ip').textContent = s.pc_net_ip || s.pc_ip || '--';
+  document.getElementById('st-host-os').textContent = [s.helper_os, s.helper_arch].filter(Boolean).join(' · ') || '--';
+  document.getElementById('st-host-up').textContent = linked ? fmtUp(s.pc_uptime_s) : '--';
+  document.getElementById('st-host-id').textContent = s.pc_id || '--';
+
+  const kCpu = document.getElementById('st-kpi-cpu');
+  kCpu.textContent = linked && cpuT != null ? `${cpuT.toFixed(1)}°C` : '--°C';
+  kCpu.style.color = linked && cpuT != null ? heatColorCss(cpuT, 68, 84) : 'var(--val)';
+  if (histTemp.length >= 2) {
+    const mn = Math.round(Math.min(...histTemp)), mx = Math.round(Math.max(...histTemp));
+    document.getElementById('st-kpi-cpu-sub').textContent = `min ${mn}° · peak ${mx}°`;
+    document.getElementById('st-temp-range').textContent = `${histTemp.length * 2}s window · min ${mn}°C / peak ${mx}°C`;
+  } else {
+    document.getElementById('st-kpi-cpu-sub').textContent = 'warm 70°C · red 85°C';
+  }
+
+  document.getElementById('st-kpi-gpu').textContent = linked && s.pc_gpu_temp_c != null ? `${Math.round(s.pc_gpu_temp_c)}°C` : 'n/a';
+  document.getElementById('st-kpi-gpu-sub').textContent = linked && s.pc_gpu_pct != null ? `busy ${Math.round(s.pc_gpu_pct)}%` : 'sensor optional';
+  document.getElementById('st-kpi-nvme').textContent = linked && s.pc_nvme_temp_c != null ? `${Math.round(s.pc_nvme_temp_c)}°C` : 'n/a';
+  document.getElementById('st-kpi-load').textContent = linked && s.pc_load1 != null ? Number(s.pc_load1).toFixed(2) : '--';
+  document.getElementById('st-kpi-threads').textContent = linked && ncpu ? `${ncpu} logical threads` : '-- threads';
+
+  document.getElementById('st-mem-pct').textContent = linked ? `${memPct}%` : '--%';
+  document.getElementById('st-mem-detail').textContent = linked
+    ? (mPair ? `${mPair.u}G used of ${mPair.t}${mPair.unit} (${fmtBytes(Math.max(0, s.pc_mem_total - s.pc_mem_used))} free)` : `${memPct}% used`)
+    : 'Waiting for host telemetry';
+  const stBarMem = document.getElementById('st-bar-mem');
+  stBarMem.style.inlineSize = `${Math.max(0, Math.min(100, memPct))}%`;
+  stBarMem.style.background = heatColorCss(memPct, 78, 92);
+
+  document.getElementById('st-disk-title').textContent = linked && s.pc_disk_dev ? `Primary Storage (${s.pc_disk_dev})` : 'Host Primary Storage';
+  document.getElementById('st-disk-pct').textContent = linked ? `${diskPct}%` : '--%';
+  document.getElementById('st-disk-detail').textContent = linked
+    ? (dPair ? `${dPair.u}${dPair.unit} used of ${dPair.t}${dPair.unit} (${fmtBytes(Math.max(0, s.pc_disk_total - s.pc_disk_used))} free)` : `${diskPct}% used`)
+    : 'Waiting for host telemetry';
+  const stBarDisk = document.getElementById('st-bar-disk');
+  stBarDisk.style.inlineSize = `${Math.max(0, Math.min(100, diskPct))}%`;
+  stBarDisk.style.background = diskPct >= 90 ? 'var(--bad)' : diskPct >= 80 ? 'var(--warn)' : 'var(--lab)';
+
+  // Pi Zero W Appliance & Radio Link (Page 4)
+  document.getElementById('st-zero-ip').textContent = `Zero ${s.ip || '--'}`;
+  document.getElementById('st-z-temp').textContent = s.temp_c != null ? `${s.temp_c}°C` : '--°C';
+  document.getElementById('st-z-load').textContent = s.load1 != null ? `load ${s.load1}` : 'load --';
+  document.getElementById('st-z-mem').textContent = s.mem_pct != null ? `${s.mem_pct}%` : '--%';
+  document.getElementById('st-z-up').textContent = `up ${fmtUp(s.uptime_s)}`;
+  document.getElementById('st-z-udc').textContent = s.udc_state || '--';
+  document.getElementById('st-z-xport').textContent = `${s.hid_ready ? 'HID ready' : 'HID off'} · ${xportText()}`;
+  document.getElementById('st-z-rssi').textContent = s.zero_wifi_rssi != null ? `${s.zero_wifi_rssi} dBm` : (pin ? 'n/a' : 'PIN req');
+  document.getElementById('st-z-ts').textContent = s.tailscale ? s.tailscale.toUpperCase() : 'n/a';
+  document.getElementById('st-z-tsip').textContent = s.tailscale_ip || (s.tailscale === 'down' ? 'interface down' : '--');
+  document.getElementById('st-z-helper').textContent = s.helper_state || s.link || '--';
+  document.getElementById('st-z-serial').textContent = `serial: ${s.serial_mode || s.mode || 'idle'}`;
+
+  // Per-Core Matrix + Top 8 CPU Processes (Page 2)
+  const coreGrid = document.getElementById('st-cores-grid');
+  if (rawCores.length) {
+    const avgCore = Math.round(rawCores.reduce((a, b) => a + b, 0) / rawCores.length);
+    const maxCore = Math.round(Math.max(...rawCores));
+    document.getElementById('st-cores-summary').textContent = `${rawCores.length} threads · avg ${avgCore}% · peak ${maxCore}%`;
+    coreGrid.innerHTML = rawCores.map((v, idx) => {
+      const pct = Math.max(0, Math.min(100, Math.round(v)));
+      const col = heatColorCss(pct, 55, 85);
+      return `<div class="s-core-tile"><div class="s-core-top"><span>C${idx}</span><b style="color:${col}">${pct}%</b></div><div class="s-core-track"><i style="inline-size:${pct}%;background:${col}"></i></div></div>`;
+    }).join('');
+  } else {
+    document.getElementById('st-cores-summary').textContent = 'awaiting core telemetry';
+    coreGrid.innerHTML = `<div class="t-sub" style="grid-column:1/-1;padding:6px">Per-core metrics populate automatically when LINKED.</div>`;
+  }
+
+  const cpuTbody = document.getElementById('st-cpu-tbody');
+  if (procs.length) {
+    cpuTbody.innerHTML = procs.slice(0, 8).map(([n, p]) => {
+      const pct = Number(p) || 0;
+      const col = heatColorCss(pct, 50, 85);
+      const w = Math.max(2, Math.min(100, Math.round(pct)));
+      return `<tr>
+        <td>${escHtml(n)}</td>
+        <td style="inline-size:38%"><div class="s-share-bar"><span style="inline-size:${w}%;background:${col};display:block;block-size:100%"></span></div></td>
+        <td class="num" style="color:${col};font-weight:700">${pct.toFixed(pct < 10 ? 1 : 0)}%</td>
+      </tr>`;
+    }).join('');
+  } else {
+    cpuTbody.innerHTML = `<tr><td colspan="3" style="color:var(--grey)">${linked ? 'No active CPU processes reported.' : 'Waiting for LINKED telemetry…'}</td></tr>`;
+  }
+
+  // Duplex Network & Cumulative History Table (Page 3)
+  document.getElementById('st-net-title').textContent = linked && s.pc_net_iface
+    ? `Page 3 · ${s.pc_net_iface} Duplex & Traffic History`
+    : 'Page 3 · Duplex Network & Traffic History';
+  document.getElementById('st-net-rates').textContent = linked
+    ? `↓ ${fmtRate(s.pc_rx_bps)} · ↑ ${fmtRate(s.pc_tx_bps)}`
+    : '↓-- · ↑--';
+
+  const liveNetProcs = linked && Array.isArray(s.pc_net_procs) ? s.pc_net_procs : [];
+  document.getElementById('st-net-live').textContent = liveNetProcs.length
+    ? 'Live sockets: ' + liveNetProcs.slice(0, 4).map(([n, b]) => `${n} (${fmtRate(b)})`).join(' · ')
+    : 'Live sockets: quiet';
+
+  if (s.net_hist_since) {
+    const ageS = Math.max(0, Math.floor(Date.now() / 1000) - Number(s.net_hist_since));
+    document.getElementById('st-hist-since').textContent = `Cumulative TCP traffic (${fmtUp(ageS)} window)`;
+  } else {
+    document.getElementById('st-hist-since').textContent = 'Cumulative per-process TCP traffic';
+  }
+  document.getElementById('st-hist-totals').textContent = netHist.length
+    ? `Σ ↓${fmtBytes(sumRx)} · ↑${fmtBytes(sumTx)}`
+    : 'Σ --';
+
+  const netTbody = document.getElementById('st-net-hist-tbody');
+  if (netHist.length) {
+    const maxTot = Math.max(1, ...netHist.map(r => (Number(r.rx) || 0) + (Number(r.tx) || 0)));
+    netTbody.innerHTML = netHist.map(r => {
+      const rx = Number(r.rx) || 0, tx = Number(r.tx) || 0;
+      const rxW = Math.round((rx / maxTot) * 100);
+      const txW = Math.round((tx / maxTot) * 100);
+      return `<tr>
+        <td>${escHtml(r.p)}</td>
+        <td class="num rx-txt">${fmtBytes(rx)}</td>
+        <td class="num tx-txt">${fmtBytes(tx)}</td>
+        <td style="inline-size:32%"><div class="s-share-bar"><span class="s-share-rx" style="inline-size:${rxW}%"></span><span class="s-share-tx" style="inline-size:${txW}%"></span></div></td>
+      </tr>`;
+    }).join('');
+  } else {
+    netTbody.innerHTML = `<tr><td colspan="4" style="color:var(--grey)">${pin ? 'No cumulative per-process history recorded yet.' : 'Unlock Console PIN to view per-process traffic history.'}</td></tr>`;
+  }
 
   drawSparks();
 }
 
 async function poll() {
-  const pill = document.getElementById('pill'), ip = document.getElementById('ip');
+  const pill = document.getElementById('pill');
+  const ip = document.getElementById('ip');
+  const barSub = document.getElementById('bar-sub');
+  const stageHost = document.getElementById('stage-host');
   try {
     const s = await (await fetch('/api/status', {headers: pin ? {'X-KVM-PIN': pin} : {}})).json();
     if (s.pin_ok === false && pin) {
@@ -1015,16 +1494,26 @@ async function poll() {
     }
     showLeds(s.leds);
 
-    const barParts = [s.pc_host || s.pc_ip || s.ip || ''];
+    const hostLabel = s.pc_host
+      ? (s.pc_net_ip || s.pc_ip ? `${s.pc_host} (${s.pc_net_ip || s.pc_ip})` : s.pc_host)
+      : (s.pc_ip || s.ip || 'Zero KVM');
+    ip.textContent = hostLabel;
+    if (stageHost) stageHost.textContent = s.pc_host ? `${s.pc_host} · desktop` : 'Live Desktop';
+
+    const subParts = [];
     if (s.link === 'LINKED') {
       const ct = s.pc_cpu_temp_c ?? s.pc_temp_c;
-      if (ct != null) barParts.push(`${Math.round(ct)}°C`);
-      if (s.pc_load1 != null) barParts.push(`ld ${s.pc_load1}`);
-      if (s.pc_rx_bps != null) barParts.push(`↓${fmtRate(s.pc_rx_bps)} ↑${fmtRate(s.pc_tx_bps)}`);
+      if (ct != null) subParts.push(`${Math.round(ct)}°C`);
+      if (s.pc_load1 != null) subParts.push(`ld ${s.pc_load1}`);
+      if (s.pc_rx_bps != null) subParts.push(`↓${fmtRate(s.pc_rx_bps).replace(' ', '')}`);
+      if (s.zero_wifi_rssi != null) subParts.push(`Wi-Fi ${s.zero_wifi_rssi}dBm`);
     } else if (s.host_suspended) {
-      barParts.push('Host suspended — open ⚡ Menu → Wake Host');
+      subParts.push('USB S3 suspended — open ⚡ Menu → Wake Host');
+    } else {
+      subParts.push(s.hid_ready ? 'ZERO HID ready' : 'HID init');
+      if (s.ip) subParts.push(`Zero ${s.ip}`);
     }
-    ip.textContent = barParts.filter(Boolean).join(' · ');
+    barSub.textContent = subParts.join(' · ');
 
     showMode(s);
     updatePairBanner(s);
@@ -1035,6 +1524,7 @@ async function poll() {
     pill.textContent = 'OFFLINE';
     pill.className = 'pill';
     ip.textContent = 'Zero unreachable';
+    barSub.textContent = '';
   }
 }
 setInterval(poll, 2000);
