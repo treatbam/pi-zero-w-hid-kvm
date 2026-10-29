@@ -1226,18 +1226,23 @@ void fadeInk(float pos, uint16_t& col, int& alpha) {
     alpha = 56 - (int)(u * 56.f);
   }
 }
-// Heat colour for a level 0..1. Green holds, then a short step to yellow, then orange, then red.
-// A straight blend of green and yellow sits in a dull olive, which is the faded band.
-// `invert` flips it for values where higher is better (Wi-Fi signal).
+// Heat colour for a level 0..1. Smooth green to yellow, then orange, then red.
+// Red starts just under halfway. `invert` flips it where higher is better (Wi-Fi).
 uint16_t heatInk(float t, bool invert) {
   const VTheme& vt = VT();
   if (t < 0.f) t = 0.f;
   if (t > 1.f) t = 1.f;
   if (invert) t = 1.f - t;
-  if (t < 0.30f) return vt.ok;
-  if (t < 0.55f) return mix(vt.ok, vt.warn, (int)((t - 0.30f) / 0.25f * 255.f));
-  if (t < 0.78f) return mix(vt.warn, vt.hot, (int)((t - 0.55f) / 0.23f * 255.f));
-  return mix(vt.hot, vt.bad, (int)((t - 0.78f) / 0.22f * 255.f));
+  auto blend = [&](float a, float b, uint16_t ca, uint16_t cb) {
+    float u = (t - a) / (b - a);
+    if (u < 0.f) u = 0.f;
+    if (u > 1.f) u = 1.f;
+    u = u * u * (3.f - 2.f * u);
+    return mix(ca, cb, (int)(u * 255.f));
+  };
+  if (t < 0.28f) return blend(0.f, 0.28f, vt.ok, vt.warn);
+  if (t < 0.46f) return blend(0.28f, 0.46f, vt.warn, vt.hot);
+  return blend(0.46f, 1.f, vt.hot, vt.bad);
 }
 float vLevel(float v, float lo, float hi, bool logScale) {
   float t = logScale ? logRate(v) : (hi > lo ? (v - lo) / (hi - lo) : 0.f);
@@ -1267,9 +1272,10 @@ void vShadowLine(int x, int y, int w, int h, const float* ser, int n, int next,
 // Filled history on the plain cell. Each column takes the heat colour of its own sample (green
 // low, yellow, red high), strongest just under the line and fading toward the bottom. The line
 // is a brighter tint of the same colours, on a 1px dark shadow unless `shadowLine` is off.
-// Newest sample at the right edge.
+// Newest sample at the right edge. `hang` draws the fill down from the top, so peaks sit low.
 void vHeatGraph(int x, int y, int w, int h, const float* ser, int n, int next, float lo, float hi,
-                bool logScale, bool dim, bool invert = false, uint16_t ground = 0, bool shadowLine = true) {
+                bool logScale, bool dim, bool invert = false, uint16_t ground = 0, bool shadowLine = true,
+                bool hang = false) {
   if (n <= 0 || w < 2 || h < 2) return;
   if (!ground) ground = VT().cell;
   const int topA = dim ? 110 : 214, botA = dim ? 36 : 78;
@@ -1280,19 +1286,26 @@ void vHeatGraph(int x, int y, int w, int h, const float* ser, int n, int next, f
     t = vLevel(v, lo, hi, logScale);
     return true;
   };
+  auto edgeOf = [&](float t) { return (int)(t * (h - 1) + 0.5f); };
   for (int i = 0; i < cols; i++) {
     float t;
     if (!at(i, t)) continue;
     uint16_t c = heatInk(t, invert);
-    int top = h - 1 - (int)(t * (h - 1) + 0.5f), cx = x + w - cols + i;
-    for (int r = top; r < h; r++) fb.drawPixel(cx, y + r, mix(ground, c, topA - (r - top) * (topA - botA) / (h - 1)));
+    int edge = edgeOf(t), cx = x + w - cols + i;
+    int r0 = hang ? 0 : h - 1 - edge, r1 = hang ? edge : h - 1;
+    for (int r = r0; r <= r1; r++) {
+      int dist = hang ? edge - r : r - (h - 1 - edge);
+      int a = topA - dist * (topA - botA) / (h - 1);
+      fb.drawPixel(cx, y + r, mix(ground, c, a));
+    }
   }
   for (int pass = shadowLine ? 0 : 1; pass < 2; pass++) {
     int prevX = -1, prevY = 0;
     for (int i = 0; i < cols; i++) {
       float t;
       if (!at(i, t)) { prevX = -1; continue; }
-      int px = x + w - cols + i, py = y + h - 1 - (int)(t * (h - 1) + 0.5f);
+      int px = x + w - cols + i;
+      int py = y + (hang ? edgeOf(t) : h - 1 - edgeOf(t));
       uint16_t c = pass ? (dim ? V_GREY : mix(heatInk(t, invert), 0xFFFF, 36)) : V_SHADOW;
       int dy = pass ? 0 : 1;
       if (prevX >= 0) fb.drawLine(prevX, min(y + h - 1, prevY + dy), px, min(y + h - 1, py + dy), c);
@@ -1453,33 +1466,30 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   usedTile(57, "RAM", s.pcMemUsed, s.pcMemTot, linked ? s.pcMem : -1);
   usedTile(88, dlab, s.pcDiskUsed, s.pcDiskTot, linked ? s.pcDisk : -1);
 
-  // Network cell: a plain strip holds the interface name and both rates, and the history
-  // fills everything below it, so the speeds never sit on the graph.
-  const int NW = W - 2 - NX, HEAD = 16;
+  // Network cell: upload hangs from the top, download rises from the bottom.
+  // The two rates sit together on the right, up above down.
+  const int NW = W - 2 - NX;
   vCell(NX, 57, NW, 60, false);
-  vHeatGraph(NX, 57 + HEAD, NW, 60 - HEAD, h.rx, h.n, h.next, 0, 1, true, stale);
-  uint16_t upInk = mix(VT().cell, V_WHITE, 170);
-  vShadowLine(NX, 57 + HEAD, NW, 60 - HEAD, h.tx, h.n, h.next, 0, 1, true, upInk);
+  vHeatGraph(NX, 58, NW, 59, h.tx, h.n, h.next, 0, 1, true, stale, false, 0, true, true);
+  vHeatGraph(NX, 58, NW, 59, h.rx, h.n, h.next, 0, 1, true, stale);
+  const char* ifn = s.netIf[0] ? s.netIf : "NET";
+  char ifb[16]; strlcpy(ifb, ifn, sizeof ifb);
+  while (ifb[0] && ftW(&FreeSans9pt7b, ifb) > NW / 2) ifb[strlen(ifb) - 1] = 0;
+  vTag(NX + 4, 70, ifb);
   float rx = linked ? s.pcRx : NAN, tx = linked ? s.pcTx : NAN;
   const GFXfont* rf = &FreeSans9pt7b;
   vFmtRate(a, sizeof a, rx); vFmtRate(b, sizeof b, tx);
-  if (ftW(rf, a) + ftW(rf, b) + 28 > NW / 2)
+  if (ftW(rf, a) > NW / 2 || ftW(rf, b) > NW / 2)
     for (char* p : {a, b}) { char* q = strstr(p, "/s"); if (q) *q = 0; }
-  const int base = 69;
-  int bx = W - 5 - ftW(rf, b);
-  int ax = bx - 14 - ftW(rf, a);
-  const char* ifn = s.netIf[0] ? s.netIf : "NET";
-  char ifb[16]; strlcpy(ifb, ifn, sizeof ifb);
-  while (ifb[0] && ftW(rf, ifb) > ax - 16 - (NX + 4)) ifb[strlen(ifb) - 1] = 0;
-  vTag(NX + 4, base, ifb);
   auto chev = [](int x, int tip, bool down, uint16_t c) {
     int d = down ? -4 : 4;
     fb.drawLine(x - 3, tip + d, x, tip, c); fb.drawLine(x + 3, tip + d, x, tip, c);
   };
-  uint16_t rc = stale || isnan(rx) ? V_GREY : 0xFFFF;
-  uint16_t tc = stale || isnan(tx) ? V_GREY : upInk;
-  chev(ax - 7, 65, true, rc);  ft(ax, base, a, rc, rf);
-  chev(bx - 7, 61, false, tc); ft(bx, base, b, tc, rf);
+  uint16_t ink = stale ? V_GREY : 0xFFFF;
+  int bx = W - 6 - ftW(rf, b);
+  int ax = W - 6 - ftW(rf, a);
+  chev(bx - 7, 74, false, ink); ft(bx, 82, b, isnan(tx) ? V_GREY : ink, rf);
+  chev(ax - 7, 92, true, ink);  ft(ax, 100, a, isnan(rx) ? V_GREY : ink, rf);
 }
 
 void drawZg(const Status& s, const PcHist& h, uint32_t now) {

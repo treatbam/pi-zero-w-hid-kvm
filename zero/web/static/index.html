@@ -581,7 +581,8 @@ button.danger {
 .t-cell.heat { --heat-shadow: 0 1px 0 #000, 0 2px 3px rgba(0, 0, 0, 0.85); }
 .t-cell.heat > :not(.cell-fade) { text-shadow: var(--heat-shadow); }
 .t-cell.heat .t-hdr, .t-cell.heat .t-hdr-sub, .t-cell.heat .t-sub { color: #fff; }
-.t-cell.heat .t-hero, .t-cell.heat .t-load, .t-cell.heat .net-rates span { color: #fff; font-weight: 800; }
+.t-cell.heat .t-hero, .t-cell.heat .t-load { color: #fff; font-weight: 800; }
+.t-cell.heat .net-rates span { color: #fff; }
 .t-cell.heat .t-load { font-size: 13px; }
 .t-cell:hover {
   border-color: color-mix(in oklab, var(--lab) 48%, var(--cell-hi));
@@ -738,11 +739,16 @@ button.danger {
 }
 
 .net-rates {
+  position: absolute;
+  z-index: 1;
+  inset-inline-end: 8px;
+  inset-block-start: 50%;
+  translate: 0 -50%;
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 6px;
-  font: 700 11.5px/1.15 ui-monospace, SFMono-Regular, monospace;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  font: 600 12px/1.15 ui-sans-serif, system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
 }
 .rx-txt, .tx-txt { color: var(--fig); }
@@ -1172,8 +1178,24 @@ button.danger {
   font: 800 22px/1 ui-sans-serif, system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
 }
-.s-heat-val.rx { inset-inline-end: auto; inset-inline-start: 8px; }
-.s-heat-val.tx { inset-inline-end: 10px; }
+.s-heat-rates {
+  position: absolute;
+  z-index: 1;
+  inset-inline-end: 10px;
+  inset-block-start: 50%;
+  translate: 0 -50%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  pointer-events: none;
+}
+.s-heat-rates span {
+  color: #fff;
+  text-shadow: 0 1px 0 #000, 0 2px 3px rgba(0, 0, 0, 0.85);
+  font: 600 16px/1.1 ui-sans-serif, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
 
 .s-cores-matrix {
   display: grid;
@@ -1725,8 +1747,8 @@ dialog::backdrop {
         <canvas id="sp-net" class="cell-fade" width="320" height="120"></canvas>
         <div class="t-hdr"><span id="tc-iface">NET</span><span id="tc-net-ip" class="t-hdr-sub">--</span></div>
         <div class="net-rates">
-          <span id="tc-rx" class="rx-txt">dn --</span>
           <span id="tc-tx" class="tx-txt">up --</span>
+          <span id="tc-rx" class="rx-txt">dn --</span>
         </div>
         <div id="tc-net-tot" class="t-sub">Total: -- / --</div>
       </div>
@@ -1980,8 +2002,7 @@ dialog::backdrop {
         <div class="s-graph-well well">
           <canvas id="st-canvas-net" class="heat-bg" width="560" height="104"></canvas>
           <span id="st-heat-iface" class="s-heat-lbl">NET</span>
-          <span id="st-heat-rx" class="s-heat-val rx">↓ --</span>
-          <span id="st-heat-tx" class="s-heat-val tx">↑ --</span>
+          <span class="s-heat-rates"><span id="st-heat-tx">↑ --</span><span id="st-heat-rx">↓ --</span></span>
         </div>
         <div id="st-net-live" class="t-sub">Active sockets: --</div>
         <div class="s-panel-hdr" style="padding-block-end:2px;border-bottom:0">
@@ -2084,6 +2105,6 @@ dialog::backdrop {
   </form>
 </dialog>
 
-<script src="app.js?v=20261029b"></script>
+<script src="app.js?v=20261029c"></script>
 </body>
 </html>

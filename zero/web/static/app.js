@@ -1131,12 +1131,12 @@ let heatStops = null;   // [ok, warn, hot, bad] as RGB, read from the theme once
 function heatColor(t, alpha, invert, lift = 0) {
   if (!heatStops) heatStops = ['--ok', '--warn', '--hot', '--bad'].map(v => hexRgb(cssVar(v)));
   t = Math.max(0, Math.min(1, invert ? 1 - t : t));
-  // Green holds, then a short step to yellow. A 50/50 mix is the dull olive band.
+  // Smooth green to yellow, then orange, then red. Red starts just under halfway.
+  const smooth = u => { u = Math.max(0, Math.min(1, u)); return u * u * (3 - 2 * u); };
   let ca, cb, u;
-  if (t < 0.30) { ca = cb = heatStops[0]; u = 0; }
-  else if (t < 0.55) { ca = heatStops[0]; cb = heatStops[1]; u = (t - 0.30) / 0.25; }
-  else if (t < 0.78) { ca = heatStops[1]; cb = heatStops[2]; u = (t - 0.55) / 0.23; }
-  else { ca = heatStops[2]; cb = heatStops[3]; u = (t - 0.78) / 0.22; }
+  if (t < 0.28) { ca = heatStops[0]; cb = heatStops[1]; u = smooth(t / 0.28); }
+  else if (t < 0.46) { ca = heatStops[1]; cb = heatStops[2]; u = smooth((t - 0.28) / 0.18); }
+  else { ca = heatStops[2]; cb = heatStops[3]; u = smooth((t - 0.46) / 0.54); }
   const ch = ca.map((v, i) => {
     const m = v + (cb[i] - v) * u;
     return Math.round(m + (255 - m) * lift);
@@ -1214,15 +1214,40 @@ function shadowLine(g, pts, color, width) {
   g.lineWidth = width;
   g.stroke();
 }
-// Filled history on the plain cell, coloured by each sample's level (green low, red high).
-// `extra` is an optional second, dimmer line (upload, load).
-function drawHeatGraph(cv, series, map, {invert = false, extra = null, extraMap = map} = {}) {
+// Fill from the top down to a line that peaks toward the bottom.
+function fillFromTop(g, pts, h, invert) {
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    const x0 = Math.round(a.x), x1 = Math.round(b.x);
+    if (x1 <= x0) continue;
+    const bot = Math.max(a.y, b.y);
+    const grad = g.createLinearGradient(0, bot, 0, 0);
+    grad.addColorStop(0, heatColor(b.t, 0.84, invert));
+    grad.addColorStop(1, heatColor(b.t, 0.32, invert));
+    g.beginPath();
+    g.moveTo(x0, 0);
+    g.lineTo(x0, a.y);
+    g.lineTo(x1, b.y);
+    g.lineTo(x1, 0);
+    g.closePath();
+    g.fillStyle = grad;
+    g.fill();
+  }
+}
+// Filled history on the plain cell. `hangExtra` draws the second series down from the top
+// (upload). Otherwise `extra` is a dimmer line over the fill (load on the mini CPU card).
+function drawHeatGraph(cv, series, map, {invert = false, extra = null, extraMap = map, hangExtra = false} = {}) {
   const ctx = prepHiDpiCanvas(cv);
   if (!ctx) return;
   const {g, w, h} = ctx;
+  if (extra && hangExtra) {
+    const up = seriesPoints(extra, w, h, extraMap).map(p => ({x: p.x, t: p.t, y: (h - 1) - p.y}));
+    fillFromTop(g, up, h, invert);
+    heatLine(g, up, invert);
+  }
   const pts = seriesPoints(series, w, h, map);
   fillUnder(g, pts, h, invert);
-  if (extra) shadowLine(g, seriesPoints(extra, w, h, extraMap), hexToRgba(cssVar('--fig'), 0.6), 1.25);
+  if (extra && !hangExtra) shadowLine(g, seriesPoints(extra, w, h, extraMap), hexToRgba(cssVar('--fig'), 0.6), 1.25);
   heatLine(g, pts, invert);
 }
 const logRate = bps => (!Number.isFinite(bps) || bps <= 300) ? 0 : Math.min(1, Math.max(0, Math.log10(bps / 300) / 5.5));
@@ -1232,11 +1257,11 @@ const rssiLevel = v => (v + 90) / 50;
 function drawSparks() {
   heatStops = null;
   drawHeatGraph(document.getElementById('sp-temp'), histTemp, tempLevel, {extra: histLoad, extraMap: v => v / loadTop});
-  drawHeatGraph(document.getElementById('sp-net'), histRx, logRate, {extra: histTx});
+  drawHeatGraph(document.getElementById('sp-net'), histRx, logRate, {extra: histTx, hangExtra: true});
   if (activeDeck === 'stats') {
     drawHeatGraph(document.getElementById('st-canvas-temp'), histTemp, tempLevel);
     drawHeatGraph(document.getElementById('st-canvas-load'), histLoad, v => v / loadTop);
-    drawHeatGraph(document.getElementById('st-canvas-net'), histRx, logRate, {extra: histTx});
+    drawHeatGraph(document.getElementById('st-canvas-net'), histRx, logRate, {extra: histTx, hangExtra: true});
     drawHeatGraph(document.getElementById('st-canvas-zload'), histZeroLoad, zeroLoadLevel);
     drawHeatGraph(document.getElementById('st-canvas-geek'), histGeekRssi, rssiLevel, {invert: true});
   }
