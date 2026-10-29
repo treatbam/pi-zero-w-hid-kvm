@@ -1178,7 +1178,7 @@ void pageDots(int cur) {   // pill indicator for the 4 stats pages (PC, cores, n
 }
 // Filled sparkline in one colour: bright top pixel, fill fading to the background.
 void vSpark(int x, int y, int w, int h, const float* ser, int n, int next, float lo, float hi, uint16_t c, bool dim,
-            bool logScale = false) {
+            bool logScale = false, bool invert = false) {   // invert: low values are the warning (RSSI)
   if (n <= 0) return;
   if (dim) c = mix(V_BG, c, 110);
   int start = (n < HIST) ? 0 : next, cols = min(n, w);
@@ -1188,9 +1188,10 @@ void vSpark(int x, int y, int w, int h, const float* ser, int n, int next, float
     float t = logScale ? logRate(v) : (v - lo) / (hi - lo);
     t = t < 0 ? 0 : t > 1 ? 1 : t;
     int ch = max(1, (int)(t * (h - 1) + 0.5f)), cx = x + w - cols + i, top = y + h - ch;
-    uint16_t cc = !dim && t >= 0.55f ? vHeat(t) : c;   // a peak column takes the heat ramp, whole height
+    float ht = invert ? 1.f - t : t;   // severity for colour; height still follows t
+    uint16_t cc = !dim && ht >= 0.55f ? vHeat(ht) : c;   // a peak column takes the heat ramp, whole height
     for (int yy = top + 1; yy < y + h; yy++) fb.drawPixel(cx, yy, mix(mix(V_BG, cc, 150), V_BG, (yy - top) * 180 / h));
-    fb.drawPixel(cx, top, dim ? c : t >= 0.55f ? vHeat(t) : mix(c, V_WHITE, 60));
+    fb.drawPixel(cx, top, dim ? c : ht >= 0.55f ? vHeat(ht) : mix(c, V_WHITE, 60));
   }
 }
 // Same as vSpark but hanging from the top edge (page 1 mirrored net graph: RX down from the top).
@@ -1422,7 +1423,7 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
   txt(L, 72, "ip", V_LAB); txtR(R, 72, s.wifi ? s.geekIp : "--", s.wifi ? V_WHITE : V_GREY);
   txt(L, 84, "wifi hist", V_TX);
   vCell(L, 94, R - L, 19, true);
-  vSpark(L + 1, 95, R - L - 2, 17, h.geekRssi, h.n, h.next, -90, -40, V_TX, false);
+  vSpark(L + 1, 95, R - L - 2, 17, h.geekRssi, h.n, h.next, -90, -40, V_TX, false, false, true);
   pageDots(3);
 }
 
