@@ -1127,12 +1127,16 @@ function hexRgb(hex) {
 }
 // Heat colour for a level 0..1: green when low, yellow halfway, red at the top of the range.
 // `invert` flips it where higher is better (Wi-Fi signal). Same ramp as the panel.
-let heatStops = null;   // [ok, warn, bad] as RGB, read from the theme once per redraw
+let heatStops = null;   // [ok, warn, hot, bad] as RGB, read from the theme once per redraw
 function heatColor(t, alpha, invert, lift = 0) {
-  if (!heatStops) heatStops = ['--ok', '--warn', '--bad'].map(v => hexRgb(cssVar(v)));
+  if (!heatStops) heatStops = ['--ok', '--warn', '--hot', '--bad'].map(v => hexRgb(cssVar(v)));
   t = Math.max(0, Math.min(1, invert ? 1 - t : t));
-  const [ca, cb] = t < 0.5 ? [heatStops[0], heatStops[1]] : [heatStops[1], heatStops[2]];
-  const u = t < 0.5 ? t * 2 : (t - 0.5) * 2;
+  // Green holds, then a short step to yellow. A 50/50 mix is the dull olive band.
+  let ca, cb, u;
+  if (t < 0.30) { ca = cb = heatStops[0]; u = 0; }
+  else if (t < 0.55) { ca = heatStops[0]; cb = heatStops[1]; u = (t - 0.30) / 0.25; }
+  else if (t < 0.78) { ca = heatStops[1]; cb = heatStops[2]; u = (t - 0.55) / 0.23; }
+  else { ca = heatStops[2]; cb = heatStops[3]; u = (t - 0.78) / 0.22; }
   const ch = ca.map((v, i) => {
     const m = v + (cb[i] - v) * u;
     return Math.round(m + (255 - m) * lift);
@@ -1161,8 +1165,8 @@ function fillUnder(g, pts, h, invert) {
     if (x1 <= x0) continue;
     const top = Math.min(a.y, b.y);
     const grad = g.createLinearGradient(0, top, 0, h);
-    grad.addColorStop(0, heatColor(b.t, 0.62, invert));
-    grad.addColorStop(1, heatColor(b.t, 0.1, invert));
+    grad.addColorStop(0, heatColor(b.t, 0.84, invert));
+    grad.addColorStop(1, heatColor(b.t, 0.32, invert));
     g.beginPath();
     g.moveTo(x0, h);
     g.lineTo(x0, a.y);
@@ -1183,7 +1187,7 @@ function heatLine(g, pts, invert) {
       g.beginPath();
       g.moveTo(pts[i - 1].x, pts[i - 1].y + dy);
       g.lineTo(pts[i].x, pts[i].y + dy);
-      g.strokeStyle = dy ? 'rgba(0,0,0,0.7)' : heatColor(pts[i].t, 1, invert, 0.35);
+      g.strokeStyle = dy ? 'rgba(0,0,0,0.7)' : heatColor(pts[i].t, 1, invert, 0.12);
       g.lineWidth = width;
       g.stroke();
     }

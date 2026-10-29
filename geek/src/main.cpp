@@ -1102,17 +1102,17 @@ static const VTheme VTHEMES[3] = {
   // 0: Quiet. Charcoal cells, gray labels, white figures. RGB565-exact, matches the web slate tokens.
   { rgb(16,16,16),  rgb(32,32,32),  rgb(48,48,48),  rgb(16,16,16),  rgb(24,24,24),  rgb(40,40,40),
     rgb(152,152,152), rgb(240,240,240), rgb(120,120,120), rgb(104,104,104), rgb(48,48,48),
-    rgb(45,212,191), rgb(160,160,168), rgb(52,211,153), rgb(255,202,68), rgb(255,140,52), rgb(255,78,96),
+    rgb(45,212,191), rgb(160,160,168), rgb(20,240,90), rgb(255,202,68), rgb(255,140,52), rgb(255,78,96),
     240, 240, 240 },
   // 1: Warm Braun
   { rgb(16,20,16),  rgb(56,48,40),  rgb(80,76,64),  rgb(8,8,8),     rgb(32,32,24),  rgb(40,40,32),
     rgb(240,176,88), rgb(240,240,224), rgb(176,164,144), rgb(120,112,104), rgb(72,64,56),
-    rgb(240,172,56), rgb(112,204,176), rgb(104,208,112), rgb(248,196,64), rgb(246,122,42), rgb(238,68,58),
+    rgb(240,172,56), rgb(112,204,176), rgb(90,224,70), rgb(248,196,64), rgb(246,122,42), rgb(238,68,58),
     232, 228, 216 },
   // 2: Machined Cobalt
   { rgb(8,20,32),   rgb(32,48,80),  rgb(48,80,128), rgb(0,8,16),    rgb(16,32,48),  rgb(24,40,64),
     rgb(120,196,248), rgb(232,244,248), rgb(152,172,200), rgb(104,128,168), rgb(40,64,96),
-    rgb(72,220,248), rgb(176,140,248), rgb(64,224,152), rgb(255,202,68), rgb(255,140,52), rgb(255,78,96),
+    rgb(72,220,248), rgb(176,140,248), rgb(40,240,150), rgb(255,202,68), rgb(255,140,52), rgb(255,78,96),
     224, 232, 240 }
 };
 static uint8_t gUiTheme = 0;
@@ -1226,15 +1226,18 @@ void fadeInk(float pos, uint16_t& col, int& alpha) {
     alpha = 56 - (int)(u * 56.f);
   }
 }
-// Heat colour for a level 0..1: green when low, yellow halfway, red at the top of the range.
+// Heat colour for a level 0..1. Green holds, then a short step to yellow, then orange, then red.
+// A straight blend of green and yellow sits in a dull olive, which is the faded band.
 // `invert` flips it for values where higher is better (Wi-Fi signal).
 uint16_t heatInk(float t, bool invert) {
   const VTheme& vt = VT();
   if (t < 0.f) t = 0.f;
   if (t > 1.f) t = 1.f;
   if (invert) t = 1.f - t;
-  if (t < 0.5f) return mix(vt.ok, vt.warn, (int)(t * 2.f * 255.f));
-  return mix(vt.warn, vt.bad, (int)((t - 0.5f) * 2.f * 255.f));
+  if (t < 0.30f) return vt.ok;
+  if (t < 0.55f) return mix(vt.ok, vt.warn, (int)((t - 0.30f) / 0.25f * 255.f));
+  if (t < 0.78f) return mix(vt.warn, vt.hot, (int)((t - 0.55f) / 0.23f * 255.f));
+  return mix(vt.hot, vt.bad, (int)((t - 0.78f) / 0.22f * 255.f));
 }
 float vLevel(float v, float lo, float hi, bool logScale) {
   float t = logScale ? logRate(v) : (hi > lo ? (v - lo) / (hi - lo) : 0.f);
@@ -1269,7 +1272,7 @@ void vHeatGraph(int x, int y, int w, int h, const float* ser, int n, int next, f
                 bool logScale, bool dim, bool invert = false, uint16_t ground = 0, bool shadowLine = true) {
   if (n <= 0 || w < 2 || h < 2) return;
   if (!ground) ground = VT().cell;
-  const int topA = dim ? 70 : 150, botA = dim ? 14 : 30;
+  const int topA = dim ? 110 : 214, botA = dim ? 36 : 78;
   int start = (n < HIST) ? 0 : next, cols = min(n, w);
   auto at = [&](int i, float& t) {
     float v = ser[(start + n - cols + i) % HIST];
@@ -1290,7 +1293,7 @@ void vHeatGraph(int x, int y, int w, int h, const float* ser, int n, int next, f
       float t;
       if (!at(i, t)) { prevX = -1; continue; }
       int px = x + w - cols + i, py = y + h - 1 - (int)(t * (h - 1) + 0.5f);
-      uint16_t c = pass ? (dim ? V_GREY : mix(heatInk(t, invert), 0xFFFF, 90)) : V_SHADOW;
+      uint16_t c = pass ? (dim ? V_GREY : mix(heatInk(t, invert), 0xFFFF, 36)) : V_SHADOW;
       int dy = pass ? 0 : 1;
       if (prevX >= 0) fb.drawLine(prevX, min(y + h - 1, prevY + dy), px, min(y + h - 1, py + dy), c);
       else fb.drawPixel(px, min(y + h - 1, py + dy), c);
