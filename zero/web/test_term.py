@@ -1,6 +1,8 @@
 """Terminal ring buffer: carriage returns and escape sequences across read boundaries."""
 import os
 import sys
+import termios
+import threading
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -62,6 +64,60 @@ class FeedTest(unittest.TestCase):
         term.reset_pending()
         term._feed("b")
         self.assertEqual(state(), ([], "ab"))
+
+
+class ReaderRetryTest(unittest.TestCase):
+    def test_reader_retries_when_tty_is_not_ready(self):
+        """tcgetattr raises termios.error (not OSError) while the gadget has no host.
+        The reader has to catch that and open the port again, or the thread dies and
+        the helper stays unpaired until kvm-web is restarted."""
+        gets = {"n": 0}
+        stop = {"die": False}
+        opened = []
+        real_open, real_close = os.open, os.close
+        real_read, real_sleep = os.read, term.time.sleep
+        real_getattr, real_setattr = termios.tcgetattr, termios.tcsetattr
+
+        def fake_open(path, flags, mode=0o777):
+            if stop["die"]:
+                raise SystemExit
+            r, w = os.pipe()
+            real_close(w)
+            opened.append(r)
+            return r
+
+        def fake_getattr(fd):
+            gets["n"] += 1
+            if gets["n"] == 1:
+                raise termios.error(5, "Input/output error")
+            return [0, 0, termios.CS8, 0, 0, 0, [0] * 32]
+
+        def fake_read(fd, n):
+            stop["die"] = True
+            raise SystemExit
+
+        try:
+            os.open = fake_open
+            os.read = fake_read
+            term.time.sleep = lambda _s: None
+            termios.tcgetattr = fake_getattr
+            termios.tcsetattr = lambda fd, when, attr: None
+            t = threading.Thread(target=term._reader, name="term-test", daemon=True)
+            t.start()
+            t.join(2)
+            self.assertGreaterEqual(gets["n"], 2)
+            self.assertFalse(t.is_alive())
+        finally:
+            stop["die"] = True
+            os.open, os.read = real_open, real_read
+            term.time.sleep = real_sleep
+            termios.tcgetattr, termios.tcsetattr = real_getattr, real_setattr
+            for fd in opened:
+                try: real_close(fd)
+                except OSError: pass
+            term._fd = None
+            term._wfd = None
+            term._err = "not started"
 
 
 if __name__ == "__main__":
