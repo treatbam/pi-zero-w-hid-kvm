@@ -20,10 +20,11 @@
 #include <esp_memory_utils.h>
 #include <ESPmDNS.h>
 #include <Fonts/FreeSans9pt7b.h>
-#include <Fonts/FreeSansBold9pt7b.h>
+#include <Fonts/FreeSans12pt7b.h>
+#include <Fonts/FreeSans18pt7b.h>
+#include <Fonts/FreeSans24pt7b.h>
 #include <Fonts/FreeSansBold12pt7b.h>
 #include <Fonts/FreeSansBold18pt7b.h>
-#include <Fonts/FreeSansBold24pt7b.h>
 #if __has_include("secrets.h")
 #include "secrets.h"
 #else
@@ -1172,7 +1173,7 @@ void ftH(int x, int y, const char* s, bool dim, const GFXfont* f) {
 void txtS(int x, int y, const char* s, uint16_t c) { txt(x + 1, y + 1, s, V_SHADOW); txt(x, y, s, c); }
 void txtSR(int right, int y, const char* s, uint16_t c) { txtS(right - (int)strlen(s) * CW, y, s, c); }
 // Cell title in the slim face, same family as the process name. y = baseline.
-void vTag(int x, int y, const char* s) { ft(x, y, s, 0xFFFF, &FreeSans9pt7b); }
+void vTag(int x, int y, const char* s) { ft(x, y, s, V_LAB, &FreeSans9pt7b); }
 void vDot(int x, int y, uint16_t c) { fb.fillCircle(x, y, 2, c); }
 void vMark(int x, int y, uint16_t c) { fb.fillRect(x, y, 4, 4, c); }   // status square, same on both ends of the bar
 // Pill for the pages you can step through. The 5th (and 6th) mark is the desktop or terminal
@@ -1375,8 +1376,8 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   if (have) {
     vTag(6, 16, "TEMP");
     snprintf(a, sizeof a, "%.0f", t);
-    ftH(6, 48, a, stale, &FreeSansBold24pt7b);
-    int dx = 6 + ftW(&FreeSansBold24pt7b, a) + 3;
+    ftH(6, 48, a, stale, &FreeSans24pt7b);
+    int dx = 6 + ftW(&FreeSans24pt7b, a) + 3;
     uint16_t c = stale ? V_GREY : 0xFFFF;
     for (int o = 2; o >= 0; o--) {
       uint16_t oc = o ? V_SHADOW : c;
@@ -1404,13 +1405,13 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
     vHeatGraph(RX, 3, RW, 52, h.load, h.n, h.next, 0.f, loadHi, false, stale);
     vTag(RX + 5, 16, "CPU LOAD");
     fmtLoad(a, sizeof a, s.pcLoad); snprintf(b, sizeof b, "%s", a);
-    ftH(RX + 5, 34, b, stale, &FreeSansBold12pt7b);
+    ftH(RX + 5, 34, b, stale, &FreeSans12pt7b);
     if (s.pcTopProc[0]) {
       // Name in the regular face so longer process names fit; the share stays bold.
       const GFXfont* nf = &FreeSans9pt7b;
       char pct[8] = "";
       if (!isnan(s.pcTopCpu)) snprintf(pct, sizeof pct, " %.0f%%", s.pcTopCpu);
-      int avail = W - 6 - (RX + 5) - ftW(&FreeSansBold9pt7b, pct);
+      int avail = W - 6 - (RX + 5) - ftW(&FreeSans9pt7b, pct);
       char nm[24]; strlcpy(nm, s.pcTopProc, sizeof nm);
       if (ftW(nf, nm) > avail) {
         int L = strlen(nm);
@@ -1418,7 +1419,7 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
         strlcat(nm, "..", sizeof nm);
       }
       ftH(RX + 5, 50, nm, stale, nf);
-      ftH(RX + 5 + ftW(nf, nm), 50, pct, stale, &FreeSansBold9pt7b);
+      ftH(RX + 5 + ftW(nf, nm), 50, pct, stale, nf);
     }
   }
 
@@ -1434,11 +1435,11 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
     if (bytes) {
       char t2[12];
       vFmtSize(a, sizeof a, u, false); snprintf(t2, sizeof t2, "/"); vFmtSize(t2 + 1, sizeof t2 - 1, tot, true);
-      ftS(6, cy + 25, a, stale ? V_GREY : V_WHITE, &FreeSansBold9pt7b);
-      txt(6 + ftW(&FreeSansBold9pt7b, a) + 1, cy + 17, t2, V_GREY);
+      ftS(6, cy + 25, a, stale ? V_GREY : V_WHITE, &FreeSans9pt7b);
+      txt(6 + ftW(&FreeSans9pt7b, a) + 1, cy + 17, t2, V_GREY);
     } else {
       fmtMem(a, sizeof a, pct);
-      ftS(6, cy + 25, a, pct < 0 || stale ? V_GREY : V_WHITE, &FreeSansBold9pt7b);
+      ftS(6, cy + 25, a, pct < 0 || stale ? V_GREY : V_WHITE, &FreeSans9pt7b);
     }
   };
   char dlab[12] = "DISK";
@@ -1489,7 +1490,7 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
   // ZERO card
   int L = 6, R = MID - 5;
   txt(L, 5, "ZERO", V_LAB);
-  ftS(L, 36, s.api ? "HID" : "--", stale || !s.api ? V_GREY : V_WHITE, &FreeSansBold18pt7b);
+  ftS(L, 36, s.api ? "HID" : "--", stale || !s.api ? V_GREY : V_WHITE, &FreeSans18pt7b);
   uint16_t val = stale ? V_GREY : V_WHITE;
   const char* zip = s.tsIp[0] ? s.tsIp : s.ip;
   txt(L, 42, "load", V_LAB); fmtLoad(a, sizeof a, s.api ? s.load1 : NAN); txtR(R, 42, a, val);
@@ -1505,7 +1506,7 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
     vCell(x, CY, w, CH, false);
     vHeatGraph(x, CY + 1, w, CH - 1, ser, h.n, h.next, lo, hi, false, dim, invert, 0, false);
     vTag(x + 4, CY + 14, lab);
-    ftR(x + w - 4, CY + 16, val, dim ? V_GREY : 0xFFFF, &FreeSansBold9pt7b);
+    ftR(x + w - 4, CY + 16, val, dim ? V_GREY : 0xFFFF, &FreeSans9pt7b);
   };
   fmtLoad(a, sizeof a, s.api ? s.load1 : NAN);
   histCell(L - 2, R - L + 4, "LOAD", a, h.piLoad, 0.f, 2.f, false, stale || !s.api);
@@ -1514,8 +1515,8 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
   L = MID + 5; R = W - 6;
   txt(L, 5, "GEEK", V_LAB);
   if (s.wifi && s.rssi) snprintf(a, sizeof a, "%d", s.rssi); else strcpy(a, "--");
-  ftS(L, 36, a, s.wifi ? V_WHITE : V_GREY, &FreeSansBold18pt7b);
-  txt(L + ftW(&FreeSansBold18pt7b, a) + 3, 29, "dBm", V_LAB);
+  ftS(L, 36, a, s.wifi ? V_WHITE : V_GREY, &FreeSans18pt7b);
+  txt(L + ftW(&FreeSans18pt7b, a) + 3, 29, "dBm", V_LAB);
   txt(L, 42, "ping", V_LAB);
   if (s.api) snprintf(a, sizeof a, "%ums", (unsigned)s.latencyMs); else strcpy(a, "--");
   txtR(R, 42, a, s.api ? V_WHITE : V_GREY);
