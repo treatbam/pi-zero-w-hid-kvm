@@ -1169,22 +1169,11 @@ void ftH(int x, int y, const char* s, bool dim, const GFXfont* f) {
   ft(x + 2, y + 2, s, V_SHADOW, f); ft(x + 1, y + 1, s, V_SHADOW, f);
   ft(x, y, s, dim ? V_GREY : 0xFFFF, f);
 }
-void ftHR(int right, int y, const char* s, bool dim, const GFXfont* f) { ftH(right - ftW(f, s), y, s, dim, f); }
 void txtS(int x, int y, const char* s, uint16_t c) { txt(x + 1, y + 1, s, V_SHADOW); txt(x, y, s, c); }
 void txtSR(int right, int y, const char* s, uint16_t c) { txtS(right - (int)strlen(s) * CW, y, s, c); }
-// Darken what is already drawn in a rectangle (corners left alone), for a tag behind a label.
-void vShade(int x, int y, int w, int h, int a) {
-  for (int yy = 0; yy < h; yy++)
-    for (int xx = 0; xx < w; xx++) {
-      if ((yy == 0 || yy == h - 1) && (xx == 0 || xx == w - 1)) continue;
-      fb.drawPixel(x + xx, y + yy, mix(fb.getPixel(x + xx, y + yy), 0x0000, a));
-    }
-}
-// Cell title: bold white letters (each drawn twice, 7 px pitch) on a dark tag. y = text top.
+// Cell title: bold white letters (each drawn twice, 7 px pitch). y = text top.
 const int TAG_PITCH = 7;
-int tagW(const char* s) { return (int)strlen(s) * TAG_PITCH + 3; }
 void vTag(int x, int y, const char* s) {
-  vShade(x - 2, y - 2, tagW(s), 11, 150);
   for (int i = 0; s[i]; i++) {
     char ch[2] = {s[i], 0};
     txt(x + i * TAG_PITCH, y, ch, 0xFFFF); txt(x + i * TAG_PITCH + 1, y, ch, 0xFFFF);
@@ -1273,9 +1262,10 @@ void vShadowLine(int x, int y, int w, int h, const float* ser, int n, int next,
 }
 // Filled history on the plain cell. Each column takes the heat colour of its own sample (green
 // low, yellow, red high), strongest just under the line and fading toward the bottom. The line
-// is a brighter tint of the same colours on a 1px dark shadow. Newest sample at the right edge.
+// is a brighter tint of the same colours, on a 1px dark shadow unless `shadowLine` is off.
+// Newest sample at the right edge.
 void vHeatGraph(int x, int y, int w, int h, const float* ser, int n, int next, float lo, float hi,
-                bool logScale, bool dim, bool invert = false, uint16_t ground = 0) {
+                bool logScale, bool dim, bool invert = false, uint16_t ground = 0, bool shadowLine = true) {
   if (n <= 0 || w < 2 || h < 2) return;
   if (!ground) ground = VT().cell;
   const int topA = dim ? 70 : 150, botA = dim ? 14 : 30;
@@ -1293,7 +1283,7 @@ void vHeatGraph(int x, int y, int w, int h, const float* ser, int n, int next, f
     int top = h - 1 - (int)(t * (h - 1) + 0.5f), cx = x + w - cols + i;
     for (int r = top; r < h; r++) fb.drawPixel(cx, y + r, mix(ground, c, topA - (r - top) * (topA - botA) / (h - 1)));
   }
-  for (int pass = 0; pass < 2; pass++) {
+  for (int pass = shadowLine ? 0 : 1; pass < 2; pass++) {
     int prevX = -1, prevY = 0;
     for (int i = 0; i < cols; i++) {
       float t;
@@ -1527,9 +1517,9 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
                       float lo, float hi, bool invert, bool dim) {
     const int CY = 82, CH = 32;
     vCell(x, CY, w, CH, false);
-    vHeatGraph(x, CY + 1, w, CH - 1, ser, h.n, h.next, lo, hi, false, dim, invert);
+    vHeatGraph(x, CY + 1, w, CH - 1, ser, h.n, h.next, lo, hi, false, dim, invert, 0, false);
     vTag(x + 4, CY + 4, lab);
-    ftHR(x + w - 4, CY + 16, val, dim, &FreeSansBold9pt7b);
+    ftR(x + w - 4, CY + 16, val, dim ? V_GREY : 0xFFFF, &FreeSansBold9pt7b);
   };
   fmtLoad(a, sizeof a, s.api ? s.load1 : NAN);
   histCell(L - 2, R - L + 4, "LOAD", a, h.piLoad, 0.f, 2.f, false, stale || !s.api);
