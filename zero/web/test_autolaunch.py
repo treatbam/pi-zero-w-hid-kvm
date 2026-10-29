@@ -169,11 +169,22 @@ class AutoLaunchUnitTest(unittest.TestCase):
         self.assertEqual(img[510:512], b"\x55\xaa")
         self.assertEqual(img[43:54], b"KVM-SETUP  ")
         files = build_setup_img.list_fat12_files(img)
-        self.assertEqual(set(files.keys()), {"install-linux.sh", "install-windows.ps1", "kvm_stub.py", "README.txt"})
+        self.assertEqual(set(files.keys()), {"install-linux.sh", "install-windows.ps1", "install-windows.cmd", "kvm_stub.py", "README.txt"})
         host_dir = os.path.join(ROOT, "host")
         for fname in ("install-linux.sh", "install-windows.ps1", "kvm_stub.py"):
             with open(os.path.join(host_dir, fname), "rb") as f:
                 self.assertEqual(files[fname], f.read())
+        self.assertIn(b"ExecutionPolicy Bypass", files["install-windows.cmd"])
+        self.assertTrue(files["install-windows.cmd"].endswith(b"\r\n"))
+
+    def test_windows_pair_command_fits_the_run_box(self):
+        import hid
+        cmd = autolaunch.WINDOWS_HID_ONELINER
+        self.assertLess(len(cmd.strip()), 259)
+        self.assertTrue(cmd.endswith("\n"))
+        self.assertNotIn("KVMINST", cmd)
+        missing = [ch for ch in cmd if hid._char_combo(ch) is None]
+        self.assertEqual(missing, [])
 
 
 class ServerWsAndThemeTest(unittest.TestCase):

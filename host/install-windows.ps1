@@ -117,15 +117,34 @@ while ($true) {
 
 Set-Content -Path $StubPath -Value $StubCode -Encoding UTF8
 
+$Log = Join-Path $DstDir "install.log"
+function Write-Log([string]$Message) {
+    $line = "{0}  {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message
+    Add-Content -Path $Log -Value $line -Encoding UTF8
+    Write-Host $Message
+}
+
 $TaskName = "KvmHelperStub"
-$Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$StubPath`""
-$Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+$StubArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$StubPath`""
 try {
+    # Building the trigger outside this try used to abort the script before the stub ever started.
+    $who = if ($env:USERDOMAIN) { "$env:USERDOMAIN\$env:USERNAME" } else { $env:USERNAME }
+    $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $StubArgs
+    $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $who
+    $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
     Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -Force | Out-Null
     Start-ScheduledTask -TaskName $TaskName
-    Write-Host "Paired Windows host: Scheduled Task '$TaskName' active."
+    Write-Log "Paired. The helper is running and will start again at each sign-in."
+    exit 0
 } catch {
-    Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$StubPath`""
-    Write-Host "Paired Windows host: started kvm_stub.ps1 in background."
+    Write-Log "Sign-in task was not registered: $($_.Exception.Message)"
+    Write-Log "Starting the helper for this session instead."
+    try {
+        Start-Process powershell.exe -WindowStyle Hidden -ArgumentList $StubArgs
+        Write-Log "Helper started. It will not come back after a reboot until the sign-in task can be registered."
+        exit 0
+    } catch {
+        Write-Log "Could not start the helper: $($_.Exception.Message)"
+        exit 1
+    }
 }

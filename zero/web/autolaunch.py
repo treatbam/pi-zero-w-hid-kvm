@@ -34,6 +34,7 @@ class PayloadBuilder:
     SETUP_FILES = {
         "install-linux.sh": ("install-linux.sh", "text/x-shellscript; charset=utf-8"),
         "install-windows.ps1": ("install-windows.ps1", "text/plain; charset=utf-8"),
+        "install-windows.cmd": ("install-windows.cmd", "text/plain; charset=utf-8"),
         "kvm_stub.py": ("kvm_stub.py", "text/x-python; charset=utf-8"),
     }
 
@@ -195,22 +196,11 @@ LINUX_HID_ONELINER = (
     f"if [ -n \"$f\" ];then bash \"$f\";else python3 -c 'import base64;exec(base64.b64decode(\"{_LINUX_PY_B64}\"))';fi;exit\n"
 )
 
+# One Run-dialog command. The old one-liner was ~1400 characters, longer than the box
+# accepts, and it was typed into a PowerShell window that often was not open yet.
 WINDOWS_HID_ONELINER = (
-    "$v=(Get-Volume -FileSystemLabel KVM-SETUP -EA 0).DriveLetter;"
-    "if($v){&($v+':\\install-windows.ps1');exit}"
-    "$c=(gcim Win32_PnPEntity|?{$_.PNPDeviceID -match 'VID_1D6B&PID_0104' -and $_.Name -match '\\((COM\\d+)\\)'}|select -f 1);"
-    "if($c -and $c.Name -match '\\((COM\\d+)\\)'){$p=New-Object IO.Ports.SerialPort($Matches[1],115200);$p.DtrEnable=$true;$p.Open();"
-    "$j=[Text.Encoding]::UTF8.GetBytes('{\"v\":1,\"os\":\"windows\",\"want\":\"install\"}');"
-    "$h=[byte[]](0xFE,0xFD,0x4B,0x56,10)+[BitConverter]::GetBytes([uint32]$j.Length)+$j;$p.Write($h,0,$h.Length);"
-    "$e=[Text.Encoding]::GetEncoding(28591);$b='';$t=[DateTime]::UtcNow.AddSeconds(10);"
-    "while([DateTime]::UtcNow -lt $t){if($p.BytesToRead -gt 0){$x=New-Object byte[] $p.BytesToRead;$r=$p.Read($x,0,$x.Length);$b+=$e.GetString($x,0,$r);"
-    "$m=([string][char]0x1E)+([string][char]0x1F)+'KVMINST:windows:';"
-    "if($b.Contains($m)){$s=$b.Substring($b.IndexOf($m)+$m.Length);if($s.Contains(\"`n\")){$l=$s.Split(\"`n\")[0].Trim();$p.Close();"
-    "$k=$l.Split(':');$gz=[Convert]::FromBase64String($k[1]);$ms=New-Object IO.MemoryStream(,$gz);"
-    "$gs=New-Object IO.Compression.GZipStream($ms,[IO.Compression.CompressionMode]::Decompress);$mo=New-Object IO.MemoryStream;$gs.CopyTo($mo);"
-    "$raw=$mo.ToArray();$sha=([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($raw)).Replace('-','').ToLower());"
-    "if($sha -eq $k[0]){iex([Text.Encoding]::UTF8.GetString($raw))};break}}}Start-Sleep -Milliseconds 80}"
-    "if($p.IsOpen){$p.Close()}};exit\n"
+    "powershell -NoP -Ep Bypass -c \"$v=(Get-Volume -FileSystemLabel KVM-SETUP -EA 0).DriveLetter;"
+    "if($v){&($v+':\\install-windows.cmd')}else{'No KVM-SETUP drive'};pause\"\n"
 )
 
 
@@ -364,10 +354,7 @@ class AutoLauncher:
                 else:
                     with hid_lock:
                         hid_mod.key_combo(["r"], ["gui"])
-                    time.sleep(0.75)
-                    with hid_lock:
-                        hid_mod.type_text("powershell -NoP -Ep Bypass\n")
-                    time.sleep(0.85)
+                    time.sleep(1.1)   # let the Run box take focus before the command is typed
                     with hid_lock:
                         hid_mod.type_text(WINDOWS_HID_ONELINER)
             except Exception as exc:
