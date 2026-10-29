@@ -1119,14 +1119,25 @@ function prepHiDpiCanvas(cv) {
   return {g, w: r.width, h: r.height};
 }
 
-// Heat ramp down the cell: red along the top, yellow through the middle, green at the bottom.
+function hexRgb(hex) {
+  let h = (hex || '').trim().replace('#', '');
+  if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  const n = parseInt(h.slice(0, 6), 16);
+  return Number.isFinite(n) ? [(n >> 16) & 255, (n >> 8) & 255, n & 255] : [240, 240, 240];
+}
+// Heat colour for a level 0..1: green when low, yellow halfway, red at the top of the range.
 // `invert` flips it where higher is better (Wi-Fi signal). Same ramp as the panel.
-function heatGradient(g, h, alpha, invert) {
-  const grad = g.createLinearGradient(0, invert ? h : 0, 0, invert ? 0 : h);
-  grad.addColorStop(0, hexToRgba(cssVar('--bad'), alpha));
-  grad.addColorStop(0.5, hexToRgba(cssVar('--warn'), alpha));
-  grad.addColorStop(1, hexToRgba(cssVar('--ok'), alpha));
-  return grad;
+let heatStops = null;   // [ok, warn, bad] as RGB, read from the theme once per redraw
+function heatColor(t, alpha, invert, lift = 0) {
+  if (!heatStops) heatStops = ['--ok', '--warn', '--bad'].map(v => hexRgb(cssVar(v)));
+  t = Math.max(0, Math.min(1, invert ? 1 - t : t));
+  const [ca, cb] = t < 0.5 ? [heatStops[0], heatStops[1]] : [heatStops[1], heatStops[2]];
+  const u = t < 0.5 ? t * 2 : (t - 0.5) * 2;
+  const ch = ca.map((v, i) => {
+    const m = v + (cb[i] - v) * u;
+    return Math.round(m + (255 - m) * lift);
+  });
+  return `rgba(${ch[0]},${ch[1]},${ch[2]},${alpha})`;
 }
 function seriesPoints(series, w, h, map) {
   const n = series.length;
@@ -1136,21 +1147,49 @@ function seriesPoints(series, w, h, map) {
     if (!Number.isFinite(v)) continue;
     const x = n === 1 ? w - 1 : (i / (n - 1)) * (w - 1);
     const t = Math.max(0, Math.min(1, map(v)));
-    pts.push({x, y: h - 1 - t * (h - 1)});
+    pts.push({x, y: h - 1 - t * (h - 1), t});
   }
   return pts;
 }
+// Each slice under the line takes the heat colour of its own sample, strongest just under the
+// line and fading toward the bottom.
 function fillUnder(g, pts, h, invert) {
-  if (pts.length < 2) return;
-  g.beginPath();
-  g.moveTo(pts[0].x, h);
-  for (const p of pts) g.lineTo(p.x, p.y);
-  g.lineTo(pts[pts.length - 1].x, h);
-  g.closePath();
-  g.fillStyle = heatGradient(g, h, 0.32, invert);
-  g.fill();
+  // Slice edges sit on whole pixels so neighbouring slices neither overlap nor leave a gap.
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    const x0 = Math.round(a.x), x1 = Math.round(b.x);
+    if (x1 <= x0) continue;
+    const top = Math.min(a.y, b.y);
+    const grad = g.createLinearGradient(0, top, 0, h);
+    grad.addColorStop(0, heatColor(b.t, 0.62, invert));
+    grad.addColorStop(1, heatColor(b.t, 0.1, invert));
+    g.beginPath();
+    g.moveTo(x0, h);
+    g.lineTo(x0, a.y);
+    g.lineTo(x1, b.y);
+    g.lineTo(x1, h);
+    g.closePath();
+    g.fillStyle = grad;
+    g.fill();
+  }
 }
-// History line with a dark drop shadow so it reads over every band of the wash.
+// The history line in a brighter tint of the same heat colours, on a dark drop shadow.
+function heatLine(g, pts, invert) {
+  if (pts.length < 2) return;
+  g.lineJoin = 'round';
+  g.lineCap = 'round';
+  for (const [dy, width] of [[1.25, 2.75], [0, 1.75]]) {
+    for (let i = 1; i < pts.length; i++) {
+      g.beginPath();
+      g.moveTo(pts[i - 1].x, pts[i - 1].y + dy);
+      g.lineTo(pts[i].x, pts[i].y + dy);
+      g.strokeStyle = dy ? 'rgba(0,0,0,0.7)' : heatColor(pts[i].t, 1, invert, 0.35);
+      g.lineWidth = width;
+      g.stroke();
+    }
+  }
+}
+// Second series as a plain line with a dark drop shadow (upload, load).
 function shadowLine(g, pts, color, width) {
   if (pts.length < 2) return;
   const path = () => {
@@ -1171,24 +1210,23 @@ function shadowLine(g, pts, color, width) {
   g.lineWidth = width;
   g.stroke();
 }
-// Whole cell washed with the heat ramp, the area under the history washed brighter, and the
-// history as a white line. `extra` is an optional second, dimmer line (upload, load).
+// Filled history on the plain cell, coloured by each sample's level (green low, red high).
+// `extra` is an optional second, dimmer line (upload, load).
 function drawHeatGraph(cv, series, map, {invert = false, extra = null, extraMap = map} = {}) {
   const ctx = prepHiDpiCanvas(cv);
   if (!ctx) return;
   const {g, w, h} = ctx;
-  g.fillStyle = heatGradient(g, h, 0.3, invert);
-  g.fillRect(0, 0, w, h);
   const pts = seriesPoints(series, w, h, map);
   fillUnder(g, pts, h, invert);
   if (extra) shadowLine(g, seriesPoints(extra, w, h, extraMap), hexToRgba(cssVar('--fig'), 0.6), 1.25);
-  shadowLine(g, pts, '#fff', 1.75);
+  heatLine(g, pts, invert);
 }
 const logRate = bps => (!Number.isFinite(bps) || bps <= 300) ? 0 : Math.min(1, Math.max(0, Math.log10(bps / 300) / 5.5));
 const tempLevel = v => (v - 40) / 50;
 const zeroLoadLevel = v => v / 2;
 const rssiLevel = v => (v + 90) / 50;
 function drawSparks() {
+  heatStops = null;
   drawHeatGraph(document.getElementById('sp-temp'), histTemp, tempLevel, {extra: histLoad, extraMap: v => v / loadTop});
   drawHeatGraph(document.getElementById('sp-net'), histRx, logRate, {extra: histTx});
   if (activeDeck === 'stats') {

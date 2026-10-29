@@ -1164,7 +1164,7 @@ void ft(int x, int y, const char* s, uint16_t c, const GFXfont* f) {   // y = ba
 // Headline numbers: 1px dark drop shadow under the glyphs for crisp depth on raised cells.
 void ftS(int x, int y, const char* s, uint16_t c, const GFXfont* f) { ft(x + 1, y + 1, s, V_SHADOW, f); ft(x, y, s, c, f); }
 void ftR(int right, int y, const char* s, uint16_t c, const GFXfont* f) { ft(right - ftW(f, s), y, s, c, f); }
-// Figures over a heat wash: pure white on a 2px drop shadow so they read on red, yellow and green.
+// Figures over a heat graph: pure white on a 2px drop shadow so they read on red, yellow and green.
 void ftH(int x, int y, const char* s, bool dim, const GFXfont* f) {
   ft(x + 2, y + 2, s, V_SHADOW, f); ft(x + 1, y + 1, s, V_SHADOW, f);
   ft(x, y, s, dim ? V_GREY : 0xFFFF, f);
@@ -1236,15 +1236,15 @@ void fadeInk(float pos, uint16_t& col, int& alpha) {
     alpha = 56 - (int)(u * 56.f);
   }
 }
-// Heat ramp down a cell: red along the top, yellow through the middle, green at the bottom.
+// Heat colour for a level 0..1: green when low, yellow halfway, red at the top of the range.
 // `invert` flips it for values where higher is better (Wi-Fi signal).
-uint16_t heatInk(float pos, bool invert) {
+uint16_t heatInk(float t, bool invert) {
   const VTheme& vt = VT();
-  if (pos < 0.f) pos = 0.f;
-  if (pos > 1.f) pos = 1.f;
-  if (invert) pos = 1.f - pos;
-  if (pos < 0.5f) return mix(vt.bad, vt.warn, (int)(pos * 2.f * 255.f));
-  return mix(vt.warn, vt.ok, (int)((pos - 0.5f) * 2.f * 255.f));
+  if (t < 0.f) t = 0.f;
+  if (t > 1.f) t = 1.f;
+  if (invert) t = 1.f - t;
+  if (t < 0.5f) return mix(vt.ok, vt.warn, (int)(t * 2.f * 255.f));
+  return mix(vt.warn, vt.bad, (int)((t - 0.5f) * 2.f * 255.f));
 }
 float vLevel(float v, float lo, float hi, bool logScale) {
   float t = logScale ? logRate(v) : (hi > lo ? (v - lo) / (hi - lo) : 0.f);
@@ -1265,34 +1265,47 @@ void vPolyline(int x, int y, int w, int h, const float* ser, int n, int next,
     prevX = px; prevY = py;
   }
 }
-// White history line on a 1px dark shadow, for drawing over a heat wash.
+// History line on a 1px dark shadow, for a second series over a filled graph (upload).
 void vShadowLine(int x, int y, int w, int h, const float* ser, int n, int next,
                  float lo, float hi, bool logScale, uint16_t c) {
   vPolyline(x, y, w, h, ser, n, next, lo, hi, logScale, V_SHADOW, 1);
   vPolyline(x, y, w, h, ser, n, next, lo, hi, logScale, c, 0);
 }
-// Whole cell washed with the heat ramp, the area under the history washed brighter, and the
-// history as a white line on top. Newest sample at the right edge.
+// Filled history on the plain cell. Each column takes the heat colour of its own sample (green
+// low, yellow, red high), strongest just under the line and fading toward the bottom. The line
+// is a brighter tint of the same colours on a 1px dark shadow. Newest sample at the right edge.
 void vHeatGraph(int x, int y, int w, int h, const float* ser, int n, int next, float lo, float hi,
                 bool logScale, bool dim, bool invert = false, uint16_t ground = 0) {
-  if (w < 2 || h < 2 || h > H) return;
+  if (n <= 0 || w < 2 || h < 2) return;
   if (!ground) ground = VT().cell;
-  const int bgA = dim ? 34 : 72, fillA = dim ? 62 : 136;
-  uint16_t fill[H];
-  for (int r = 0; r < h; r++) {
-    uint16_t c = heatInk(r / (float)(h - 1), invert);
-    fb.drawFastHLine(x, y + r, w, mix(ground, c, bgA));
-    fill[r] = mix(ground, c, fillA);
-  }
-  if (n <= 0) return;
+  const int topA = dim ? 70 : 150, botA = dim ? 14 : 30;
   int start = (n < HIST) ? 0 : next, cols = min(n, w);
-  for (int i = 0; i < cols; i++) {
+  auto at = [&](int i, float& t) {
     float v = ser[(start + n - cols + i) % HIST];
-    if (isnan(v)) continue;
-    int top = h - 1 - (int)(vLevel(v, lo, hi, logScale) * (h - 1) + 0.5f);
-    for (int r = top; r < h; r++) fb.drawPixel(x + w - cols + i, y + r, fill[r]);
+    if (isnan(v)) return false;
+    t = vLevel(v, lo, hi, logScale);
+    return true;
+  };
+  for (int i = 0; i < cols; i++) {
+    float t;
+    if (!at(i, t)) continue;
+    uint16_t c = heatInk(t, invert);
+    int top = h - 1 - (int)(t * (h - 1) + 0.5f), cx = x + w - cols + i;
+    for (int r = top; r < h; r++) fb.drawPixel(cx, y + r, mix(ground, c, topA - (r - top) * (topA - botA) / (h - 1)));
   }
-  vShadowLine(x, y, w, h, ser, n, next, lo, hi, logScale, dim ? V_GREY : V_WHITE);
+  for (int pass = 0; pass < 2; pass++) {
+    int prevX = -1, prevY = 0;
+    for (int i = 0; i < cols; i++) {
+      float t;
+      if (!at(i, t)) { prevX = -1; continue; }
+      int px = x + w - cols + i, py = y + h - 1 - (int)(t * (h - 1) + 0.5f);
+      uint16_t c = pass ? (dim ? V_GREY : mix(heatInk(t, invert), 0xFFFF, 90)) : V_SHADOW;
+      int dy = pass ? 0 : 1;
+      if (prevX >= 0) fb.drawLine(prevX, min(y + h - 1, prevY + dy), px, min(y + h - 1, py + dy), c);
+      else fb.drawPixel(px, min(y + h - 1, py + dy), c);
+      prevX = px; prevY = py;
+    }
+  }
 }
 // Same as vSpark but hanging from the top edge (page 1 mirrored net graph: RX down from the top).
 void vHang(int x, int y, int w, int h, const float* ser, int n, int next, uint16_t c, bool dim) {
@@ -1365,7 +1378,7 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   const float* ts = h.n && !isnan(lastValue(h.cpuT, h.n, h.next)) ? h.cpuT : h.temp;
   char a[24], b[24];
 
-  // Top-left cell: temperature figure over its heat-washed history.
+  // Top-left cell: temperature figure over its heat-coloured history.
   const int HW = have ? 82 : 236;
   vCell(2, 2, HW, 53, false);
   if (have) vHeatGraph(2, 3, HW, 52, ts, h.n, h.next, 40.f, 90.f, false, stale);
@@ -1391,7 +1404,7 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
     txt(8, 40, b, V_LAB);
   }
 
-  // Top-right cell: load figure over its heat-washed history.
+  // Top-right cell: load figure over its heat-coloured history.
   if (have) {
     const int RX = 86, RW = W - 2 - RX;
     float loadHi = 4.f;
@@ -1455,7 +1468,7 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   usedTile(57, "RAM", s.pcMemUsed, s.pcMemTot, linked ? s.pcMem : -1);
   usedTile(88, dlab, s.pcDiskUsed, s.pcDiskTot, linked ? s.pcDisk : -1);
 
-  // Network cell: download is the heat-washed history, upload a dimmer line over it.
+  // Network cell: download is the heat-coloured history, upload a dimmer line over it.
   // The interface name on top, both rates as figures below it.
   const int NW = W - 2 - NX;
   vCell(NX, 57, NW, 60, false);
@@ -1509,7 +1522,7 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
   txt(L, 62, "up", V_LAB); vFmtUp(a, sizeof a, s.api ? s.upS : -1); txtR(R, 62, a, val);
   txt(L, 72, "ip", V_LAB); txtR(R, 72, s.api && zip[0] ? zip : "--", s.api && zip[0] ? V_WHITE : V_GREY);
   if (s.ts >= 0) vDot(L + 16, 75, s.ts == 1 ? V_OK : V_DIMG);
-  // History cell: label and current figure over the heat-washed history.
+  // History cell: label and current figure over the heat-coloured history.
   auto histCell = [&](int x, int w, const char* lab, const char* val, const float* ser,
                       float lo, float hi, bool invert, bool dim) {
     const int CY = 82, CH = 32;
