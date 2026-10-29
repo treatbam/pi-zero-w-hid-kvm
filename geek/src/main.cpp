@@ -250,6 +250,7 @@ void pollOnce() {
     HTTPClient http; http.setTimeout(1500); http.setConnectTimeout(1500);
     uint32_t t0 = millis(); http.begin(BASE + "/api/status");
     if (pinUsable()) http.addHeader("X-KVM-PIN", cfg.pin);   // unlocks the Zero link + serial fields
+    if (pinUsable() && s.rssi) http.addHeader("X-Geek-RSSI", String(s.rssi));   // console's GEEK Wi-Fi graph
     s.httpCode = http.GET(); s.latencyMs = millis() - t0;
     if (s.httpCode == 200) {
       JsonDocument d;
@@ -1162,6 +1163,14 @@ void ft(int x, int y, const char* s, uint16_t c, const GFXfont* f) {   // y = ba
 // Headline numbers: 1px dark drop shadow under the glyphs for crisp depth on raised cells.
 void ftS(int x, int y, const char* s, uint16_t c, const GFXfont* f) { ft(x + 1, y + 1, s, V_SHADOW, f); ft(x, y, s, c, f); }
 void ftR(int right, int y, const char* s, uint16_t c, const GFXfont* f) { ft(right - ftW(f, s), y, s, c, f); }
+// Figures over a heat wash: pure white on a 2px drop shadow so they read on red, yellow and green.
+void ftH(int x, int y, const char* s, bool dim, const GFXfont* f) {
+  ft(x + 2, y + 2, s, V_SHADOW, f); ft(x + 1, y + 1, s, V_SHADOW, f);
+  ft(x, y, s, dim ? V_GREY : 0xFFFF, f);
+}
+void ftHR(int right, int y, const char* s, bool dim, const GFXfont* f) { ftH(right - ftW(f, s), y, s, dim, f); }
+void txtS(int x, int y, const char* s, uint16_t c) { txt(x + 1, y + 1, s, V_SHADOW); txt(x, y, s, c); }
+void txtSR(int right, int y, const char* s, uint16_t c) { txtS(right - (int)strlen(s) * CW, y, s, c); }
 void vDot(int x, int y, uint16_t c) { fb.fillCircle(x, y, 2, c); }
 void pageDots(int cur) {   // pill indicator for the 4 stats pages (PC, cores, network, ZERO|GEEK)
   fb.fillRoundRect(W - 30, 1, 28, 7, 3, V_WELL);
@@ -1252,6 +1261,64 @@ void vTrace(int x, int y, int w, int h, const float* ser, int n, int next,
     prevX = px; prevY = py;
   }
 }
+// Heat ramp down a cell: red along the top, yellow through the middle, green at the bottom.
+// `invert` flips it for values where higher is better (Wi-Fi signal).
+uint16_t heatInk(float pos, bool invert) {
+  const VTheme& vt = VT();
+  if (pos < 0.f) pos = 0.f;
+  if (pos > 1.f) pos = 1.f;
+  if (invert) pos = 1.f - pos;
+  if (pos < 0.5f) return mix(vt.bad, vt.warn, (int)(pos * 2.f * 255.f));
+  return mix(vt.warn, vt.ok, (int)((pos - 0.5f) * 2.f * 255.f));
+}
+float vLevel(float v, float lo, float hi, bool logScale) {
+  float t = logScale ? logRate(v) : (hi > lo ? (v - lo) / (hi - lo) : 0.f);
+  return t < 0.f ? 0.f : t > 1.f ? 1.f : t;
+}
+// History polyline, `dy` pixels down (1 = its own drop shadow). NAN samples break the line.
+void vPolyline(int x, int y, int w, int h, const float* ser, int n, int next,
+               float lo, float hi, bool logScale, uint16_t c, int dy) {
+  if (n <= 0 || w < 2 || h < 2) return;
+  int start = (n < HIST) ? 0 : next, cols = min(n, w), prevX = -1, prevY = 0;
+  for (int i = 0; i < cols; i++) {
+    float v = ser[(start + n - cols + i) % HIST];
+    if (isnan(v)) { prevX = -1; continue; }
+    int px = x + w - cols + i;
+    int py = min(y + h - 1, y + h - 1 - (int)(vLevel(v, lo, hi, logScale) * (h - 1) + 0.5f) + dy);
+    if (prevX >= 0) fb.drawLine(prevX, prevY, px, py, c);
+    else fb.drawPixel(px, py, c);
+    prevX = px; prevY = py;
+  }
+}
+// White history line on a 1px dark shadow, for drawing over a heat wash.
+void vShadowLine(int x, int y, int w, int h, const float* ser, int n, int next,
+                 float lo, float hi, bool logScale, uint16_t c) {
+  vPolyline(x, y, w, h, ser, n, next, lo, hi, logScale, V_SHADOW, 1);
+  vPolyline(x, y, w, h, ser, n, next, lo, hi, logScale, c, 0);
+}
+// Whole cell washed with the heat ramp, the area under the history washed brighter, and the
+// history as a white line on top. Newest sample at the right edge.
+void vHeatGraph(int x, int y, int w, int h, const float* ser, int n, int next, float lo, float hi,
+                bool logScale, bool dim, bool invert = false, uint16_t ground = 0) {
+  if (w < 2 || h < 2 || h > H) return;
+  if (!ground) ground = VT().cell;
+  const int bgA = dim ? 34 : 72, fillA = dim ? 62 : 136;
+  uint16_t fill[H];
+  for (int r = 0; r < h; r++) {
+    uint16_t c = heatInk(r / (float)(h - 1), invert);
+    fb.drawFastHLine(x, y + r, w, mix(ground, c, bgA));
+    fill[r] = mix(ground, c, fillA);
+  }
+  if (n <= 0) return;
+  int start = (n < HIST) ? 0 : next, cols = min(n, w);
+  for (int i = 0; i < cols; i++) {
+    float v = ser[(start + n - cols + i) % HIST];
+    if (isnan(v)) continue;
+    int top = h - 1 - (int)(vLevel(v, lo, hi, logScale) * (h - 1) + 0.5f);
+    for (int r = top; r < h; r++) fb.drawPixel(x + w - cols + i, y + r, fill[r]);
+  }
+  vShadowLine(x, y, w, h, ser, n, next, lo, hi, logScale, dim ? V_GREY : V_WHITE);
+}
 // Same as vSpark but hanging from the top edge (page 1 mirrored net graph: RX down from the top).
 void vHang(int x, int y, int w, int h, const float* ser, int n, int next, uint16_t c, bool dim) {
   if (n <= 0) return;
@@ -1323,17 +1390,20 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   const float* ts = h.n && !isnan(lastValue(h.cpuT, h.n, h.next)) ? h.cpuT : h.temp;
   char a[24], b[24];
 
-  // Top-left cell: temperature, history washed behind the figure.
+  // Top-left cell: temperature figure over its heat-washed history.
   const int HW = have ? 98 : 236;
   vCell(2, 2, HW, 53, false);
-  if (have) vFadeFill(3, 3, HW - 2, 51, ts, h.n, h.next, 40.f, 90.f, false, stale);
+  if (have) vHeatGraph(2, 3, HW, 52, ts, h.n, h.next, 40.f, 90.f, false, stale);
   if (have) {
-    txt(6, 5, "TEMP", V_LAB);
+    txtS(6, 5, "TEMP", V_WHITE);
     snprintf(a, sizeof a, "%.0f", t);
-    uint16_t c = stale ? V_GREY : V_WHITE;
-    ftS(6, 48, a, c, &FreeSansBold24pt7b);
+    ftH(6, 48, a, stale, &FreeSansBold24pt7b);
     int dx = 6 + ftW(&FreeSansBold24pt7b, a) + 3;
-    fb.drawCircle(dx + 4, 18, 4, c); fb.drawCircle(dx + 4, 18, 3, c);
+    uint16_t c = stale ? V_GREY : 0xFFFF;
+    for (int o = 2; o >= 0; o--) {
+      uint16_t oc = o ? V_SHADOW : c;
+      fb.drawCircle(dx + 4 + o, 18 + o, 4, oc); fb.drawCircle(dx + 4 + o, 18 + o, 3, oc);
+    }
   } else {
     ftS(8, 30, "OFFLINE", V_GREY, &FreeSansBold12pt7b);
     uint32_t ago = h.had ? (now - h.lastMs) / 1000 : 0;
@@ -1346,26 +1416,26 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
     txt(8, 40, b, V_LAB);
   }
 
-  // Top-right cell: load, history washed behind the figure.
+  // Top-right cell: load figure over its heat-washed history.
   if (have) {
     const int RX = 102, RW = W - 2 - RX;
     float loadHi = 4.f;
     if (!isnan(h.lastNcpu) && h.lastNcpu >= 2.f) loadHi = h.lastNcpu * 0.5f;
     if (loadHi < 4.f) loadHi = 4.f;
     vCell(RX, 2, RW, 53, false);
-    vFadeFill(RX + 1, 3, RW - 2, 51, h.load, h.n, h.next, 0.f, loadHi, false, stale);
-    txt(RX + 5, 5, "CPU LOAD", V_LAB);
+    vHeatGraph(RX, 3, RW, 52, h.load, h.n, h.next, 0.f, loadHi, false, stale);
+    txtS(RX + 5, 5, "CPU LOAD", V_WHITE);
     if (s.host) {
       const char LCH[3] = {'N', 'C', 'S'};
       const bool LON[3] = {s.ledNum, s.ledCaps, s.ledScroll};
       for (int li = 0; li < 3; li++) {
         int lx = W - 56 + li * 8;
         char ls[2] = {LCH[li], 0};
-        txt(lx, 5, ls, LON[li] ? V_RX : V_DIMG);
+        txtS(lx, 5, ls, LON[li] ? V_RX : V_DIMG);
       }
     }
     fmtLoad(a, sizeof a, s.pcLoad); snprintf(b, sizeof b, "%s", a);
-    ftS(RX + 5, 34, b, stale ? V_GREY : V_WHITE, &FreeSansBold12pt7b);
+    ftH(RX + 5, 34, b, stale, &FreeSansBold12pt7b);
     if (s.pcTopProc[0]) {
       char pct[8] = "";
       if (!isnan(s.pcTopCpu)) snprintf(pct, sizeof pct, " %.0f%%", s.pcTopCpu);
@@ -1376,8 +1446,8 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
         while (L > 1) { nm[--L] = 0; char tmp[24]; snprintf(tmp, sizeof tmp, "%s..", nm); if (ftW(&FreeSansBold9pt7b, tmp) <= avail) break; }
         strlcat(nm, "..", sizeof nm);
       }
-      ft(RX + 5, 50, nm, V_LAB, &FreeSansBold9pt7b);
-      ft(RX + 5 + ftW(&FreeSansBold9pt7b, nm), 50, pct, stale ? V_GREY : vHeat(s.pcTopCpu / 100.f), &FreeSansBold9pt7b);
+      ftH(RX + 5, 50, nm, stale, &FreeSansBold9pt7b);
+      ftH(RX + 5 + ftW(&FreeSansBold9pt7b, nm), 50, pct, stale, &FreeSansBold9pt7b);
     }
   }
 
@@ -1409,22 +1479,37 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   usedTile(57, dlab, s.pcDiskUsed, s.pcDiskTot, linked ? s.pcDisk : -1);
   usedTile(88, "RAM", s.pcMemUsed, s.pcMemTot, linked ? s.pcMem : -1);
 
-  // Network cell: download washes the cell, upload is a thin line. The name is the interface.
-  vCell(NX, 57, W - 2 - NX, 60, false);
-  vFadeFill(NX + 1, 58, W - 4 - NX, 58, h.rx, h.n, h.next, 0, 1, true, stale);
-  vTrace(NX + 1, 58, W - 4 - NX, 58, h.tx, h.n, h.next, 0, 1, V_WHITE, true);
+  // Network cell: download is the heat-washed history, upload a dimmer line over it.
+  // The interface name on top, both rates as figures below it.
+  const int NW = W - 2 - NX;
+  vCell(NX, 57, NW, 60, false);
+  vHeatGraph(NX, 58, NW, 59, h.rx, h.n, h.next, 0, 1, true, stale);
+  uint16_t upInk = mix(VT().cell, V_WHITE, 150);
+  vShadowLine(NX, 58, NW, 59, h.tx, h.n, h.next, 0, 1, true, upInk);
   const char* ifn = s.netIf[0] ? s.netIf : "NET";
-  char ifb[12]; strlcpy(ifb, ifn, sizeof ifb);
+  char ifb[16]; strlcpy(ifb, ifn, sizeof ifb);
+  if ((int)strlen(ifb) > (NW - 8) / CW) ifb[(NW - 8) / CW] = 0;
+  txtS(NX + 4, 60, ifb, V_WHITE);
   float rx = linked ? s.pcRx : NAN, tx = linked ? s.pcTx : NAN;
-  vFmtRate(b, sizeof b, tx); vFmtRate(a, sizeof a, rx);
-  int x2 = W - 6 - (int)strlen(b) * CW;
-  int x1 = x2 - 8 - (int)strlen(a) * CW;
-  int maxc = (x1 - 6 - (NX + 4)) / CW;
-  if (maxc < 1) maxc = 1;
-  if ((int)strlen(ifb) > maxc) ifb[maxc] = 0;
-  txt(NX + 4, 60, ifb, V_LAB);
-  txt(x1, 60, a, stale || isnan(rx) ? V_GREY : V_WHITE);
-  txt(x2, 60, b, stale || isnan(tx) ? V_GREY : V_WHITE);
+  vFmtRate(a, sizeof a, rx); vFmtRate(b, sizeof b, tx);
+  const GFXfont* rf = &FreeSansBold9pt7b;
+  if (ftW(rf, a) + ftW(rf, b) + 2 * 9 > NW - 10)
+    for (char* t : {a, b}) { char* q = strstr(t, "/s"); if (q) *q = 0; }
+  // Arrow: shaft from y0 to y0 + 9, head at the bottom (down) or the top (up).
+  auto arrow = [](int x, int y0, bool down, uint16_t c) {
+    for (int o = 1; o >= 0; o--) {
+      uint16_t k = o ? V_SHADOW : c;
+      int hy = down ? y0 + 9 + o : y0 + o, d = down ? -3 : 3;
+      fb.drawFastVLine(x + o, y0 + o, 10, k);
+      fb.drawLine(x - 3 + o, hy + d, x + o, hy, k); fb.drawLine(x + 3 + o, hy + d, x + o, hy, k);
+    }
+  };
+  const int RY = 87;
+  arrow(NX + 7, RY - 11, true, V_WHITE);
+  ftH(NX + 13, RY, a, stale || isnan(rx), rf);
+  int bx = W - 6 - ftW(rf, b);
+  arrow(bx - 7, RY - 11, false, upInk);
+  ftH(bx, RY, b, stale || isnan(tx), rf);
   pageDots(0);
 }
 
@@ -1448,9 +1533,17 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
   txt(L, 62, "up", V_LAB); vFmtUp(a, sizeof a, s.api ? s.upS : -1); txtR(R, 62, a, val);
   txt(L, 72, "ip", V_LAB); txtR(R, 72, s.api && zip[0] ? zip : "--", s.api && zip[0] ? V_WHITE : V_GREY);
   if (s.ts >= 0) vDot(L + 16, 75, s.ts == 1 ? V_OK : V_DIMG);
-  txt(L, 84, "load", V_LAB);
-  vCell(L, 94, R - L, 19, true);
-  vFadeFill(L + 1, 95, R - L - 2, 17, h.piLoad, h.n, h.next, 0.f, 2.f, false, stale, V_WELL);
+  // History cell: label and current figure over the heat-washed history.
+  auto histCell = [&](int x, int w, const char* lab, const char* val, const float* ser,
+                      float lo, float hi, bool invert, bool dim) {
+    const int CY = 82, CH = 32;
+    vCell(x, CY, w, CH, false);
+    vHeatGraph(x, CY + 1, w, CH - 1, ser, h.n, h.next, lo, hi, false, dim, invert);
+    txtS(x + 3, CY + 3, lab, V_WHITE);
+    ftHR(x + w - 4, CY + 16, val, dim, &FreeSansBold9pt7b);
+  };
+  fmtLoad(a, sizeof a, s.api ? s.load1 : NAN);
+  histCell(L - 2, R - L + 4, "LOAD", a, h.piLoad, 0.f, 2.f, false, stale || !s.api);
 
   // GEEK card
   L = MID + 5; R = W - 6;
@@ -1469,9 +1562,8 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
   } else txtR(R, 52, "--", V_GREY);
   txt(L, 62, "up", V_LAB); vFmtUp(a, sizeof a, (long)(millis() / 1000)); txtR(R, 62, a, V_WHITE);
   txt(L, 72, "ip", V_LAB); txtR(R, 72, s.wifi ? s.geekIp : "--", s.wifi ? V_WHITE : V_GREY);
-  txt(L, 84, "wifi", V_LAB);
-  vCell(L, 94, R - L, 19, true);
-  vTrace(L + 1, 95, R - L - 2, 17, h.geekRssi, h.n, h.next, -90.f, -40.f, V_WHITE, false, V_WELL);
+  if (s.wifi && s.rssi) snprintf(a, sizeof a, "%d", s.rssi); else strcpy(a, "--");
+  histCell(L - 2, R - L + 4, "WIFI dBm", a, h.geekRssi, -90.f, -40.f, true, !s.wifi);
   pageDots(3);
 }
 

@@ -577,6 +577,12 @@ button.danger {
   z-index: 0;
 }
 .t-cell > :not(.cell-fade) { position: relative; z-index: 1; }
+/* Figures over a heat-washed history: pure white, bold, on a drop shadow. */
+.t-cell.heat { --heat-shadow: 0 1px 0 #000, 0 2px 3px rgba(0, 0, 0, 0.85); }
+.t-cell.heat > :not(.cell-fade) { text-shadow: var(--heat-shadow); }
+.t-cell.heat .t-hdr, .t-cell.heat .t-hdr-sub, .t-cell.heat .t-sub { color: #fff; }
+.t-cell.heat .t-hero, .t-cell.heat .t-load, .t-cell.heat .net-rates span { color: #fff; font-weight: 800; }
+.t-cell.heat .t-load { font-size: 13px; }
 .t-cell:hover {
   border-color: color-mix(in oklab, var(--lab) 48%, var(--cell-hi));
 }
@@ -1136,12 +1142,38 @@ button.danger {
   box-shadow: none;
   padding: 0;
 }
-.s-graph-well.pair canvas {
+.s-heat {
+  position: relative;
   flex: 1 1 0;
   min-block-size: 0;
   background: var(--cell);
   border-radius: 6px;
+  overflow: clip;
 }
+.s-heat canvas, .s-graph-well > canvas.heat-bg { position: absolute; inset: 0; }
+.s-heat-lbl, .s-heat-val {
+  position: absolute;
+  z-index: 1;
+  color: #fff;
+  text-shadow: 0 1px 0 #000, 0 2px 3px rgba(0, 0, 0, 0.85);
+  pointer-events: none;
+}
+.s-heat-lbl {
+  inset-block-start: 5px;
+  inset-inline-start: 8px;
+  font: 800 9.5px/1.1 ui-monospace, monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.s-heat-val {
+  inset-block-start: 50%;
+  inset-inline-end: 10px;
+  translate: 0 -50%;
+  font: 800 22px/1 ui-sans-serif, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+.s-heat-val.rx { inset-inline-end: auto; inset-inline-start: 8px; }
+.s-heat-val.tx { inset-inline-end: 10px; }
 
 .s-cores-matrix {
   display: grid;
@@ -1659,7 +1691,7 @@ dialog::backdrop {
   <!-- 2. GEEK-Lineage 4-Card Telemetry Strip (click any card to open Full Stats) -->
   <section id="mini-telemetry" class="mini-telemetry-wrap" aria-label="Target PC Telemetry Summary">
     <div class="mini-telemetry">
-      <div class="t-cell bevel" data-open-stats title="Open full GEEK telemetry &amp; stats dashboard">
+      <div class="t-cell bevel heat" data-open-stats title="Open full GEEK telemetry &amp; stats dashboard">
         <canvas id="sp-temp" class="cell-fade" width="320" height="120"></canvas>
         <div class="t-hdr"><span id="mc-cpu-hdr">CPU · CORES</span><span class="t-hdr-sub">Stats ↗</span></div>
         <div class="t-hero-row">
@@ -1689,7 +1721,7 @@ dialog::backdrop {
         </div>
       </div>
 
-      <div class="t-cell bevel" data-open-stats title="Open full GEEK telemetry &amp; stats dashboard">
+      <div class="t-cell bevel heat" data-open-stats title="Open full GEEK telemetry &amp; stats dashboard">
         <canvas id="sp-net" class="cell-fade" width="320" height="120"></canvas>
         <div class="t-hdr"><span id="tc-iface">NET</span><span id="tc-net-ip" class="t-hdr-sub">--</span></div>
         <div class="net-rates">
@@ -1841,8 +1873,14 @@ dialog::backdrop {
           </div>
         </div>
         <div class="s-graph-well pair">
-          <canvas id="st-canvas-temp" width="560" height="52"></canvas>
-          <canvas id="st-canvas-load" width="560" height="52"></canvas>
+          <div class="s-heat">
+            <canvas id="st-canvas-temp" width="560" height="52"></canvas>
+            <span class="s-heat-lbl">CPU Temp</span><span id="st-heat-temp" class="s-heat-val">--</span>
+          </div>
+          <div class="s-heat">
+            <canvas id="st-canvas-load" width="560" height="52"></canvas>
+            <span class="s-heat-lbl">CPU Load</span><span id="st-heat-load" class="s-heat-val">--</span>
+          </div>
         </div>
       </article>
 
@@ -1901,6 +1939,16 @@ dialog::backdrop {
             <span id="st-z-serial" class="s-kpi-sub">serial: --</span>
           </div>
         </div>
+        <div class="s-graph-well pair">
+          <div class="s-heat">
+            <canvas id="st-canvas-zload" width="560" height="52"></canvas>
+            <span class="s-heat-lbl">Zero Load</span><span id="st-heat-zload" class="s-heat-val">--</span>
+          </div>
+          <div class="s-heat">
+            <canvas id="st-canvas-geek" width="560" height="52"></canvas>
+            <span class="s-heat-lbl">GEEK Wi-Fi dBm</span><span id="st-heat-geek" class="s-heat-val">--</span>
+          </div>
+        </div>
       </article>
 
       <!-- Panel C: Per-Core Heat Matrix & Top 8 CPU Processes (GEEK Page 2) -->
@@ -1930,7 +1978,10 @@ dialog::backdrop {
           </div>
         </div>
         <div class="s-graph-well well">
-          <canvas id="st-canvas-net" width="560" height="104"></canvas>
+          <canvas id="st-canvas-net" class="heat-bg" width="560" height="104"></canvas>
+          <span id="st-heat-iface" class="s-heat-lbl">NET</span>
+          <span id="st-heat-rx" class="s-heat-val rx">↓ --</span>
+          <span id="st-heat-tx" class="s-heat-val tx">↑ --</span>
         </div>
         <div id="st-net-live" class="t-sub">Active sockets: --</div>
         <div class="s-panel-hdr" style="padding-block-end:2px;border-bottom:0">
@@ -2033,6 +2084,6 @@ dialog::backdrop {
   </form>
 </dialog>
 
-<script src="app.js?v=20261028c"></script>
+<script src="app.js?v=20261028d"></script>
 </body>
 </html>

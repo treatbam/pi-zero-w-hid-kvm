@@ -281,6 +281,31 @@ class ServerWsAndThemeTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_geek_rssi_round_trips_through_status(self):
+        self.srv_mod.GEEK_RSSI.update(dbm=None, at=0.0)
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+
+        def status(hdrs):
+            conn.request("GET", "/api/status", headers=hdrs)
+            r = conn.getresponse()
+            self.assertEqual(r.status, 200)
+            return json.loads(r.read())
+
+        try:
+            self.assertIsNone(status({"X-KVM-PIN": self.pin})["geek_rssi"])
+            self.assertEqual(status({"X-KVM-PIN": self.pin, "X-Geek-RSSI": "-58"})["geek_rssi"], -58)
+            # The console polls without the header and still sees the GEEK's last value.
+            self.assertEqual(status({"X-KVM-PIN": self.pin})["geek_rssi"], -58)
+            self.assertEqual(status({"X-KVM-PIN": self.pin, "X-Geek-RSSI": "junk"})["geek_rssi"], -58)
+            # Without the PIN the header is ignored and the field is not sent.
+            st = status({"X-Geek-RSSI": "-40"})
+            self.assertNotIn("geek_rssi", st)
+            self.assertEqual(status({"X-KVM-PIN": self.pin})["geek_rssi"], -58)
+            self.srv_mod.GEEK_RSSI["at"] -= self.srv_mod.GEEK_RSSI_TTL + 1
+            self.assertIsNone(status({"X-KVM-PIN": self.pin})["geek_rssi"])
+        finally:
+            conn.close()
+
     def test_websocket_auth_ping_and_mouse_dispatch(self):
         s = socket.create_connection(("127.0.0.1", self.port), timeout=5)
         try:

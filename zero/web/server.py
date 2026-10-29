@@ -11,7 +11,7 @@ API:
                                       "serial_mode","serial_mode_age_s","serial_mode_requested",
                                       "preview_quality","preview_quality_requested",
                                       "pc_id","pc_host","net_hist_since","net_hist",
-                                      "zero_wifi_rssi","tailscale","tailscale_ip"}
+                                      "zero_wifi_rssi","tailscale","tailscale_ip","geek_rssi"}
                                     pc_id (12 hex, sha256 of the PC's machine-id) / pc_host identify
                                     the PC; net_hist is that PC's cumulative TCP bytes per process
                                     since net_hist_since (unix s): up to 8 {"p","rx","tx"}, busiest
@@ -19,6 +19,8 @@ API:
                                     zero_wifi_rssi (dBm) / tailscale ("up"/"down"/null) /
                                     tailscale_ip (tailscale0 IPv4 or null) are PIN-only
                                     too; the GEEK sends its KVM_PIN on the status poll.
+                                    geek_rssi (dBm, PIN-only) is what the GEEK last sent in
+                                    X-Geek-RSSI with its PIN; null once 10 s old.
                                     pc_cores_all etc. (type 8) are null when the PC can't report them.
                                     serial_* and preview_* only with a valid X-KVM-PIN header;
                                     a header that is wrong (or locked out) adds "pin_ok":false.
@@ -297,6 +299,21 @@ def zero_link():
     out["tailscale_ip"] = tailscale_ip(out["tailscale"] == "up")
     return out
 
+GEEK_RSSI = {"dbm": None, "at": 0.0}
+GEEK_RSSI_TTL = 10.0
+
+def geek_rssi(header):
+    """Remember the GEEK's Wi-Fi dBm from its status poll; return it while it is fresh."""
+    now = time.monotonic()
+    try:
+        v = int(header) if header else None
+    except ValueError:
+        v = None
+    if v is not None and -120 <= v < 0:
+        GEEK_RSSI["dbm"], GEEK_RSSI["at"] = v, now
+    fresh = GEEK_RSSI["dbm"] is not None and now - GEEK_RSSI["at"] < GEEK_RSSI_TTL
+    return GEEK_RSSI["dbm"] if fresh else None
+
 def sysstats():
     """Cheap /proc reads for the GEEK dashboard; any failure just omits the field."""
     out = {}
@@ -360,7 +377,8 @@ class H(SimpleHTTPRequestHandler):
                 sm = {"pin_ok": False}
             elif self.headers.get("X-KVM-PIN"):
                 mode, age = hostview.shared.mode()
-                sm = {"pin_ok": True, **zero_link(), "serial_mode": mode, "serial_mode_age_s": age,
+                sm = {"pin_ok": True, **zero_link(), "geek_rssi": geek_rssi(self.headers.get("X-Geek-RSSI")),
+                      "serial_mode": mode, "serial_mode_age_s": age,
                       "serial_mode_requested": hostview.shared.requested_mode,
                       "preview_quality": hostview.shared.quality(), "preview_quality_requested": MODE_REQ["quality"]}
             hm = hostview.shared.mode()[0]

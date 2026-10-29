@@ -1075,7 +1075,7 @@ const fmtUp = s => {
   return Math.floor(s / 86400) + 'd ' + Math.floor((s % 86400) / 3600) + 'h';
 };
 
-const histTemp = [], histLoad = [], histRx = [], histTx = [];
+const histTemp = [], histLoad = [], histRx = [], histTx = [], histZeroLoad = [], histGeekRssi = [];
 const MAX_HIST = 240; // 240 * 2s = 8 minutes (matches GEEK HIST = 240!)
 
 function cssVar(name) {
@@ -1119,14 +1119,13 @@ function prepHiDpiCanvas(cv) {
   return {g, w: r.width, h: r.height};
 }
 
-// Fade wash: red at the top of the cell, yellow, then green, gone at the bottom.
-// Only the area under the line is painted. Same scale as the panel.
-function fadeGradient(g, h) {
-  const grad = g.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, hexToRgba(cssVar('--bad'), 0.55));
-  grad.addColorStop(0.34, hexToRgba(cssVar('--warn'), 0.4));
-  grad.addColorStop(0.62, hexToRgba(cssVar('--ok'), 0.22));
-  grad.addColorStop(1, hexToRgba(cssVar('--ok'), 0));
+// Heat ramp down the cell: red along the top, yellow through the middle, green at the bottom.
+// `invert` flips it where higher is better (Wi-Fi signal). Same ramp as the panel.
+function heatGradient(g, h, alpha, invert) {
+  const grad = g.createLinearGradient(0, invert ? h : 0, 0, invert ? 0 : h);
+  grad.addColorStop(0, hexToRgba(cssVar('--bad'), alpha));
+  grad.addColorStop(0.5, hexToRgba(cssVar('--warn'), alpha));
+  grad.addColorStop(1, hexToRgba(cssVar('--ok'), alpha));
   return grad;
 }
 function seriesPoints(series, w, h, map) {
@@ -1141,46 +1140,63 @@ function seriesPoints(series, w, h, map) {
   }
   return pts;
 }
-function fillUnder(g, pts, h) {
+function fillUnder(g, pts, h, invert) {
   if (pts.length < 2) return;
   g.beginPath();
   g.moveTo(pts[0].x, h);
   for (const p of pts) g.lineTo(p.x, p.y);
   g.lineTo(pts[pts.length - 1].x, h);
   g.closePath();
-  g.fillStyle = fadeGradient(g, h);
+  g.fillStyle = heatGradient(g, h, 0.32, invert);
   g.fill();
 }
-function drawFade(cv, series, map) {
+// History line with a dark drop shadow so it reads over every band of the wash.
+function shadowLine(g, pts, color, width) {
+  if (pts.length < 2) return;
+  const path = () => {
+    g.beginPath();
+    pts.forEach((p, i) => { if (i) g.lineTo(p.x, p.y); else g.moveTo(p.x, p.y); });
+  };
+  g.lineJoin = 'round';
+  g.lineCap = 'round';
+  g.save();
+  g.translate(0, 1.25);
+  path();
+  g.strokeStyle = 'rgba(0,0,0,0.7)';
+  g.lineWidth = width + 1;
+  g.stroke();
+  g.restore();
+  path();
+  g.strokeStyle = color;
+  g.lineWidth = width;
+  g.stroke();
+}
+// Whole cell washed with the heat ramp, the area under the history washed brighter, and the
+// history as a white line. `extra` is an optional second, dimmer line (upload, load).
+function drawHeatGraph(cv, series, map, {invert = false, extra = null, extraMap = map} = {}) {
   const ctx = prepHiDpiCanvas(cv);
   if (!ctx) return;
   const {g, w, h} = ctx;
-  fillUnder(g, seriesPoints(series, w, h, map), h);
+  g.fillStyle = heatGradient(g, h, 0.3, invert);
+  g.fillRect(0, 0, w, h);
+  const pts = seriesPoints(series, w, h, map);
+  fillUnder(g, pts, h, invert);
+  if (extra) shadowLine(g, seriesPoints(extra, w, h, extraMap), hexToRgba(cssVar('--fig'), 0.6), 1.25);
+  shadowLine(g, pts, '#fff', 1.75);
 }
 const logRate = bps => (!Number.isFinite(bps) || bps <= 300) ? 0 : Math.min(1, Math.max(0, Math.log10(bps / 300) / 5.5));
 const tempLevel = v => (v - 40) / 50;
-function drawNetFade(cv) {
-  const ctx = prepHiDpiCanvas(cv);
-  if (!ctx) return;
-  const {g, w, h} = ctx;
-  fillUnder(g, seriesPoints(histRx, w, h, logRate), h);
-  const tx = seriesPoints(histTx, w, h, logRate);
-  if (tx.length < 2) return;
-  g.beginPath();
-  tx.forEach((p, i) => { if (i) g.lineTo(p.x, p.y); else g.moveTo(p.x, p.y); });
-  g.strokeStyle = hexToRgba(cssVar('--fig'), 0.75);
-  g.lineWidth = 1.25;
-  g.lineJoin = 'round';
-  g.lineCap = 'round';
-  g.stroke();
-}
+const zeroLoadLevel = v => v / 2;
+const rssiLevel = v => (v + 90) / 50;
 function drawSparks() {
-  drawFade(document.getElementById('sp-temp'), histTemp, tempLevel);
-  drawNetFade(document.getElementById('sp-net'));
+  drawHeatGraph(document.getElementById('sp-temp'), histTemp, tempLevel, {extra: histLoad, extraMap: v => v / loadTop});
+  drawHeatGraph(document.getElementById('sp-net'), histRx, logRate, {extra: histTx});
   if (activeDeck === 'stats') {
-    drawFade(document.getElementById('st-canvas-temp'), histTemp, tempLevel);
-    drawFade(document.getElementById('st-canvas-load'), histLoad, v => v / loadTop);
-    drawNetFade(document.getElementById('st-canvas-net'));
+    drawHeatGraph(document.getElementById('st-canvas-temp'), histTemp, tempLevel);
+    drawHeatGraph(document.getElementById('st-canvas-load'), histLoad, v => v / loadTop);
+    drawHeatGraph(document.getElementById('st-canvas-net'), histRx, logRate, {extra: histTx});
+    drawHeatGraph(document.getElementById('st-canvas-zload'), histZeroLoad, zeroLoadLevel);
+    drawHeatGraph(document.getElementById('st-canvas-geek'), histGeekRssi, rssiLevel, {invert: true});
   }
 }
 
@@ -1223,6 +1239,8 @@ function updateTelemetry(s) {
     histRx.push(s.pc_rx_bps ?? 0); if (histRx.length > MAX_HIST) histRx.shift();
     histTx.push(s.pc_tx_bps ?? 0); if (histTx.length > MAX_HIST) histTx.shift();
   }
+  histZeroLoad.push(s.load1 ?? NaN); if (histZeroLoad.length > MAX_HIST) histZeroLoad.shift();
+  histGeekRssi.push(s.geek_rssi ?? NaN); if (histGeekRssi.length > MAX_HIST) histGeekRssi.shift();
 
   // ---- Mini Telemetry Strip (4 GEEK Cards under Desktop/Tablet Stage) ----
   const ncpu = s.pc_ncpu || (Array.isArray(s.pc_cores_all) ? s.pc_cores_all.length : null);
@@ -1337,6 +1355,8 @@ function updateTelemetry(s) {
   kNvme.textContent = linked && s.pc_nvme_temp_c != null ? `${Math.round(s.pc_nvme_temp_c)}°C` : 'n/a';
   kNvme.style.color = 'var(--fig)';
   document.getElementById('st-kpi-load').textContent = linked && s.pc_load1 != null ? Number(s.pc_load1).toFixed(2) : '--';
+  document.getElementById('st-heat-temp').textContent = linked && cpuT != null ? `${Math.round(cpuT)}°C` : '--';
+  document.getElementById('st-heat-load').textContent = linked && s.pc_load1 != null ? Number(s.pc_load1).toFixed(2) : '--';
   document.getElementById('st-kpi-threads').textContent = linked && ncpu ? `${ncpu} logical threads` : '-- threads';
 
   document.getElementById('st-mem-pct').textContent = linked ? `${memPct}%` : '--%';
@@ -1371,6 +1391,8 @@ function updateTelemetry(s) {
   document.getElementById('st-z-tsip').textContent = s.tailscale_ip || (s.tailscale === 'down' ? 'interface down' : '--');
   document.getElementById('st-z-helper').textContent = s.helper_state || s.link || '--';
   document.getElementById('st-z-serial').textContent = `serial: ${s.serial_mode || s.mode || 'idle'}`;
+  document.getElementById('st-heat-zload').textContent = s.load1 != null ? Number(s.load1).toFixed(2) : '--';
+  document.getElementById('st-heat-geek').textContent = s.geek_rssi != null ? `${s.geek_rssi}` : (pin ? '--' : 'PIN req');
 
   // Per-Core Matrix + Top 8 CPU Processes (Page 2)
   const coreGrid = document.getElementById('st-cores-grid');
@@ -1411,6 +1433,9 @@ function updateTelemetry(s) {
   document.getElementById('st-net-rates').textContent = linked
     ? `↓ ${fmtRate(s.pc_rx_bps)} · ↑ ${fmtRate(s.pc_tx_bps)}`
     : '↓-- · ↑--';
+  document.getElementById('st-heat-iface').textContent = linked && s.pc_net_iface ? s.pc_net_iface : 'NET';
+  document.getElementById('st-heat-rx').textContent = `↓ ${linked ? fmtRate(s.pc_rx_bps) : '--'}`;
+  document.getElementById('st-heat-tx').textContent = `↑ ${linked ? fmtRate(s.pc_tx_bps) : '--'}`;
 
   const liveNetProcs = linked && Array.isArray(s.pc_net_procs) ? s.pc_net_procs : [];
   document.getElementById('st-net-live').textContent = liveNetProcs.length
