@@ -1171,14 +1171,8 @@ void ftH(int x, int y, const char* s, bool dim, const GFXfont* f) {
 }
 void txtS(int x, int y, const char* s, uint16_t c) { txt(x + 1, y + 1, s, V_SHADOW); txt(x, y, s, c); }
 void txtSR(int right, int y, const char* s, uint16_t c) { txtS(right - (int)strlen(s) * CW, y, s, c); }
-// Cell title: bold white letters (each drawn twice, 7 px pitch). y = text top.
-const int TAG_PITCH = 7;
-void vTag(int x, int y, const char* s) {
-  for (int i = 0; s[i]; i++) {
-    char ch[2] = {s[i], 0};
-    txt(x + i * TAG_PITCH, y, ch, 0xFFFF); txt(x + i * TAG_PITCH + 1, y, ch, 0xFFFF);
-  }
-}
+// Cell title in the slim face, same family as the process name. y = baseline.
+void vTag(int x, int y, const char* s) { ft(x, y, s, 0xFFFF, &FreeSans9pt7b); }
 void vDot(int x, int y, uint16_t c) { fb.fillCircle(x, y, 2, c); }
 void pageDots(int cur) {   // pill indicator for the 4 stats pages (PC, cores, network, ZERO|GEEK)
   fb.fillRoundRect(W - 30, 1, 28, 7, 3, V_WELL);
@@ -1373,7 +1367,7 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   vCell(2, 2, HW, 53, false);
   if (have) vHeatGraph(2, 3, HW, 52, ts, h.n, h.next, 40.f, 90.f, false, stale);
   if (have) {
-    vTag(6, 5, "TEMP");
+    vTag(6, 16, "TEMP");
     snprintf(a, sizeof a, "%.0f", t);
     ftH(6, 48, a, stale, &FreeSansBold24pt7b);
     int dx = 6 + ftW(&FreeSansBold24pt7b, a) + 3;
@@ -1402,16 +1396,7 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
     if (loadHi < 4.f) loadHi = 4.f;
     vCell(RX, 2, RW, 53, false);
     vHeatGraph(RX, 3, RW, 52, h.load, h.n, h.next, 0.f, loadHi, false, stale);
-    vTag(RX + 5, 5, "CPU LOAD");
-    if (s.host) {
-      const char LCH[3] = {'N', 'C', 'S'};
-      const bool LON[3] = {s.ledNum, s.ledCaps, s.ledScroll};
-      for (int li = 0; li < 3; li++) {
-        int lx = W - 56 + li * 8;
-        char ls[2] = {LCH[li], 0};
-        txtS(lx, 5, ls, LON[li] ? V_RX : V_DIMG);
-      }
-    }
+    vTag(RX + 5, 16, "CPU LOAD");
     fmtLoad(a, sizeof a, s.pcLoad); snprintf(b, sizeof b, "%s", a);
     ftH(RX + 5, 34, b, stale, &FreeSansBold12pt7b);
     if (s.pcTopProc[0]) {
@@ -1437,8 +1422,8 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
     vCell(2, cy, NX - 4, 29, false);
     char name[12];
     strlcpy(name, lab, sizeof name);
-    if ((int)strlen(name) > (NX - 12) / TAG_PITCH) name[(NX - 12) / TAG_PITCH] = 0;
-    vTag(6, cy + 3, name);
+    while (name[0] && ftW(&FreeSans9pt7b, name) > NX - 12) name[strlen(name) - 1] = 0;
+    vTag(6, cy + 13, name);
     bool bytes = linked && !isnan(u) && !isnan(tot) && tot > 0;
     if (bytes) {
       char t2[12];
@@ -1458,37 +1443,33 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   usedTile(57, "RAM", s.pcMemUsed, s.pcMemTot, linked ? s.pcMem : -1);
   usedTile(88, dlab, s.pcDiskUsed, s.pcDiskTot, linked ? s.pcDisk : -1);
 
-  // Network cell: download is the heat-coloured history, upload a dimmer line over it.
-  // The interface name on top, both rates as figures below it.
-  const int NW = W - 2 - NX;
+  // Network cell: a plain strip holds the interface name and both rates, and the history
+  // fills everything below it, so the speeds never sit on the graph.
+  const int NW = W - 2 - NX, HEAD = 16;
   vCell(NX, 57, NW, 60, false);
-  vHeatGraph(NX, 58, NW, 59, h.rx, h.n, h.next, 0, 1, true, stale);
-  uint16_t upInk = mix(VT().cell, V_WHITE, 150);
-  vShadowLine(NX, 58, NW, 59, h.tx, h.n, h.next, 0, 1, true, upInk);
+  vHeatGraph(NX, 57 + HEAD, NW, 60 - HEAD, h.rx, h.n, h.next, 0, 1, true, stale);
+  uint16_t upInk = mix(VT().cell, V_WHITE, 170);
+  vShadowLine(NX, 57 + HEAD, NW, 60 - HEAD, h.tx, h.n, h.next, 0, 1, true, upInk);
+  float rx = linked ? s.pcRx : NAN, tx = linked ? s.pcTx : NAN;
+  const GFXfont* rf = &FreeSans9pt7b;
+  vFmtRate(a, sizeof a, rx); vFmtRate(b, sizeof b, tx);
+  if (ftW(rf, a) + ftW(rf, b) + 28 > NW / 2)
+    for (char* p : {a, b}) { char* q = strstr(p, "/s"); if (q) *q = 0; }
+  const int base = 69;
+  int bx = W - 5 - ftW(rf, b);
+  int ax = bx - 14 - ftW(rf, a);
   const char* ifn = s.netIf[0] ? s.netIf : "NET";
   char ifb[16]; strlcpy(ifb, ifn, sizeof ifb);
-  if ((int)strlen(ifb) > (NW - 8) / TAG_PITCH) ifb[(NW - 8) / TAG_PITCH] = 0;
-  vTag(NX + 4, 60, ifb);
-  float rx = linked ? s.pcRx : NAN, tx = linked ? s.pcTx : NAN;
-  vFmtRate(a, sizeof a, rx); vFmtRate(b, sizeof b, tx);
-  const GFXfont* rf = &FreeSansBold9pt7b;
-  if (ftW(rf, a) + ftW(rf, b) + 2 * 9 > NW - 10)
-    for (char* t : {a, b}) { char* q = strstr(t, "/s"); if (q) *q = 0; }
-  // Arrow: shaft from y0 to y0 + 9, head at the bottom (down) or the top (up).
-  auto arrow = [](int x, int y0, bool down, uint16_t c) {
-    for (int o = 1; o >= 0; o--) {
-      uint16_t k = o ? V_SHADOW : c;
-      int hy = down ? y0 + 9 + o : y0 + o, d = down ? -3 : 3;
-      fb.drawFastVLine(x + o, y0 + o, 10, k);
-      fb.drawLine(x - 3 + o, hy + d, x + o, hy, k); fb.drawLine(x + 3 + o, hy + d, x + o, hy, k);
-    }
+  while (ifb[0] && ftW(rf, ifb) > ax - 16 - (NX + 4)) ifb[strlen(ifb) - 1] = 0;
+  vTag(NX + 4, base, ifb);
+  auto chev = [](int x, int tip, bool down, uint16_t c) {
+    int d = down ? -4 : 4;
+    fb.drawLine(x - 3, tip + d, x, tip, c); fb.drawLine(x + 3, tip + d, x, tip, c);
   };
-  const int RY = 87;
-  arrow(NX + 7, RY - 11, true, V_WHITE);
-  ftH(NX + 13, RY, a, stale || isnan(rx), rf);
-  int bx = W - 6 - ftW(rf, b);
-  arrow(bx - 7, RY - 11, false, upInk);
-  ftH(bx, RY, b, stale || isnan(tx), rf);
+  uint16_t rc = stale || isnan(rx) ? V_GREY : 0xFFFF;
+  uint16_t tc = stale || isnan(tx) ? V_GREY : upInk;
+  chev(ax - 7, 65, true, rc);  ft(ax, base, a, rc, rf);
+  chev(bx - 7, 61, false, tc); ft(bx, base, b, tc, rf);
   pageDots(0);
 }
 
@@ -1518,7 +1499,7 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
     const int CY = 82, CH = 32;
     vCell(x, CY, w, CH, false);
     vHeatGraph(x, CY + 1, w, CH - 1, ser, h.n, h.next, lo, hi, false, dim, invert, 0, false);
-    vTag(x + 4, CY + 4, lab);
+    vTag(x + 4, CY + 14, lab);
     ftR(x + w - 4, CY + 16, val, dim ? V_GREY : 0xFFFF, &FreeSansBold9pt7b);
   };
   fmtLoad(a, sizeof a, s.api ? s.load1 : NAN);
