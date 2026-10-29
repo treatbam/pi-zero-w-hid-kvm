@@ -19,6 +19,7 @@
 #include <ArduinoOTA.h>
 #include <esp_memory_utils.h>
 #include <ESPmDNS.h>
+#include <Fonts/FreeSans9pt7b.h>
 #include <Fonts/FreeSansBold9pt7b.h>
 #include <Fonts/FreeSansBold12pt7b.h>
 #include <Fonts/FreeSansBold18pt7b.h>
@@ -1171,6 +1172,24 @@ void ftH(int x, int y, const char* s, bool dim, const GFXfont* f) {
 void ftHR(int right, int y, const char* s, bool dim, const GFXfont* f) { ftH(right - ftW(f, s), y, s, dim, f); }
 void txtS(int x, int y, const char* s, uint16_t c) { txt(x + 1, y + 1, s, V_SHADOW); txt(x, y, s, c); }
 void txtSR(int right, int y, const char* s, uint16_t c) { txtS(right - (int)strlen(s) * CW, y, s, c); }
+// Darken what is already drawn in a rectangle (corners left alone), for a tag behind a label.
+void vShade(int x, int y, int w, int h, int a) {
+  for (int yy = 0; yy < h; yy++)
+    for (int xx = 0; xx < w; xx++) {
+      if ((yy == 0 || yy == h - 1) && (xx == 0 || xx == w - 1)) continue;
+      fb.drawPixel(x + xx, y + yy, mix(fb.getPixel(x + xx, y + yy), 0x0000, a));
+    }
+}
+// Cell title: bold white letters (each drawn twice, 7 px pitch) on a dark tag. y = text top.
+const int TAG_PITCH = 7;
+int tagW(const char* s) { return (int)strlen(s) * TAG_PITCH + 3; }
+void vTag(int x, int y, const char* s) {
+  vShade(x - 2, y - 2, tagW(s), 11, 150);
+  for (int i = 0; s[i]; i++) {
+    char ch[2] = {s[i], 0};
+    txt(x + i * TAG_PITCH, y, ch, 0xFFFF); txt(x + i * TAG_PITCH + 1, y, ch, 0xFFFF);
+  }
+}
 void vDot(int x, int y, uint16_t c) { fb.fillCircle(x, y, 2, c); }
 void pageDots(int cur) {   // pill indicator for the 4 stats pages (PC, cores, network, ZERO|GEEK)
   fb.fillRoundRect(W - 30, 1, 28, 7, 3, V_WELL);
@@ -1197,8 +1216,7 @@ void vSpark(int x, int y, int w, int h, const float* ser, int n, int next, float
     fb.drawPixel(cx, top, dim ? c : t >= 0.55f ? vHeat(t) : mix(c, V_WHITE, 60));
   }
 }
-// Vertical wash under a history line. Red at the top of the cell, yellow, then green,
-// gone at the bottom. Only the pixels under the line are painted, mixed into `ground`.
+// Fading heat ramp for the core bars: red at the top, yellow, then green, gone at the bottom.
 void fadeInk(float pos, uint16_t& col, int& alpha) {
   const VTheme& vt = VT();
   if (pos < 0.f) pos = 0.f;
@@ -1216,49 +1234,6 @@ void fadeInk(float pos, uint16_t& col, int& alpha) {
     if (u > 1.f) u = 1.f;
     col = vt.ok;
     alpha = 56 - (int)(u * 56.f);
-  }
-}
-void vFadeFill(int x, int y, int w, int h, const float* ser, int n, int next,
-               float lo, float hi, bool logScale, bool dim, uint16_t ground = 0) {
-  if (n <= 0 || w < 2 || h < 2) return;
-  if (!ground) ground = VT().cell;
-  int start = (n < HIST) ? 0 : next, cols = min(n, w);
-  for (int i = 0; i < cols; i++) {
-    float v = ser[(start + n - cols + i) % HIST];
-    if (isnan(v)) continue;
-    float t = logScale ? logRate(v) : (hi > lo ? (v - lo) / (hi - lo) : 0.f);
-    if (t < 0.f) t = 0.f;
-    if (t > 1.f) t = 1.f;
-    int top = y + h - 1 - (int)(t * (h - 1) + 0.5f);
-    int cx = x + w - cols + i;
-    for (int yy = top; yy < y + h; yy++) {
-      uint16_t col; int alpha;
-      fadeInk((yy - y) / (float)(h - 1), col, alpha);
-      if (dim) alpha = alpha * 2 / 5;
-      if (alpha <= 2) continue;
-      fb.drawPixel(cx, yy, mix(ground, col, alpha));
-    }
-  }
-}
-// Thin history line, no fill. Used for upload over the download wash, and for signal.
-void vTrace(int x, int y, int w, int h, const float* ser, int n, int next,
-            float lo, float hi, uint16_t c, bool logScale, uint16_t ground = 0) {
-  if (n <= 1 || w < 2 || h < 2) return;
-  if (!ground) ground = VT().cell;
-  int start = (n < HIST) ? 0 : next, cols = min(n, w);
-  int prevX = -1, prevY = 0;
-  uint16_t ink = mix(ground, c, 190);
-  for (int i = 0; i < cols; i++) {
-    float v = ser[(start + n - cols + i) % HIST];
-    if (isnan(v)) { prevX = -1; continue; }
-    float t = logScale ? logRate(v) : (hi > lo ? (v - lo) / (hi - lo) : 0.f);
-    if (t < 0.f) t = 0.f;
-    if (t > 1.f) t = 1.f;
-    int px = x + w - cols + i;
-    int py = y + h - 1 - (int)(t * (h - 1) + 0.5f);
-    if (prevX >= 0) fb.drawLine(prevX, prevY, px, py, ink);
-    else fb.drawPixel(px, py, ink);
-    prevX = px; prevY = py;
   }
 }
 // Heat ramp down a cell: red along the top, yellow through the middle, green at the bottom.
@@ -1391,11 +1366,11 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   char a[24], b[24];
 
   // Top-left cell: temperature figure over its heat-washed history.
-  const int HW = have ? 98 : 236;
+  const int HW = have ? 82 : 236;
   vCell(2, 2, HW, 53, false);
   if (have) vHeatGraph(2, 3, HW, 52, ts, h.n, h.next, 40.f, 90.f, false, stale);
   if (have) {
-    txtS(6, 5, "TEMP", V_WHITE);
+    vTag(6, 5, "TEMP");
     snprintf(a, sizeof a, "%.0f", t);
     ftH(6, 48, a, stale, &FreeSansBold24pt7b);
     int dx = 6 + ftW(&FreeSansBold24pt7b, a) + 3;
@@ -1418,13 +1393,13 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
 
   // Top-right cell: load figure over its heat-washed history.
   if (have) {
-    const int RX = 102, RW = W - 2 - RX;
+    const int RX = 86, RW = W - 2 - RX;
     float loadHi = 4.f;
     if (!isnan(h.lastNcpu) && h.lastNcpu >= 2.f) loadHi = h.lastNcpu * 0.5f;
     if (loadHi < 4.f) loadHi = 4.f;
     vCell(RX, 2, RW, 53, false);
     vHeatGraph(RX, 3, RW, 52, h.load, h.n, h.next, 0.f, loadHi, false, stale);
-    txtS(RX + 5, 5, "CPU LOAD", V_WHITE);
+    vTag(RX + 5, 5, "CPU LOAD");
     if (s.host) {
       const char LCH[3] = {'N', 'C', 'S'};
       const bool LON[3] = {s.ledNum, s.ledCaps, s.ledScroll};
@@ -1437,29 +1412,30 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
     fmtLoad(a, sizeof a, s.pcLoad); snprintf(b, sizeof b, "%s", a);
     ftH(RX + 5, 34, b, stale, &FreeSansBold12pt7b);
     if (s.pcTopProc[0]) {
+      // Name in the regular face so longer process names fit; the share stays bold.
+      const GFXfont* nf = &FreeSans9pt7b;
       char pct[8] = "";
       if (!isnan(s.pcTopCpu)) snprintf(pct, sizeof pct, " %.0f%%", s.pcTopCpu);
       int avail = W - 6 - (RX + 5) - ftW(&FreeSansBold9pt7b, pct);
-      char nm[20]; strlcpy(nm, s.pcTopProc, sizeof nm);
-      if (ftW(&FreeSansBold9pt7b, nm) > avail) {
+      char nm[24]; strlcpy(nm, s.pcTopProc, sizeof nm);
+      if (ftW(nf, nm) > avail) {
         int L = strlen(nm);
-        while (L > 1) { nm[--L] = 0; char tmp[24]; snprintf(tmp, sizeof tmp, "%s..", nm); if (ftW(&FreeSansBold9pt7b, tmp) <= avail) break; }
+        while (L > 1) { nm[--L] = 0; char tmp[28]; snprintf(tmp, sizeof tmp, "%s..", nm); if (ftW(nf, tmp) <= avail) break; }
         strlcat(nm, "..", sizeof nm);
       }
-      ftH(RX + 5, 50, nm, stale, &FreeSansBold9pt7b);
-      ftH(RX + 5 + ftW(&FreeSansBold9pt7b, nm), 50, pct, stale, &FreeSansBold9pt7b);
+      ftH(RX + 5, 50, nm, stale, nf);
+      ftH(RX + 5 + ftW(nf, nm), 50, pct, stale, &FreeSansBold9pt7b);
     }
   }
 
-  // Bottom-left stacked beveled cells: hot GPU/NVMe sensors first, else RAM & DISK
-  // Drive, then memory. Figures only: the device name and used/total. No history.
+  // Memory, then the drive. Figures only: the name and used/total. No history.
   const int NX = 70;
   auto usedTile = [&](int cy, const char* lab, double u, double tot, int pct) {
     vCell(2, cy, NX - 4, 29, false);
     char name[12];
     strlcpy(name, lab, sizeof name);
-    if ((int)strlen(name) > (NX - 12) / CW) name[(NX - 12) / CW] = 0;
-    txt(6, cy + 3, name, V_LAB);
+    if ((int)strlen(name) > (NX - 12) / TAG_PITCH) name[(NX - 12) / TAG_PITCH] = 0;
+    vTag(6, cy + 3, name);
     bool bytes = linked && !isnan(u) && !isnan(tot) && tot > 0;
     if (bytes) {
       char t2[12];
@@ -1476,8 +1452,8 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
     strlcpy(dlab, s.pcDiskDev, sizeof dlab);
     for (char* p = dlab; *p; p++) if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 'a' + 'A');
   }
-  usedTile(57, dlab, s.pcDiskUsed, s.pcDiskTot, linked ? s.pcDisk : -1);
-  usedTile(88, "RAM", s.pcMemUsed, s.pcMemTot, linked ? s.pcMem : -1);
+  usedTile(57, "RAM", s.pcMemUsed, s.pcMemTot, linked ? s.pcMem : -1);
+  usedTile(88, dlab, s.pcDiskUsed, s.pcDiskTot, linked ? s.pcDisk : -1);
 
   // Network cell: download is the heat-washed history, upload a dimmer line over it.
   // The interface name on top, both rates as figures below it.
@@ -1488,8 +1464,8 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   vShadowLine(NX, 58, NW, 59, h.tx, h.n, h.next, 0, 1, true, upInk);
   const char* ifn = s.netIf[0] ? s.netIf : "NET";
   char ifb[16]; strlcpy(ifb, ifn, sizeof ifb);
-  if ((int)strlen(ifb) > (NW - 8) / CW) ifb[(NW - 8) / CW] = 0;
-  txtS(NX + 4, 60, ifb, V_WHITE);
+  if ((int)strlen(ifb) > (NW - 8) / TAG_PITCH) ifb[(NW - 8) / TAG_PITCH] = 0;
+  vTag(NX + 4, 60, ifb);
   float rx = linked ? s.pcRx : NAN, tx = linked ? s.pcTx : NAN;
   vFmtRate(a, sizeof a, rx); vFmtRate(b, sizeof b, tx);
   const GFXfont* rf = &FreeSansBold9pt7b;
@@ -1539,7 +1515,7 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
     const int CY = 82, CH = 32;
     vCell(x, CY, w, CH, false);
     vHeatGraph(x, CY + 1, w, CH - 1, ser, h.n, h.next, lo, hi, false, dim, invert);
-    txtS(x + 3, CY + 3, lab, V_WHITE);
+    vTag(x + 4, CY + 4, lab);
     ftHR(x + w - 4, CY + 16, val, dim, &FreeSansBold9pt7b);
   };
   fmtLoad(a, sizeof a, s.api ? s.load1 : NAN);
@@ -1690,8 +1666,6 @@ void drawNet(const Status& s, const PcHist& h, uint32_t now) {
   txt(bx, 1, b, stale ? V_GREY : V_WHITE);
 
   vCell(2, 12, W - 4, 105, false);
-  vFadeFill(3, 13, W - 6, 103, h.rx, h.n, h.next, 0, 1, true, stale);
-  vTrace(3, 13, W - 6, 103, h.tx, h.n, h.next, 0, 1, V_WHITE, true);
   const int TOP = 14, BOT = 115;
   const uint32_t NET_VIEW_MS = 10000;
   if (linked && s.histCount && (now / NET_VIEW_MS) % 2) { drawNetHist(s, stale, X, R, TOP, BOT); pageDots(2); return; }
