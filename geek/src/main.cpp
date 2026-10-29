@@ -1174,10 +1174,16 @@ void txtSR(int right, int y, const char* s, uint16_t c) { txtS(right - (int)strl
 // Cell title in the slim face, same family as the process name. y = baseline.
 void vTag(int x, int y, const char* s) { ft(x, y, s, 0xFFFF, &FreeSans9pt7b); }
 void vDot(int x, int y, uint16_t c) { fb.fillCircle(x, y, 2, c); }
-void pageDots(int cur) {   // pill indicator for the 4 stats pages (PC, cores, network, ZERO|GEEK)
-  fb.fillRoundRect(W - 30, 1, 28, 7, 3, V_WELL);
-  int x = W - 27;
-  for (int i = 0; i < 4; i++) {
+void vMark(int x, int y, uint16_t c) { fb.fillRect(x, y, 4, 4, c); }   // status square, same on both ends of the bar
+// Pill for the pages you can step through. The 5th (and 6th) mark is the desktop or terminal
+// page, only while that page is in the rotation. A mark is 2px, the current one 6px.
+void pageDots(int cur, int n) {
+  if (n < 1) return;
+  if (cur < 0) cur = 0;
+  if (cur >= n) cur = n - 1;
+  int width = 8 + (n - 1) * 5 + 6, x0 = W - 2 - width, x = x0 + 3;
+  fb.fillRoundRect(x0, 1, width, 7, 3, V_WELL);
+  for (int i = 0; i < n; i++) {
     if (i == cur) { fb.fillRoundRect(x, 3, 6, 3, 1, V_LAB); x += 8; }
     else { fb.fillRect(x, 3, 2, 3, V_DIMG); x += 5; }
   }
@@ -1363,7 +1369,7 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   char a[24], b[24];
 
   // Top-left cell: temperature figure over its heat-coloured history.
-  const int HW = have ? 82 : 236;
+  const int HW = have ? 72 : 236;
   vCell(2, 2, HW, 53, false);
   if (have) vHeatGraph(2, 3, HW, 52, ts, h.n, h.next, 40.f, 90.f, false, stale);
   if (have) {
@@ -1390,7 +1396,7 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
 
   // Top-right cell: load figure over its heat-coloured history.
   if (have) {
-    const int RX = 86, RW = W - 2 - RX;
+    const int RX = 76, RW = W - 2 - RX;
     float loadHi = 4.f;
     if (!isnan(h.lastNcpu) && h.lastNcpu >= 2.f) loadHi = h.lastNcpu * 0.5f;
     if (loadHi < 4.f) loadHi = 4.f;
@@ -1470,7 +1476,6 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   uint16_t tc = stale || isnan(tx) ? V_GREY : upInk;
   chev(ax - 7, 65, true, rc);  ft(ax, base, a, rc, rf);
   chev(bx - 7, 61, false, tc); ft(bx, base, b, tc, rf);
-  pageDots(0);
 }
 
 void drawZg(const Status& s, const PcHist& h, uint32_t now) {
@@ -1524,7 +1529,6 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
   txt(L, 72, "ip", V_LAB); txtR(R, 72, s.wifi ? s.geekIp : "--", s.wifi ? V_WHITE : V_GREY);
   if (s.wifi && s.rssi) snprintf(a, sizeof a, "%d", s.rssi); else strcpy(a, "--");
   histCell(L - 2, R - L + 4, "WIFI dBm", a, h.geekRssi, -90.f, -40.f, true, !s.wifi);
-  pageDots(3);
 }
 
 // v2 page 2: per-core bars in a recessed well on the left, busiest processes on a zebra-striped
@@ -1580,7 +1584,6 @@ void drawCores(const Status& s, uint32_t now) {
       if (barW > 0 && rh >= 11) fb.drawFastHLine(LX, y + 9, barW, stale ? V_DIMG : mix(V_LAB, pc, 140));
     }
   }
-  pageDots(1);
 }
 
 // Byte totals: B/K/M/G/T, at most 5 chars.
@@ -1652,7 +1655,7 @@ void drawNet(const Status& s, const PcHist& h, uint32_t now) {
   vCell(2, 12, W - 4, 105, false);
   const int TOP = 14, BOT = 115;
   const uint32_t NET_VIEW_MS = 10000;
-  if (linked && s.histCount && (now / NET_VIEW_MS) % 2) { drawNetHist(s, stale, X, R, TOP, BOT); pageDots(2); return; }
+  if (linked && s.histCount && (now / NET_VIEW_MS) % 2) { drawNetHist(s, stale, X, R, TOP, BOT); return; }
   int n = linked ? s.netpCount : 0;
   if (!n) txt(X, TOP + 4, linked ? "no active TCP flows" : "--", V_GREY);
   else {
@@ -1671,7 +1674,6 @@ void drawNet(const Status& s, const PcHist& h, uint32_t now) {
       for (int x = 0; x < len; x++) fb.drawFastVLine(X + x, y + 9, 2, stale ? V_GREY : mix(V_RX, V_TX, 255 * x / max(1, R - X)));
     }
   }
-  pageDots(2);
 }
 
 // Page control. Short press: next page (and acknowledges an alert). Long press: auto-rotate the
@@ -1695,8 +1697,8 @@ void statusBar(const Status& s, const PcHist& h, uint32_t now) {
   bool linked = s.api && strcmp(s.link, "LINKED") == 0;
   uint16_t lc = !s.api || stale || bad >= 3 ? V_BAD : bad || !linked ? V_WARN : V_OK;
   const int ty = Y + 4;
-  // ZERO (left)
-  vDot(6, ty + 3, hidC(s)); txt(11, ty, "ZERO", V_LAB); txt(11 + 5 * CW, ty, s.api ? "HID" : "--", hidC(s));
+  // ZERO (left): a square for the HID link, same shape as the GEEK's Wi-Fi square.
+  vMark(4, ty + 1, hidC(s)); txt(11, ty, "ZERO", V_LAB); txt(11 + 5 * CW, ty, s.api ? "HID" : "--", hidC(s));
   // LINK pill (centre)
   const int BW = 36, BH = 10;
   fb.fillRoundRect((W - BW) / 2, ty - 1, BW, BH, 2, lc);
@@ -1706,7 +1708,7 @@ void statusBar(const Status& s, const PcHist& h, uint32_t now) {
   char rs[12]; if (s.wifi && s.rssi) snprintf(rs, sizeof rs, "%ddBm", s.rssi); else strcpy(rs, "--");
   uint16_t gc = rssiC(s.wifi, s.rssi);
   int rw = strlen(rs) * CW, gx = W - 4 - rw - 5 * CW - 7;
-  vDot(gx + 2, ty + 3, gc); txt(gx + 7, ty, "GEEK", V_LAB); txtR(W - 4, ty, rs, gc);
+  vMark(gx, ty + 1, gc); txt(gx + 7, ty, "GEEK", V_LAB); txtR(W - 4, ty, rs, gc);
 }
 
 enum Page { P_PC, P_CORES, P_NET, P_ZG, P_DESK, P_TERM, NPAGES };
@@ -1765,6 +1767,18 @@ int alertPage(const Status& s, uint32_t now, bool* offline) {
 }
 // Desktop / terminal pages follow the Zero's active mode ("mode" in /api/status).
 // No field (older Zero) or no good poll yet -> both stay visible, as before.
+bool pageVisible(int p, const Status& s);
+int statPages(const Status& s) {   // 4 stats pages, plus desktop and terminal while each is in the rotation
+  int n = 4;
+  if (pageVisible(P_DESK, s)) n++;
+  if (pageVisible(P_TERM, s)) n++;
+  return n;
+}
+int statDot(int p, const Status& s) {
+  if (p <= P_ZG) return p;
+  if (p == P_DESK) return 4;
+  return pageVisible(P_DESK, s) ? 5 : 4;
+}
 bool pageVisible(int p, const Status& s) {
   if (p != P_DESK && p != P_TERM) return true;
   if (!s.api || !s.mode[0]) return true;
@@ -1806,6 +1820,7 @@ void paint() {
     } else show = gShown;
     if (!show) drawWaiting();
     statusBar(s, h, millis());
+    pageDots(statDot(page, s), statPages(s));
     tft.drawRGBBitmap(0, 0, fb.getBuffer(), W, H);
     return;
   }
@@ -1820,6 +1835,7 @@ void paint() {
   else if (page == P_NET) drawNet(s, h, millis());
   else drawPc(s, h, millis());
   statusBar(s, h, millis());
+  pageDots(statDot(page, s), statPages(s));
   tft.drawRGBBitmap(0, 0, fb.getBuffer(), W, H);
 }
 

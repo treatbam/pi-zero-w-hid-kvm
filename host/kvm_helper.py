@@ -873,7 +873,13 @@ def _capture_wayland_or_macos(crop="full", prev_raw=None):
         im = im.crop((ox, oy, ox + 240, oy + 135))
         cxy = (120, 67)
     else:
-        im = im.resize((240, 135))
+        # Same fit as the X11 still: whole screen in the 119px above the status bar.
+        vis_h = 119
+        scale = min(240 / w, vis_h / h)
+        nw, nh = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+        canvas = kvm_preview.Image.new("RGB", (240, 135), (0, 0, 0))
+        canvas.paste(im.resize((nw, nh)), ((240 - nw) // 2, 0))
+        im = canvas
         cxy = None
     raw = kvm_preview.rgb565_still(im.tobytes(), 240, 135)
     return decorate_frame(raw, prev_raw=prev_raw, cursor_xy=cxy), raw
@@ -907,7 +913,9 @@ def capture_with_state(display, crop="full", prev_raw=None):
             "ffmpeg", "-nostdin", "-loglevel", "error",
             "-probesize", "32", "-analyzeduration", "0",
             "-f", "x11grab", "-video_size", f"{w}x{h}", "-i", display,
-            "-frames:v", "1", "-vf", "scale=240:135",
+            # Fit the whole screen into the 119px above the GEEK status bar and leave the
+            # bottom 16px black. The bar is drawn there; scaling to the full 135 covered the taskbar.
+            "-frames:v", "1", "-vf", "scale=240:119:force_original_aspect_ratio=decrease,pad=240:135:(ow-iw)/2:0:black",
             "-pix_fmt", "rgb565le", "-f", "rawvideo", "pipe:1",
         ]
         cxy = (int(pt[0] * 240 / w), int(pt[1] * 135 / h)) if pt is not None else None
