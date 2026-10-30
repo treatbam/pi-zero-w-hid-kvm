@@ -317,6 +317,34 @@ class ServerWsAndThemeTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_usb_mode_is_saved_and_reported(self):
+        path = os.path.join(self.tmp, "usb_mode")
+        saved_file, saved_mode = self.srv_mod.USB_MODE_FILE, dict(self.srv_mod.USB_STATE)
+        self.srv_mod.USB_MODE_FILE = path
+        self.srv_mod.USB_STATE["mode"] = "pc"
+        os.environ["KVM_USB_MODE_APPLY"] = "0"
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            hdrs = {"Content-Type": "application/json", "X-KVM-PIN": self.pin}
+            conn.request("POST", "/api/usb_mode", json.dumps({"mode": "android"}), hdrs)
+            r = conn.getresponse()
+            self.assertEqual(r.status, 202)
+            self.assertEqual(json.loads(r.read())["usb_mode"], "android")
+            self.assertEqual(open(path).read().strip(), "android")
+            conn.request("GET", "/api/status")
+            st = json.loads(conn.getresponse().read())
+            self.assertEqual(st["usb_mode"], "android")
+            conn.request("POST", "/api/usb_mode", json.dumps({"mode": "phone"}), hdrs)
+            bad = conn.getresponse()
+            self.assertEqual(bad.status, 400)
+            bad.read()
+        finally:
+            conn.close()
+            self.srv_mod.USB_MODE_FILE = saved_file
+            self.srv_mod.USB_STATE.clear()
+            self.srv_mod.USB_STATE.update(saved_mode)
+            os.environ.pop("KVM_USB_MODE_APPLY", None)
+
     def test_websocket_auth_ping_and_mouse_dispatch(self):
         s = socket.create_connection(("127.0.0.1", self.port), timeout=5)
         try:

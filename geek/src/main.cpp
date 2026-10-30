@@ -147,6 +147,7 @@ struct Status {
   int8_t ts = -1;                // tailscale: -1 n/a, 0 down, 1 up
   char serialMode[8] = "";
   char mode[8] = "";             // /api/status "mode": hid | term | desktop; "" = Zero too old to say
+  char usbMode[9] = "pc";       // /api/status "usb_mode": pc | android
   char helperState[12] = "";     // /api/status "helper_state": linked | streaming | probing | missing | no_host
   uint8_t uiTheme = 0;           // 0 = slate (default), 1 = braun, 2 = cobalt (synced from /api/status "ui_theme")
   // type-8 extended stats (absent -> NAN / 0)
@@ -228,6 +229,7 @@ SemaphoreHandle_t gLock;
 static const uint32_t PIN_BACKOFF_MS = 180000;
 volatile uint32_t gPinBadAt = 0;
 volatile bool gPinBad = false;
+static volatile bool gUsbFlip = false;   // hold the GEEK button 3 s: flip pc <-> android USB profile
 static bool pinUsable() {
   if (!cfg.pin.length()) return false;
   if (gPinBad && millis() - gPinBadAt < PIN_BACKOFF_MS) return false;
@@ -302,6 +304,7 @@ void pollOnce() {
         if (d["tailscale"].is<const char*>()) s.ts = strcmp(d["tailscale"] | "", "up") == 0 ? 1 : 0;
         copyStr(s.serialMode, sizeof s.serialMode, d["serial_mode"] | "");
         copyStr(s.mode, sizeof s.mode, d["mode"] | "");
+        copyStr(s.usbMode, sizeof s.usbMode, d["usb_mode"] | "pc");
         copyStr(s.helperState, sizeof s.helperState, d["helper_state"] | "");
         const char* ut = d["ui_theme"] | "slate";
         s.uiTheme = strcmp(ut, "braun") == 0 ? 1 : strcmp(ut, "cobalt") == 0 ? 2 : 0;
@@ -467,6 +470,20 @@ void netTask(void*) {
     bool up = WiFi.status() == WL_CONNECTED;
     if (up && !wasUp) last = now - 2001;
     wasUp = up;
+    if (gUsbFlip && pinUsable() && WiFi.status() == WL_CONNECTED) {
+      gUsbFlip = false;
+      HTTPClient http; http.setTimeout(2000); http.setConnectTimeout(1500);
+      http.begin(BASE + "/api/usb_mode");
+      http.addHeader("Content-Type", "application/json");
+      http.addHeader("X-KVM-PIN", cfg.pin);
+      bool android = false;
+      xSemaphoreTake(gLock, portMAX_DELAY);
+      android = strcmp(gStat.usbMode, "android") == 0;
+      xSemaphoreGive(gLock);
+      String body = android ? "{\"mode\":\"pc\"}" : "{\"mode\":\"android\"}";
+      http.POST(body);
+      http.end();
+    }
     if (now - last > 2000) { last = now; pollOnce(); }
     bool pinOk = pinUsable();     // PIN-only endpoints wait out the backoff
     if (gTermOn && pinOk && now - lastTerm > 800) { lastTerm = now; pollTerm(); }
@@ -507,7 +524,7 @@ struct Btn {
 };
 // Double-press detection stays off: it would hold every short press for DBL ms and turn two
 // quick presses (scoreboard -> terminal) into an ignored EV_DOUBLE. Each press is one step.
-Btn bBack{BTN_BACK, false}, bUp{BTN_UP, false}, bDown{BTN_DOWN, false}, bSel{BTN_SELECT, false};
+Btn bBack{BTN_BACK, false, true}, bUp{BTN_UP, false}, bDown{BTN_DOWN, false}, bSel{BTN_SELECT, false};
 
 uint16_t rgb(uint8_t r, uint8_t g, uint8_t b) { return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3); }
 uint16_t mix(uint16_t a, uint16_t b, int t) {
@@ -1723,6 +1740,7 @@ void statusBar(const Status& s, const PcHist& h, uint32_t now) {
   uint16_t gc = rssiC(s.wifi, s.rssi);
   int rw = strlen(rs) * CW, gx = W - 4 - rw - 5 * CW - 7;
   vMark(gx, ty + 1, gc); txt(gx + 7, ty, "GEEK", V_LAB); txtR(W - 4, ty, rs, gc);
+  if (strcmp(s.usbMode, "android") == 0) txt(74, ty, "AND", V_WARN);
 }
 
 enum Page { P_PC, P_CORES, P_NET, P_ZG, P_DESK, P_TERM, NPAGES };
@@ -1909,6 +1927,7 @@ void loop() {
       else { static Status st; xSemaphoreTake(gLock, portMAX_DELAY); st = gStat; xSemaphoreGive(gLock); go(nextVisible(page, st)); }
       gAutoMs = now;
     } else if (e == EV_LONG) { gAuto = !gAuto; gAutoMs = now; }
+    else if (e == EV_VLONG) gUsbFlip = true;
   }
   static uint32_t lastPaint = 0;
   if (now - lastPaint >= 200) { lastPaint = now; paint(); }

@@ -226,6 +226,25 @@ applyTheme(currentTheme, false);
 document.querySelectorAll('[data-theme-pick]').forEach(btn => {
   btn.onclick = () => applyTheme(btn.dataset.themePick, true);
 });
+
+function showUsbMode(mode) {
+  document.querySelectorAll('[data-usb-pick]').forEach(btn => {
+    btn.classList.toggle('chip-on', btn.dataset.usbPick === mode);
+  });
+}
+document.querySelectorAll('[data-usb-pick]').forEach(btn => {
+  btn.onclick = async () => {
+    const mode = btn.dataset.usbPick;
+    const r = await post('/api/usb_mode', {mode});
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) {
+      showUsbMode(mode);
+      statusNote(mode === 'android' ? 'USB: Android keyboard and mouse' : 'USB: PC gadget');
+    } else {
+      statusNote(`USB mode: ${j.error || r.status}`);
+    }
+  };
+});
 syncLayoutUI();
 
 // ---- Low-Latency WebSocket Transport (/api/ws) + HTTP/1.1 Fallback ----------------------
@@ -1572,6 +1591,7 @@ async function poll() {
       openPinDialog('Wrong PIN — please re-enter:');
     }
     if (s.ui_theme && s.ui_theme !== currentTheme) applyTheme(s.ui_theme, false);
+    if (s.usb_mode) showUsbMode(s.usb_mode);
 
     if (s.host_suspended) {
       pill.textContent = 'SLEEP (S3)';

@@ -6,30 +6,49 @@
 set -euo pipefail
 G=/sys/kernel/config/usb_gadget/kvm
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# pc: keyboard, mouse, power keys, serial, setup disk. android: keyboard and mouse only,
+# so a phone will claim the device instead of ignoring the extra interfaces.
+MODE_FILE="${KVM_USB_MODE_FILE:-/var/lib/kvm/usb_mode}"
+MODE=pc
+if [ -f "$MODE_FILE" ]; then
+  m=$(tr -d ' \t\r\n' < "$MODE_FILE" || true)
+  [ "$m" = android ] && MODE=android
+fi
+WANT="PiZeroW HID KVM"
+[ "$MODE" = android ] && WANT="PiZeroW HID Android"
 modprobe libcomposite
 
+teardown() {
+  [ -d "$G" ] || return 0
+  echo "" > "$G/UDC" 2>/dev/null || true
+  rm -f "$G"/configs/c.1/hid.usb* "$G"/configs/c.1/acm.usb* "$G"/configs/c.1/mass_storage.usb*
+  rmdir "$G"/configs/c.1/strings/0x409 "$G"/configs/c.1 \
+    "$G"/functions/hid.usb* "$G"/functions/acm.usb* "$G"/functions/mass_storage.usb* "$G"/strings/0x409 2>/dev/null || true
+  rmdir "$G" 2>/dev/null || true
+}
 wait_nodes() {  # /dev/hidg* appear asynchronously after bind; retry instead of racing chmod
-  for _ in $(seq 1 50); do [ -c /dev/hidg0 ] && [ -c /dev/hidg1 ] && [ -c /dev/hidg2 ] && return 0; sleep 0.1; done
-  echo "ERROR: /dev/hidg0 or /dev/hidg1 /dev/hidg2 missing after bind" >&2; return 1
+  for _ in $(seq 1 50); do
+    [ -c /dev/hidg0 ] && [ -c /dev/hidg1 ] || { sleep 0.1; continue; }
+    [ "$MODE" = android ] || [ -c /dev/hidg2 ] || { sleep 0.1; continue; }
+    return 0
+  done
+  echo "ERROR: hid gadget nodes missing after bind" >&2; return 1
 }
 finish() {
   wait_nodes
   # Kept as before (services run as root). TODO: udev rule KERNEL=="hidg*" GROUP="kvm" MODE="0660".
-  chmod 666 /dev/hidg0 /dev/hidg1 /dev/hidg2
-  [ -c /dev/ttyGS0 ] || echo "WARN: /dev/ttyGS0 missing (host terminal off; HID still works)" >&2
-  echo "gadget up: $(cat "$G/UDC")"; exit 0
+  chmod 666 /dev/hidg0 /dev/hidg1
+  [ -c /dev/hidg2 ] && chmod 666 /dev/hidg2
+  if [ "$MODE" = pc ]; then
+    [ -c /dev/ttyGS0 ] || echo "WARN: /dev/ttyGS0 missing (host terminal off; HID still works)" >&2
+  fi
+  echo "gadget up ($MODE): $(cat "$G/UDC")"; exit 0
 }
 if [ -d "$G" ]; then
-  # Existing gadget dir is only OK if all function links exist and it's bound to a UDC.
-  # A gadget from an older or interrupted install is torn down and rebuilt so
-  # the power keys and serial port exist; the host re-enumerates the device once.
-  if [ ! -L "$G/configs/c.1/hid.usb0" ] || [ ! -L "$G/configs/c.1/hid.usb1" ] || \
-     [ ! -L "$G/configs/c.1/hid.usb2" ] || [ ! -L "$G/configs/c.1/acm.usb0" ]; then
-    echo "" > "$G/UDC" 2>/dev/null || true
-    rm -f "$G"/configs/c.1/hid.usb* "$G"/configs/c.1/acm.usb* "$G"/configs/c.1/mass_storage.usb*
-    rmdir "$G"/configs/c.1/strings/0x409 "$G"/configs/c.1 \
-      "$G"/functions/hid.usb* "$G"/functions/acm.usb* "$G"/functions/mass_storage.usb* "$G"/strings/0x409 2>/dev/null || true; rmdir "$G" || true
-  elif [ -n "$(cat "$G/UDC" 2>/dev/null)" ]; then finish; fi
+  cur=$(cat "$G/strings/0x409/product" 2>/dev/null || true)
+  bound=$(cat "$G/UDC" 2>/dev/null || true)
+  if [ "$cur" = "$WANT" ] && [ -n "$bound" ]; then finish; fi
+  teardown
 fi
 if [ -d "$G" ]; then
   UDC_NAME=$(ls /sys/class/udc 2>/dev/null | head -n1 || true)
@@ -38,18 +57,29 @@ if [ -d "$G" ]; then
 fi
 mkdir -p $G && cd $G
 echo 0x1d6b > idVendor   # Linux Foundation (dev/test VID; TODO: fine for hobby, not for distribution)
-echo 0x0104 > idProduct  # Multifunction Composite Gadget
+# Different product id per profile so a host does not keep the other profile's driver binding.
+if [ "$MODE" = android ]; then echo 0x0105 > idProduct; else echo 0x0104 > idProduct; fi
 echo 0x0100 > bcdDevice; echo 0x0200 > bcdUSB
-# Misc / IAD class so Windows binds the CDC ACM pair (usbser.sys) inside this composite device.
-echo 0xEF > bDeviceClass; echo 0x02 > bDeviceSubClass; echo 0x01 > bDeviceProtocol
+if [ "$MODE" = android ]; then
+  echo 0x00 > bDeviceClass; echo 0x00 > bDeviceSubClass; echo 0x00 > bDeviceProtocol
+else
+  # Misc / IAD class so Windows binds the CDC ACM pair (usbser.sys) inside this composite device.
+  echo 0xEF > bDeviceClass; echo 0x02 > bDeviceSubClass; echo 0x01 > bDeviceProtocol
+fi
 mkdir -p strings/0x409
 echo "0001" > strings/0x409/serialnumber
 echo "DIY" > strings/0x409/manufacturer
-echo "PiZeroW HID KVM" > strings/0x409/product
+echo "$WANT" > strings/0x409/product
 mkdir -p configs/c.1/strings/0x409
-echo "HID+ACM" > configs/c.1/strings/0x409/configuration
-echo 0xa0 > configs/c.1/bmAttributes   # bus-powered + USB remote wakeup for S3 sleep wake
-echo 250 > configs/c.1/MaxPower
+if [ "$MODE" = android ]; then
+  echo "HID" > configs/c.1/strings/0x409/configuration
+  echo 0xc0 > configs/c.1/bmAttributes   # self-powered: the phone is not asked to run the Zero
+  echo 50 > configs/c.1/MaxPower
+else
+  echo "HID+ACM" > configs/c.1/strings/0x409/configuration
+  echo 0xa0 > configs/c.1/bmAttributes   # bus-powered + USB remote wakeup for S3 sleep wake
+  echo 250 > configs/c.1/MaxPower
+fi
 
 # Keyboard: standard boot keyboard, 8-byte report [mods,0,k1..k6]
 mkdir -p functions/hid.usb0
@@ -61,22 +91,22 @@ mkdir -p functions/hid.usb1
 echo 2 > functions/hid.usb1/protocol; echo 1 > functions/hid.usb1/subclass; echo 4 > functions/hid.usb1/report_length
 echo -ne '\x05\x01\x09\x02\xa1\x01\x09\x01\xa1\x00\x05\x09\x19\x01\x29\x03\x15\x00\x25\x01\x95\x03\x75\x01\x81\x02\x95\x01\x75\x05\x81\x03\x05\x01\x09\x30\x09\x31\x09\x38\x15\x81\x25\x7f\x75\x08\x95\x03\x81\x06\xc0\xc0' > functions/hid.usb1/report_desc
 
-# System Control: 1-byte report, bit0=Power Down, bit1=Sleep, bit2=Wake (Generic Desktop 0x81-0x83).
-# The host OS decides what Power Down does (usually a clean shutdown or its power-button action).
-mkdir -p functions/hid.usb2
-echo 0 > functions/hid.usb2/protocol; echo 0 > functions/hid.usb2/subclass; echo 1 > functions/hid.usb2/report_length
-echo -ne '\x05\x01\x09\x80\xa1\x01\x19\x81\x29\x83\x15\x00\x25\x01\x75\x01\x95\x03\x81\x02\x95\x05\x81\x03\xc0' > functions/hid.usb2/report_desc
-
-# CDC ACM serial: /dev/ttyGS0 here, ttyACM0 / COMx on the host. kvm-web reads it for /api/term.
-# Mouse and power keys never get OUT reports, so drop their OUT endpoints (where the kernel
-# supports it) to leave room in the dwc2 endpoint budget for ACM's 3 endpoints.
-mkdir -p functions/acm.usb0
-for f in hid.usb1 hid.usb2; do [ -e functions/$f/no_out_endpoint ] && echo 1 > functions/$f/no_out_endpoint || true; done
-
 ln -s functions/hid.usb0 configs/c.1/
 ln -s functions/hid.usb1 configs/c.1/
-ln -s functions/hid.usb2 configs/c.1/
-ln -s functions/acm.usb0 configs/c.1/
+if [ "$MODE" = pc ]; then
+  # System Control: 1-byte report, bit0=Power Down, bit1=Sleep, bit2=Wake (Generic Desktop 0x81-0x83).
+  # The host OS decides what Power Down does (usually a clean shutdown or its power-button action).
+  mkdir -p functions/hid.usb2
+  echo 0 > functions/hid.usb2/protocol; echo 0 > functions/hid.usb2/subclass; echo 1 > functions/hid.usb2/report_length
+  echo -ne '\x05\x01\x09\x80\xa1\x01\x19\x81\x29\x83\x15\x00\x25\x01\x75\x01\x95\x03\x81\x02\x95\x05\x81\x03\xc0' > functions/hid.usb2/report_desc
+  # CDC ACM serial: /dev/ttyGS0 here, ttyACM0 / COMx on the host. kvm-web reads it for /api/term.
+  # Mouse and power keys never get OUT reports, so drop their OUT endpoints (where the kernel
+  # supports it) to leave room in the dwc2 endpoint budget for ACM's 3 endpoints.
+  mkdir -p functions/acm.usb0
+  for f in hid.usb1 hid.usb2; do [ -e functions/$f/no_out_endpoint ] && echo 1 > functions/$f/no_out_endpoint || true; done
+  ln -s functions/hid.usb2 configs/c.1/
+  ln -s functions/acm.usb0 configs/c.1/
+fi
 
 # Optional read-only KVM-SETUP FAT12 pairing drive (mass_storage.usb0).
 # If dwc2 runs out of hardware IN endpoints on bind, we automatically drop it so HID+ACM always binds.
@@ -84,15 +114,20 @@ SETUP_IMG="$HERE/kvm-setup.img"
 if [ ! -f "$SETUP_IMG" ] && [ -f "$HERE/build_setup_img.py" ]; then
   python3 "$HERE/build_setup_img.py" /run/kvm-setup.img >/dev/null 2>&1 && SETUP_IMG=/run/kvm-setup.img || true
 fi
-if [ "${KVM_SETUP_DRIVE:-1}" != "0" ] && [ -f "$SETUP_IMG" ]; then
+if [ "$MODE" = pc ] && [ "${KVM_SETUP_DRIVE:-1}" != "0" ] && [ -f "$SETUP_IMG" ]; then
   if mkdir -p functions/mass_storage.usb0 2>/dev/null; then
     echo 0 > functions/mass_storage.usb0/stall 2>/dev/null || true
     echo 1 > functions/mass_storage.usb0/lun.0/ro
     echo 1 > functions/mass_storage.usb0/lun.0/removable
     echo 1 > functions/mass_storage.usb0/lun.0/nofua 2>/dev/null || true
     echo "DIY      KVM-SETUP" > functions/mass_storage.usb0/lun.0/inquiry_string 2>/dev/null || true
-    echo "$SETUP_IMG" > functions/mass_storage.usb0/lun.0/file
-    ln -s functions/mass_storage.usb0 configs/c.1/
+    # A missing or empty image used to abort the whole gadget (set -e) and take the console with it.
+    if echo "$SETUP_IMG" > functions/mass_storage.usb0/lun.0/file; then
+      ln -s functions/mass_storage.usb0 configs/c.1/
+    else
+      echo "WARN: setup image rejected; HID+ACM only" >&2
+      rm -rf functions/mass_storage.usb0
+    fi
   fi
 fi
 

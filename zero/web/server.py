@@ -88,6 +88,9 @@ HISTORY = history.NetHistory(os.environ.get("KVM_DATA_DIR", "/var/lib/kvm"),
 STATS = hostview.StatsKeeper(hostview.shared, min_s=float(os.environ.get("KVM_STATS_MIN_S", "10")))
 THEMES = ("slate", "braun", "cobalt")
 THEME_FILE = os.path.join(os.environ.get("KVM_DATA_DIR", "/var/lib/kvm"), "ui_theme.txt")
+USB_MODES = ("pc", "android")
+USB_MODE_FILE = os.environ.get("KVM_USB_MODE_FILE",
+    os.path.join(os.environ.get("KVM_DATA_DIR", "/var/lib/kvm"), "usb_mode"))
 
 def _load_theme():
     env_t = os.environ.get("KVM_THEME", "").strip()
@@ -112,7 +115,38 @@ def _save_theme(t):
     except OSError:
         pass
 
+def _load_usb_mode():
+    try:
+        m = open(USB_MODE_FILE).read().strip()
+        if m in USB_MODES:
+            return m
+    except OSError:
+        pass
+    return "pc"
+
+def _save_usb_mode(m):
+    USB_STATE["mode"] = m
+    try:
+        if os.path.isdir(os.path.dirname(USB_MODE_FILE)):
+            tmp = USB_MODE_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(m + "\n")
+            os.replace(tmp, USB_MODE_FILE)
+    except OSError:
+        pass
+
+def apply_usb_mode():
+    """Rebind the gadget after the HTTP reply. Skipped in tests (KVM_USB_MODE_APPLY=0)."""
+    if os.environ.get("KVM_USB_MODE_APPLY", "1") == "0":
+        return
+    time.sleep(0.4)
+    cmd = ["systemctl", "restart", "hid-gadget"]
+    if os.geteuid() != 0:
+        cmd = ["sudo", "-n"] + cmd
+    subprocess.run(cmd, check=False)
+
 UI_STATE = {"theme": _load_theme()}
+USB_STATE = {"mode": _load_usb_mode()}
 AUTOLAUNCH = autolaunch.AutoLauncher(hostview.shared, term.send_ctl, term.send_boot_frame)
 
 def autolaunch_loop():
@@ -243,6 +277,10 @@ def validate(path, body):
         t = body.get("theme")
         if t not in THEMES: raise ValueError('theme must be "slate", "braun", or "cobalt"')
         return (t,)
+    if path == "/api/usb_mode":
+        m = body.get("mode")
+        if m not in USB_MODES: raise ValueError('mode must be "pc" or "android"')
+        return (m,)
     if path == "/api/bootstrap":
         method = body.get("method", "probe")
         if method == "probe":
@@ -395,7 +433,7 @@ class H(SimpleHTTPRequestHandler):
                 al["helper_arch"] = None
                 since, hist = None, None
             return self._json(200, {**st, "ip": self._my_ip(), **sysstats(), **pc, **al,
-                                    "ui_theme": UI_STATE["theme"], "mode": mode,
+                                    "ui_theme": UI_STATE["theme"], "usb_mode": USB_STATE["mode"], "mode": mode,
                                     "net_hist_since": since, "net_hist": hist, **sm})
         u = urlsplit(self.path)
         if u.path == "/api/ws":
@@ -530,6 +568,11 @@ class H(SimpleHTTPRequestHandler):
         if self.path == "/api/theme":
             _save_theme(args[0])
             return self._json(200, {"ok": True, "ui_theme": args[0]})
+        if self.path == "/api/usb_mode":
+            _save_usb_mode(args[0])
+            threading.Thread(target=apply_usb_mode, daemon=True).start()
+            return self._json(202, {"ok": True, "usb_mode": args[0],
+                                    "note": "keyboard and mouse re-plug in a moment"})
         if self.path == "/api/bootstrap":
             method, os_name = args
             if method == "probe":

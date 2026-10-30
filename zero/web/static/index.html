@@ -2055,6 +2055,15 @@ dialog::backdrop {
   </div>
 
   <div class="dlg-sec">
+    <h3>USB Gadget</h3>
+    <p style="margin:0 0 6px;color:var(--grey);font-size:12px">PC keeps serial, power keys, and the setup disk. Android is keyboard and mouse only, so a phone will use them. The cable re-plugs either way. Hold the GEEK button for 3 seconds to switch there too.</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+      <button type="button" data-usb-pick="pc" class="chip-on">PC</button>
+      <button type="button" data-usb-pick="android">Android</button>
+    </div>
+  </div>
+
+  <div class="dlg-sec">
     <h3>Target Host Actions</h3>
     <div class="dlg-grid">
       <button type="button" data-pwr="host:wake:Wake suspended host">☀ Wake Host (S3)</button>
@@ -2105,6 +2114,6 @@ dialog::backdrop {
   </form>
 </dialog>
 
-<script src="app.js?v=20261029c"></script>
+<script src="app.js?v=20261030a"></script>
 </body>
 </html>
