@@ -685,9 +685,10 @@ document.getElementById('clip-pull').onclick = async () => {
 
 function showLeds(leds) {
   const l = leds || {};
-  document.getElementById('led-num').className = 'led' + (l.num ? ' on' : '');
-  document.getElementById('led-caps').className = 'led' + (l.caps ? ' on' : '');
-  document.getElementById('led-scroll').className = 'led' + (l.scroll ? ' on' : '');
+  const set = (id, on) => { const el = document.getElementById(id); if (el) el.className = 'led' + (on ? ' on' : ''); };
+  set('led-num', l.num);
+  set('led-caps', l.caps);
+  set('led-scroll', l.scroll);
 }
 
 async function runCapsPing() {
