@@ -176,7 +176,7 @@ struct PcHist {
   float temp[HIST], load[HIST], mem[HIST], rx[HIST], tx[HIST];
   float cpuT[HIST], gpuT[HIST], nvT[HIST];   // type-8 sensor temps, NAN when absent
   float piLoad[HIST];                        // the Zero's own load1, NAN when the poll failed
-  float geekRssi[HIST];                      // GEEK Wi-Fi dBm, NAN when Wi-Fi is down
+  float geekHeap[HIST];                      // GEEK free heap, KB. Local, so a failed poll still samples it.
   int n = 0, next = 0;
   uint32_t lastMs = 0;
   bool had = false;
@@ -205,7 +205,7 @@ static void pushHist(const Status& s, bool live) {
   gHist.gpuT[gHist.next] = live ? s.pcGpuT : NAN;
   gHist.nvT[gHist.next] = live ? s.pcNvmeT : NAN;
   gHist.piLoad[gHist.next] = s.api ? s.load1 : NAN;
-  gHist.geekRssi[gHist.next] = s.wifi && s.rssi ? (float)s.rssi : NAN;
+  gHist.geekHeap[gHist.next] = (float)(ESP.getFreeHeap() / 1024);
   gHist.next = (gHist.next + 1) % HIST;
   if (gHist.n < HIST) gHist.n++;
   if (live) {
@@ -1196,8 +1196,8 @@ void ftH(int x, int y, const char* s, bool dim, const GFXfont* f) {
 }
 void txtS(int x, int y, const char* s, uint16_t c) { txt(x + 1, y + 1, s, V_SHADOW); txt(x, y, s, c); }
 void txtSR(int right, int y, const char* s, uint16_t c) { txtS(right - (int)strlen(s) * CW, y, s, c); }
-// Cell title in the slim face, same family as the process name. y = baseline.
-void vTag(int x, int y, const char* s) { ft(x, y, s, V_LAB, &FreeSans9pt7b); }
+// Cell title, one step under the 9pt face and a narrower pitch so it stays inside the cell. y = top.
+void vTag(int x, int y, const char* s) { txt(x, y, s, V_LAB); }
 void vDot(int x, int y, uint16_t c) { fb.fillCircle(x, y, 2, c); }
 void vMark(int x, int y, uint16_t c) { fb.fillRect(x, y, 4, 4, c); }   // status square, same on both ends of the bar
 // Pill for the pages you can step through. The 5th (and 6th) mark is the desktop or terminal
@@ -1228,26 +1228,6 @@ void vSpark(int x, int y, int w, int h, const float* ser, int n, int next, float
     uint16_t cc = !dim && t >= 0.55f ? vHeat(t) : c;   // a peak column takes the heat ramp, whole height
     for (int yy = top + 1; yy < y + h; yy++) fb.drawPixel(cx, yy, mix(mix(V_BG, cc, 150), V_BG, (yy - top) * 180 / h));
     fb.drawPixel(cx, top, dim ? c : t >= 0.55f ? vHeat(t) : mix(c, V_WHITE, 60));
-  }
-}
-// Fading heat ramp for the core bars: red at the top, yellow, then green, gone at the bottom.
-void fadeInk(float pos, uint16_t& col, int& alpha) {
-  const VTheme& vt = VT();
-  if (pos < 0.f) pos = 0.f;
-  if (pos > 1.f) pos = 1.f;
-  if (pos < 0.34f) {
-    float u = pos / 0.34f;
-    col = mix(vt.bad, vt.warn, (int)(u * 255.f));
-    alpha = 140 - (int)(u * 38.f);
-  } else if (pos < 0.62f) {
-    float u = (pos - 0.34f) / 0.28f;
-    col = mix(vt.warn, vt.ok, (int)(u * 255.f));
-    alpha = 102 - (int)(u * 46.f);
-  } else {
-    float u = (pos - 0.62f) / 0.38f;
-    if (u > 1.f) u = 1.f;
-    col = vt.ok;
-    alpha = 56 - (int)(u * 56.f);
   }
 }
 // Heat colour for a level 0..1. Smooth green to yellow, then orange, then red.
@@ -1297,12 +1277,17 @@ void vShadowLine(int x, int y, int w, int h, const float* ser, int n, int next,
 // low, yellow, red high), strongest just under the line and fading toward the bottom. The line
 // is a brighter tint of the same colours, on a 1px dark shadow unless `shadowLine` is off.
 // Newest sample at the right edge. `hang` draws the fill down from the top, so peaks sit low.
+// `wash` is 255 for the temp and load graphs. Lower values fade the whole graph (fill and line)
+// so figures drawn on top of it stay readable.
 void vHeatGraph(int x, int y, int w, int h, const float* ser, int n, int next, float lo, float hi,
                 bool logScale, bool dim, bool invert = false, uint16_t ground = 0, bool shadowLine = true,
-                bool hang = false, uint16_t solid = 0) {
+                bool hang = false, uint16_t solid = 0, int wash = 255) {
   if (n <= 0 || w < 2 || h < 2) return;
   if (!ground) ground = VT().cell;
-  const int topA = dim ? 110 : 214, botA = dim ? 36 : 78;
+  if (wash < 0) wash = 0;
+  if (wash > 255) wash = 255;
+  int topA = dim ? 110 : 214, botA = dim ? 36 : 78;
+  if (wash < 255) { topA = topA * wash / 255; botA = botA * wash / 255; }
   int start = (n < HIST) ? 0 : next, cols = min(n, w);
   auto at = [&](int i, float& t) {
     float v = ser[(start + n - cols + i) % HIST];
@@ -1330,7 +1315,9 @@ void vHeatGraph(int x, int y, int w, int h, const float* ser, int n, int next, f
       if (!at(i, t)) { prevX = -1; continue; }
       int px = x + w - cols + i;
       int py = y + (hang ? edgeOf(t) : h - 1 - edgeOf(t));
-      uint16_t c = pass ? (dim ? V_GREY : (solid ? solid : mix(heatInk(t, invert), 0xFFFF, 36))) : V_SHADOW;
+      uint16_t stroke = dim ? V_GREY : (solid ? solid : mix(heatInk(t, invert), 0xFFFF, 36));
+      if (wash < 255) stroke = mix(ground, dim ? V_GREY : (solid ? solid : heatInk(t, invert)), wash + 36);
+      uint16_t c = pass ? stroke : V_SHADOW;
       int dy = pass ? 0 : 1;
       if (prevX >= 0) fb.drawLine(prevX, min(y + h - 1, prevY + dy), px, min(y + h - 1, py + dy), c);
       else fb.drawPixel(px, min(y + h - 1, py + dy), c);
@@ -1394,6 +1381,8 @@ uint16_t hidC(const Status& s) {
   return s.host && strcmp(s.udc, "configured") == 0 ? V_OK : V_WARN;
 }
 uint16_t rssiC(bool up, int dbm) { return !up || !dbm ? V_BAD : dbm >= -65 ? V_OK : dbm >= -78 ? V_WARN : V_BAD; }
+// Status-poll round trip. Same three bands as the Zero's Wi-Fi row: green, yellow, red.
+uint16_t pingC(uint32_t ms) { return ms <= 200 ? V_OK : ms <= 800 ? V_WARN : V_BAD; }
 uint16_t ageC(const Status& s, uint32_t now) {
   if (!s.lastOkMs) return V_BAD;
   uint32_t a = now - s.lastOkMs; return a < 4000 ? V_OK : a <= STALE_MS ? V_WARN : V_BAD;
@@ -1414,7 +1403,7 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   vCell(2, 2, HW, 53, false);
   if (have) vHeatGraph(2, 3, HW, 52, ts, h.n, h.next, 40.f, 90.f, false, stale);
   if (have) {
-    vTag(6, 16, "Temp");
+    vTag(6, 4, "Temp");
     snprintf(a, sizeof a, "%.0f", t);
     ftH(6, 48, a, stale, &FreeSans24pt7b);
     int dx = 6 + ftW(&FreeSans24pt7b, a) + 3;
@@ -1441,7 +1430,7 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
     if (loadHi < 4.f) loadHi = 4.f;
     vCell(RX, 2, RW, 53, false);
     vHeatGraph(RX, 3, RW, 52, h.load, h.n, h.next, 0.f, loadHi, false, stale);
-    vTag(RX + 5, 16, "Cpu load");
+    vTag(RX + 5, 4, "Cpu load");
     fmtLoad(a, sizeof a, s.pcLoad); snprintf(b, sizeof b, "%s", a);
     ftH(RX + 5, 34, b, stale, &FreeSans12pt7b);
     if (s.pcTopProc[0]) {
@@ -1461,23 +1450,23 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
     }
   }
 
-  // Memory, then the drive. Figures only: the name and used/total. No history.
+  // Memory, then the drive. The name and the /total are the narrow face; the used figure stays 9pt.
   const int NX = 70;
   auto usedTile = [&](int cy, const char* lab, double u, double tot, int pct) {
     vCell(2, cy, NX - 4, 29, false);
     char name[12];
     strlcpy(name, lab, sizeof name);
-    while (name[0] && ftW(&FreeSans9pt7b, name) > NX - 12) name[strlen(name) - 1] = 0;
-    vTag(6, cy + 13, name);
+    while (name[0] && (int)strlen(name) * CW > NX - 14) name[strlen(name) - 1] = 0;
+    vTag(4, cy + 2, name);
     bool bytes = linked && !isnan(u) && !isnan(tot) && tot > 0;
     if (bytes) {
       char t2[12];
       vFmtSize(a, sizeof a, u, false); snprintf(t2, sizeof t2, "/"); vFmtSize(t2 + 1, sizeof t2 - 1, tot, true);
-      ftS(6, cy + 25, a, stale ? V_GREY : V_WHITE, &FreeSans9pt7b);
-      ft(6 + ftW(&FreeSans9pt7b, a) + 2, cy + 25, t2, V_GREY, &FreeSans9pt7b);
+      ftS(4, cy + 25, a, stale ? V_GREY : V_WHITE, &FreeSans9pt7b);
+      txt(4 + ftW(&FreeSans9pt7b, a) + 1, cy + 18, t2, V_GREY);
     } else {
       fmtMem(a, sizeof a, pct);
-      ftS(6, cy + 25, a, pct < 0 || stale ? V_GREY : V_WHITE, &FreeSans9pt7b);
+      ftS(4, cy + 25, a, pct < 0 || stale ? V_GREY : V_WHITE, &FreeSans9pt7b);
     }
   };
   char dlab[12] = "Disk";
@@ -1490,13 +1479,15 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   const int NW = W - 2 - NX;
   vCell(NX, 57, NW, 60, false);
   uint16_t upC = stale ? V_GREY : VT().bad, dnC = stale ? V_GREY : VT().ok;
-  vHeatGraph(NX, 58, NW, 59, h.tx, h.n, h.next, 0, 1, true, stale, false, 0, true, true, upC);
-  vHeatGraph(NX, 58, NW, 59, h.rx, h.n, h.next, 0, 1, true, stale, false, 0, true, false, dnC);
+  // Wash is well under the temp and load graphs so the rates and the interface name stay readable.
+  const int netWash = 64;
+  vHeatGraph(NX, 58, NW, 59, h.tx, h.n, h.next, 0, 1, true, stale, false, 0, true, true, upC, netWash);
+  vHeatGraph(NX, 58, NW, 59, h.rx, h.n, h.next, 0, 1, true, stale, false, 0, true, false, dnC, netWash);
   const char* ifn = s.netIf[0] ? s.netIf : "Net";
   char ifb[16]; strlcpy(ifb, ifn, sizeof ifb);
-  const GFXfont* nf = &FreeSans12pt7b;
+  const GFXfont* nf = &FreeSans9pt7b;
   while (ifb[0] && ftW(nf, ifb) > NW / 2) ifb[strlen(ifb) - 1] = 0;
-  ft(NX + 4, 74, ifb, V_LAB, nf);
+  ft(NX + 4, 70, ifb, V_LAB, nf);
   float rx = linked ? s.pcRx : NAN, tx = linked ? s.pcTx : NAN;
   vFmtRate(a, sizeof a, rx); vFmtRate(b, sizeof b, tx);
   auto chev = [](int x, int tip, bool down, uint16_t c) {
@@ -1505,8 +1496,8 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   };
   int bw = (int)strlen(b) * CW, aw = (int)strlen(a) * CW;
   int bx = W - 4 - bw, ax = W - 4 - aw;
-  chev(bx - 5, 80, false, upC); txt(bx, 76, b, isnan(tx) ? V_GREY : upC);
-  chev(ax - 5, 96, true, dnC);  txt(ax, 92, a, isnan(rx) ? V_GREY : dnC);
+  chev(bx - 5, 80, false, upC); txtS(bx, 76, b, isnan(tx) ? V_GREY : upC);
+  chev(ax - 5, 96, true, dnC);  txtS(ax, 92, a, isnan(rx) ? V_GREY : dnC);
 }
 
 void drawZg(const Status& s, const PcHist& h, uint32_t now) {
@@ -1525,7 +1516,9 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
   ftS(L, 36, s.api ? "HID" : "--", stale || !s.api ? V_GREY : V_WHITE, &FreeSans18pt7b);
   uint16_t val = stale ? V_GREY : V_WHITE;
   const char* zip = s.tsIp[0] ? s.tsIp : s.ip;
-  txt(L, 42, "load", V_LAB); fmtLoad(a, sizeof a, s.api ? s.load1 : NAN); txtR(R, 42, a, val);
+  fmtDbm(a, sizeof a, s.api ? s.zRssi : 0);
+  uint16_t wc = (!s.api || stale || !s.zRssi) ? V_GREY : rssiC(true, s.zRssi);
+  txt(L, 42, "wifi", V_LAB); txtR(R, 42, a, wc);
   txt(L, 52, "temp", V_LAB); fmtTemp(a, sizeof a, s.api ? s.temp : NAN);
   txtR(R, 52, a, stale || !s.api || isnan(s.temp) ? V_GREY : vHeat(vT(s.temp)));
   txt(L, 62, "up", V_LAB); vFmtUp(a, sizeof a, s.api ? s.upS : -1); txtR(R, 62, a, val);
@@ -1537,7 +1530,7 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
     const int CY = 82, CH = 32;
     vCell(x, CY, w, CH, false);
     vHeatGraph(x, CY + 1, w, CH - 1, ser, h.n, h.next, lo, hi, false, dim, invert, 0, false);
-    vTag(x + 4, CY + 14, lab);
+    vTag(x + 4, CY + 6, lab);
     ftR(x + w - 4, CY + 16, val, dim ? V_GREY : 0xFFFF, &FreeSans9pt7b);
   };
   fmtLoad(a, sizeof a, s.api ? s.load1 : NAN);
@@ -1551,7 +1544,7 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
   txt(L + ftW(&FreeSans18pt7b, a) + 3, 29, "dBm", V_LAB);
   txt(L, 42, "ping", V_LAB);
   if (s.api) snprintf(a, sizeof a, "%ums", (unsigned)s.latencyMs); else strcpy(a, "--");
-  txtR(R, 42, a, s.api ? V_WHITE : V_GREY);
+  txtR(R, 42, a, !s.api || stale ? V_GREY : pingC(s.latencyMs));
   auto k = [](char* o, size_t n, uint32_t v) { if (v >= 10000) snprintf(o, n, "%.1fk", v / 1000.f); else snprintf(o, n, "%u", (unsigned)v); };
   txt(L, 52, "link", V_LAB);
   if (s.polls) {
@@ -1560,8 +1553,9 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
   } else txtR(R, 52, "--", V_GREY);
   txt(L, 62, "up", V_LAB); vFmtUp(a, sizeof a, (long)(millis() / 1000)); txtR(R, 62, a, V_WHITE);
   txt(L, 72, "ip", V_LAB); txtR(R, 72, s.wifi ? s.geekIp : "--", s.wifi ? V_WHITE : V_GREY);
-  if (s.wifi && s.rssi) snprintf(a, sizeof a, "%d", s.rssi); else strcpy(a, "--");
-  histCell(L - 2, R - L + 4, "Wifi", a, h.geekRssi, -90.f, -40.f, true, !s.wifi);
+  snprintf(a, sizeof a, "%uK", (unsigned)(ESP.getFreeHeap() / 1024));
+  // Free heap: 160K is a comfortable top (green), 20K is tight (red).
+  histCell(L - 2, R - L + 4, "Heap", a, h.geekHeap, 20.f, 160.f, true, false);
 }
 
 // v2 page 2: per-core bars in a recessed well on the left, busiest processes on a zebra-striped
@@ -1583,16 +1577,21 @@ void drawCores(const Status& s, uint32_t now) {
       int lo = b * per, hi = min(n, lo + per), acc = 0;
       for (int i = lo; i < hi; i++) acc += s.coresAll[i];
       float v = acc / (float)(hi - lo) / 100.f;
+      if (v < 0.f) v = 0.f;
+      if (v > 1.f) v = 1.f;
       int x0 = X + b * (BWID + GAP);
-      fb.fillRect(x0, TOP, BWID, BOT - TOP + 1, V_BG);
-      int ht = (int)((BOT - TOP) * v + 0.5f);
       int span = BOT - TOP;
-      for (int y = BOT - ht; y <= BOT; y++) {
-        float pos = span > 0 ? (y - TOP) / (float)span : 1.f;
-        uint16_t col; int alpha;
-        fadeInk(pos, col, alpha);
-        if (stale) alpha = alpha * 2 / 5;
-        fb.drawFastHLine(x0, y, BWID, mix(V_BG, col, alpha));
+      fb.fillRect(x0, TOP, BWID, span + 1, V_BG);
+      int ht = (int)(span * v + 0.5f);
+      if (v > 0.f && ht < 2) ht = 2;
+      if (ht > span + 1) ht = span + 1;
+      if (ht > 0) {
+        // Same heat colour as the temp and load columns, solid so a light core still reads.
+        uint16_t col = heatInk(v, false);
+        if (stale) col = mix(V_BG, col, 120);
+        int y0 = BOT - ht + 1;
+        fb.fillRect(x0, y0, BWID, ht, col);
+        fb.drawFastHLine(x0, y0, BWID, mix(col, 0xFFFF, 36));
       }
     }
   }
