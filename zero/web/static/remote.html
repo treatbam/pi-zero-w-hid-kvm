@@ -2,8 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-  <title>KVM Wireless Remote</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0f17">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>KVM Mobile Remote</title>
   <style>
     :root {
       --bg: #0b0f17;
@@ -15,8 +18,17 @@
       --btn-bg: #1e293b;
       --btn-active: #0284c7;
       --danger: #ef4444;
+      --ok: #22c55e;
+      --warn: #f59e0b;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+    }
     body {
       background: var(--bg);
       color: var(--text);
@@ -26,6 +38,7 @@
       height: 100dvh;
       overflow: hidden;
       touch-action: none;
+      overscroll-behavior: none;
     }
     header {
       padding: 10px 14px;
@@ -34,26 +47,52 @@
       align-items: center;
       background: var(--card);
       border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
     }
-    .title { font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 6px; }
-    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #64748b; }
-    .status-dot.connected { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
-    .connect-btn {
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 700;
+      font-size: 14px;
+      letter-spacing: 0.3px;
+    }
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--muted);
+      background: rgba(255,255,255,0.04);
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+    }
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--danger);
+    }
+    .status-dot.connected { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+    .status-dot.connecting { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+    
+    .pin-btn {
       background: var(--btn-bg);
       color: var(--text);
       border: 1px solid var(--border);
-      padding: 6px 12px;
+      padding: 5px 10px;
       border-radius: 6px;
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 600;
       cursor: pointer;
     }
-    .connect-btn.connected { border-color: #22c55e; color: #22c55e; }
-    
+    .pin-btn:active { background: var(--btn-active); }
+
     #trackpad {
       flex: 1;
-      margin: 10px;
-      background: var(--card);
+      margin: 8px;
+      background: radial-gradient(circle at center, rgba(35, 48, 71, 0.4) 0%, rgba(21, 29, 44, 0.8) 100%);
       border: 1px solid var(--border);
       border-radius: 12px;
       display: flex;
@@ -62,15 +101,35 @@
       align-items: center;
       position: relative;
       touch-action: none;
+      overflow: hidden;
+      box-shadow: inset 0 2px 8px rgba(0,0,0,0.4);
     }
-    #trackpad-hint { color: var(--muted); font-size: 13px; pointer-events: none; }
+    #trackpad::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image: radial-gradient(var(--border) 1px, transparent 1px);
+      background-size: 24px 24px;
+      opacity: 0.3;
+      pointer-events: none;
+    }
+    #trackpad-hint {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 500;
+      pointer-events: none;
+      text-align: center;
+      line-height: 1.6;
+      opacity: 0.7;
+    }
 
     .mouse-buttons {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 10px;
-      padding: 0 10px 10px;
-      height: 60px;
+      gap: 8px;
+      padding: 0 8px 8px;
+      height: 64px;
+      flex-shrink: 0;
     }
     .mouse-btn {
       background: var(--btn-bg);
@@ -83,40 +142,104 @@
       align-items: center;
       justify-content: center;
       cursor: pointer;
+      touch-action: manipulation;
     }
-    .mouse-btn:active { background: var(--btn-active); }
+    .mouse-btn:active, .mouse-btn.active {
+      background: var(--btn-active);
+      color: white;
+    }
 
     .action-bar {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
       gap: 6px;
-      padding: 0 10px 12px;
+      padding: 0 8px 10px;
+      flex-shrink: 0;
     }
     .action-btn {
       background: var(--card);
       border: 1px solid var(--border);
       color: var(--text);
-      padding: 10px 4px;
+      padding: 8px 4px;
       border-radius: 6px;
       font-size: 11px;
       font-weight: 600;
       text-align: center;
       cursor: pointer;
+      touch-action: manipulation;
     }
-    .action-btn:active { background: var(--btn-active); }
+    .action-btn:active {
+      background: var(--btn-active);
+      color: white;
+    }
+
+    /* Modal for PIN prompt */
+    #pin-modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      z-index: 100;
+    }
+    .modal-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      max-width: 320px;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .modal-title { font-size: 15px; font-weight: 700; }
+    .modal-input {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 10px;
+      border-radius: 6px;
+      font-size: 16px;
+      text-align: center;
+      letter-spacing: 2px;
+    }
+    .modal-actions {
+      display: flex;
+      gap: 8px;
+    }
+    .modal-btn {
+      flex: 1;
+      padding: 10px;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+      border: 1px solid var(--border);
+    }
+    .modal-save { background: var(--btn-active); color: white; border-color: var(--accent); }
+    .modal-cancel { background: var(--btn-bg); color: var(--muted); }
   </style>
 </head>
 <body>
   <header>
-    <div class="title">
-      <span id="dot" class="status-dot"></span>
-      <span>GEEK BLE Remote</span>
+    <div class="brand">
+      <div class="status-badge">
+        <span id="dot" class="status-dot"></span>
+        <span id="status-text">Connecting...</span>
+      </div>
     </div>
-    <button id="ble-btn" class="connect-btn">Connect BLE</button>
+    <button id="pin-btn" class="pin-btn">PIN: --</button>
   </header>
 
   <div id="trackpad">
-    <span id="trackpad-hint">Touch to Move Pointer · Tap to Click</span>
+    <div id="trackpad-hint">
+      1 Finger: Move Pointer &middot; Tap: Left Click<br>
+      2 Fingers: Scroll &middot; 2-Finger Tap: Right Click
+    </div>
   </div>
 
   <div class="mouse-buttons">
@@ -128,117 +251,257 @@
     <button class="action-btn" data-act="lock">Win+L</button>
     <button class="action-btn" data-act="taskmgr">TaskMgr</button>
     <button class="action-btn" data-act="alt_tab">Alt+Tab</button>
-    <button class="action-btn" data-act="ctrl_alt_del">CAD</button>
+    <button class="action-btn" data-act="ctrl_alt_del">Ctrl+Alt+Del</button>
+  </div>
+
+  <div id="pin-modal">
+    <div class="modal-card">
+      <div class="modal-title">Console PIN Required</div>
+      <p style="font-size:12px;color:var(--muted)">Enter your 8-digit appliance PIN from install or web console.</p>
+      <input type="password" id="modal-pin-input" class="modal-input" placeholder="••••••••" maxlength="8" inputmode="numeric">
+      <div class="modal-actions">
+        <button id="modal-cancel-btn" class="modal-btn modal-cancel">Cancel</button>
+        <button id="modal-save-btn" class="modal-btn modal-save">Save &amp; Connect</button>
+      </div>
+    </div>
   </div>
 
   <script>
-    const BLE_SVC = 0xffe0;
-    const BLE_CHR = 0xffe1;
-    let bleDevice = null;
-    let bleChar = null;
+    // --- PIN Management ---
+    function getStoredPin() {
+      const hash = location.hash.replace(/^#/, '').trim();
+      if (hash && /^\d+$/.test(hash)) return hash;
+      const q = new URLSearchParams(location.search).get('pin');
+      if (q && /^\d+$/.test(q)) return q;
+      return localStorage.getItem('kvm_pin') || '';
+    }
+    function savePin(p) {
+      localStorage.setItem('kvm_pin', p);
+      updatePinButton();
+    }
+    function updatePinButton() {
+      const p = getStoredPin();
+      document.getElementById('pin-btn').textContent = p ? `PIN: ${p.slice(0,2)}•••${p.slice(-2)}` : 'Set PIN';
+    }
 
     const dot = document.getElementById('dot');
-    const bleBtn = document.getElementById('ble-btn');
-    const pad = document.getElementById('trackpad');
+    const statusText = document.getElementById('status-text');
+    const pinModal = document.getElementById('pin-modal');
+    const modalInput = document.getElementById('modal-pin-input');
 
-    bleBtn.onclick = async () => {
-      try {
-        bleDevice = await navigator.bluetooth.requestDevice({
-          filters: [{namePrefix: 'KVM-GEEK'}],
-          optionalServices: [BLE_SVC]
-        });
-        bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
-        const server = await bleDevice.gatt.connect();
-        const service = await server.getPrimaryService(BLE_SVC);
-        bleChar = await service.getCharacteristic(BLE_CHR);
-        dot.classList.add('connected');
-        bleBtn.classList.add('connected');
-        bleBtn.textContent = 'Connected';
-      } catch (err) {
-        console.warn('BLE connect error:', err);
+    document.getElementById('pin-btn').onclick = () => {
+      modalInput.value = getStoredPin();
+      pinModal.style.display = 'flex';
+      modalInput.focus();
+    };
+    document.getElementById('modal-cancel-btn').onclick = () => {
+      pinModal.style.display = 'none';
+    };
+    document.getElementById('modal-save-btn').onclick = () => {
+      const val = modalInput.value.trim();
+      if (val) {
+        savePin(val);
+        pinModal.style.display = 'none';
+        connectWs();
       }
     };
 
-    function onDisconnected() {
-      dot.classList.remove('connected');
-      bleBtn.classList.remove('connected');
-      bleBtn.textContent = 'Connect BLE';
-      bleChar = null;
+    // --- WebSocket Client ---
+    let ws = null;
+    let wsAuthed = false;
+    let reconnectTimer = null;
+    let curBtns = 0;
+
+    function setStatus(cls, text) {
+      dot.className = 'status-dot ' + cls;
+      statusText.textContent = text;
     }
 
-    async function sendCmd(cmd) {
-      if (bleChar) {
+    function connectWs() {
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (ws) {
+        try { ws.close(); } catch (e) {}
+        ws = null;
+      }
+      const pin = getStoredPin();
+      if (!pin) {
+        setStatus('', 'PIN Needed');
+        pinModal.style.display = 'flex';
+        return;
+      }
+
+      setStatus('connecting', 'Connecting...');
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${proto}//${location.host}/api/ws`;
+
+      try {
+        ws = new WebSocket(wsUrl);
+      } catch (err) {
+        setStatus('', 'Offline');
+        reconnectTimer = setTimeout(connectWs, 3000);
+        return;
+      }
+
+      ws.onopen = () => {
+        // Authenticate on the first frame
+        ws.send(JSON.stringify({op: 'auth', pin: pin}));
+      };
+
+      ws.onmessage = (evt) => {
         try {
-          const enc = new TextEncoder();
-          await bleChar.writeValueWithoutResponse(enc.encode(cmd + '\n'));
-          return;
+          const msg = JSON.parse(evt.data);
+          if (msg.op === 'hello' && msg.ok) {
+            wsAuthed = true;
+            setStatus('connected', 'Connected');
+          } else if (msg.error) {
+            wsAuthed = false;
+            setStatus('', msg.error === 'bad_pin' ? 'Invalid PIN' : 'Auth Error');
+            if (msg.error === 'bad_pin') pinModal.style.display = 'flex';
+          }
         } catch (e) {}
-      }
-      // Fallback to local Zero HTTP API if running on Zero's web server
-      if (cmd.startsWith('M ')) {
-        const [, dx, dy, b, w] = cmd.split(' ').map(Number);
-        fetch('/api/mouse', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json', 'X-KVM-PIN': localStorage.getItem('kvm_pin') || ''},
-          body: JSON.stringify({dx, dy, buttons: b, wheel: w})
-        }).catch(() => {});
-      } else if (cmd.startsWith('A ')) {
-        const name = cmd.slice(2).trim();
-        fetch('/api/macro', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json', 'X-KVM-PIN': localStorage.getItem('kvm_pin') || ''},
-          body: JSON.stringify({name})
-        }).catch(() => {});
-      }
+      };
+
+      ws.onclose = () => {
+        wsAuthed = false;
+        setStatus('', 'Disconnected');
+        reconnectTimer = setTimeout(connectWs, 2000);
+      };
+
+      ws.onerror = () => {
+        try { ws.close(); } catch (e) {}
+      };
     }
 
-    let lastX = 0, lastY = 0, touchDown = false, moved = false, startMs = 0;
+    // --- Mouse & Macro Sending ---
+    function sendMouse(dx, dy, b = curBtns, w = 0) {
+      curBtns = b;
+      if (ws && ws.readyState === WebSocket.OPEN && wsAuthed) {
+        ws.send(JSON.stringify({op: 'm', dx: Math.round(dx), dy: Math.round(dy), b, w: Math.round(w)}));
+        return;
+      }
+      // Fallback HTTP
+      const pin = getStoredPin();
+      fetch('/api/mouse', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-KVM-PIN': pin},
+        body: JSON.stringify({dx: Math.round(dx), dy: Math.round(dy), buttons: b, wheel: Math.round(w)})
+      }).catch(() => {});
+    }
+
+    function sendMacro(act) {
+      const pin = getStoredPin();
+      fetch('/api/macro', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-KVM-PIN': pin},
+        body: JSON.stringify({name: act})
+      }).catch(() => {});
+    }
+
+    // --- Touch Trackpad Gestures ---
+    const pad = document.getElementById('trackpad');
+    let touchState = {
+      active: false,
+      count: 0,
+      startX: 0,
+      startY: 0,
+      lastX: 0,
+      lastY: 0,
+      startMs: 0,
+      moved: false
+    };
 
     pad.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      touchState.count = e.touches.length;
+      touchState.active = true;
+      touchState.moved = false;
+      touchState.startMs = Date.now();
       const t = e.touches[0];
-      lastX = t.clientX;
-      lastY = t.clientY;
-      touchDown = true;
-      moved = false;
-      startMs = Date.now();
+      touchState.startX = t.clientX;
+      touchState.startY = t.clientY;
+      touchState.lastX = t.clientX;
+      touchState.lastY = t.clientY;
     }, {passive: false});
 
     pad.addEventListener('touchmove', (e) => {
-      if (!touchDown) return;
+      if (!touchState.active) return;
       e.preventDefault();
+      const numTouches = e.touches.length;
       const t = e.touches[0];
-      const dx = Math.round((t.clientX - lastX) * 1.4);
-      const dy = Math.round((t.clientY - lastY) * 1.4);
-      if (Math.abs(dx) > 0 || Math.abs(dy) > 0) {
-        moved = true;
-        sendCmd(`M ${dx} ${dy} 0 0`);
+
+      if (numTouches === 1) {
+        // 1 Finger: Relative pointer move
+        const rawDx = t.clientX - touchState.lastX;
+        const rawDy = t.clientY - touchState.lastY;
+        const dist = Math.hypot(rawDx, rawDy);
+        if (dist > 1.5) {
+          touchState.moved = true;
+          // Apply gentle acceleration curve
+          const speed = Math.min(dist / 3, 3.5);
+          sendMouse(rawDx * (1.1 + speed * 0.4), rawDy * (1.1 + speed * 0.4), curBtns, 0);
+          touchState.lastX = t.clientX;
+          touchState.lastY = t.clientY;
+        }
+      } else if (numTouches === 2) {
+        // 2 Fingers: Vertical scroll wheel
+        const rawDy = t.clientY - touchState.lastY;
+        if (Math.abs(rawDy) > 4) {
+          touchState.moved = true;
+          // Invert dy for natural scroll wheel feeling (-127 to 127)
+          const wheelDelta = Math.sign(rawDy) * Math.min(Math.abs(Math.round(rawDy * 0.4)), 15);
+          sendMouse(0, 0, curBtns, wheelDelta);
+          touchState.lastY = t.clientY;
+        }
       }
-      lastX = t.clientX;
-      lastY = t.clientY;
     }, {passive: false});
 
     pad.addEventListener('touchend', (e) => {
-      touchDown = false;
-      if (!moved && Date.now() - startMs < 250) {
-        // Quick tap = Left Click
-        sendCmd('M 0 0 1 0');
-        setTimeout(() => sendCmd('M 0 0 0 0'), 40);
+      e.preventDefault();
+      const dur = Date.now() - touchState.startMs;
+      if (!touchState.moved && dur < 280) {
+        if (touchState.count === 1) {
+          // Tap: Left click
+          sendMouse(0, 0, curBtns | 1, 0);
+          setTimeout(() => sendMouse(0, 0, curBtns & ~1, 0), 40);
+        } else if (touchState.count === 2) {
+          // 2-Finger Tap: Right click
+          sendMouse(0, 0, curBtns | 2, 0);
+          setTimeout(() => sendMouse(0, 0, curBtns & ~2, 0), 40);
+        }
       }
-    });
+      if (e.touches.length === 0) {
+        touchState.active = false;
+      } else {
+        // Update remaining touch position
+        touchState.lastX = e.touches[0].clientX;
+        touchState.lastY = e.touches[0].clientY;
+      }
+    }, {passive: false});
 
-    document.getElementById('btn-left').onmousedown = () => sendCmd('M 0 0 1 0');
-    document.getElementById('btn-left').onmouseup = () => sendCmd('M 0 0 0 0');
-    document.getElementById('btn-left').ontouchstart = () => sendCmd('M 0 0 1 0');
-    document.getElementById('btn-left').ontouchend = () => sendCmd('M 0 0 0 0');
+    // --- Left & Right Click Button Handling ---
+    const btnLeft = document.getElementById('btn-left');
+    const btnRight = document.getElementById('btn-right');
 
-    document.getElementById('btn-right').onmousedown = () => sendCmd('M 0 0 2 0');
-    document.getElementById('btn-right').onmouseup = () => sendCmd('M 0 0 0 0');
-    document.getElementById('btn-right').ontouchstart = () => sendCmd('M 0 0 2 0');
-    document.getElementById('btn-right').ontouchend = () => sendCmd('M 0 0 0 0');
+    const handleBtn = (el, mask) => {
+      const down = (e) => { e.preventDefault(); el.classList.add('active'); sendMouse(0, 0, curBtns | mask, 0); };
+      const up = (e) => { e.preventDefault(); el.classList.remove('active'); sendMouse(0, 0, curBtns & ~mask, 0); };
+      el.addEventListener('mousedown', down);
+      el.addEventListener('mouseup', up);
+      el.addEventListener('mouseleave', up);
+      el.addEventListener('touchstart', down, {passive: false});
+      el.addEventListener('touchend', up, {passive: false});
+    };
+    handleBtn(btnLeft, 1);
+    handleBtn(btnRight, 2);
 
+    // --- Action Bar Macros ---
     document.querySelectorAll('[data-act]').forEach(btn => {
-      btn.onclick = () => sendCmd(`A ${btn.dataset.act}`);
+      btn.onclick = () => sendMacro(btn.dataset.act);
     });
+
+    // --- Init ---
+    updatePinButton();
+    connectWs();
   </script>
 </body>
 </html>
