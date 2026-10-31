@@ -2100,6 +2100,24 @@ dialog::backdrop {
     </div>
   </div>
 
+  <div class="dlg-sec" id="media-sec">
+    <h3>Virtual Media &amp; ISO Mount (USB Mass Storage)</h3>
+    <p style="margin:0 0 6px;color:var(--grey);font-size:12px">Mount bootable ISOs (as CD/DVD) or flash drive images to the target PC over USB.</p>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;padding:6px 10px;background:var(--well);border-radius:6px;border:1px solid var(--div)">
+      <div>
+        <div style="font-weight:600;font-size:12px" id="media-mounted-name">Drive Empty</div>
+        <div style="color:var(--grey);font-size:11px" id="media-mounted-info">No media inserted</div>
+      </div>
+      <button type="button" id="media-eject-btn" class="danger" style="display:none;padding:3px 8px;font-size:11px">⏏ Eject</button>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center">
+      <select id="media-select" style="flex:1;padding:5px">
+        <option value="">Select an ISO or disk image...</option>
+      </select>
+      <button type="button" id="media-mount-btn" class="go" style="padding:5px 12px">Mount</button>
+    </div>
+  </div>
+
   <div class="dlg-sec">
     <h3>Host Pairing &amp; Downloads</h3>
     <div class="dlg-grid" style="margin-block-end:6px">

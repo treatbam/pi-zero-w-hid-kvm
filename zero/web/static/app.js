@@ -34,7 +34,7 @@ for (const dlg of [menuDlg, pinDlg]) {
   }
 }
 
-document.getElementById('menu-btn').onclick = () => menuDlg.showModal();
+document.getElementById('menu-btn').onclick = () => { loadMediaStatus(); menuDlg.showModal(); };
 
 // ---- Responsive & Explicit Layout Mode (Auto | Tablet | Phone | Desktop) ----------------
 let layoutPref = localStorage.getItem('kvmLayout') || 'auto';
@@ -359,9 +359,7 @@ document.getElementById('rst-hist').onclick = resetNetHist;
 const wifiApBtn = document.getElementById('wifi-ap-btn');
 if (wifiApBtn) {
   wifiApBtn.onclick = async () => {
-    if (!confirm('Toggle between Home Wi-Fi and Direct Hotspot (KVM-GEEK-DIRECT)?
-
-If switching to Hotspot, reconnect your device to Wi-Fi "KVM-GEEK-DIRECT" (password: kvmgeek1234).')) return;
+    if (!confirm('Toggle between Home Wi-Fi and Direct Hotspot (KVM-GEEK-DIRECT)?\n\nIf switching to Hotspot, reconnect your device to Wi-Fi "KVM-GEEK-DIRECT" (password: kvmgeek1234).')) return;
     menuDlg.close();
     statusNote('Switching Wi-Fi mode…');
     const r = await post('/api/wifi_ap', {mode: 'toggle'});
@@ -380,6 +378,81 @@ async function pairHost(osName) {
   statusNote(r.ok ? `Pairing ${pretty} host over USB…` : `Pairing failed: ${j.error || r.status}`);
   setTimeout(poll, 600);
 }
+
+// ---- Virtual Media / ISO Mounting ----
+async function loadMediaStatus() {
+  const select = document.getElementById('media-select');
+  const mountedName = document.getElementById('media-mounted-name');
+  const mountedInfo = document.getElementById('media-mounted-info');
+  const ejectBtn = document.getElementById('media-eject-btn');
+  if (!select) return;
+
+  try {
+    const res = await fetch('/api/media', {
+      headers: {'X-KVM-PIN': pin || ''}
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+
+    if (data.mounted) {
+      const typeStr = data.cdrom ? 'CD-ROM' : 'Flash Drive';
+      const roStr = data.ro ? 'Read-Only' : 'Read-Write';
+      mountedName.textContent = data.mounted.name;
+      mountedInfo.textContent = `${data.mounted.size_mb} MB • ${typeStr} (${roStr})`;
+      if (ejectBtn) ejectBtn.style.display = 'inline-block';
+    } else {
+      mountedName.textContent = 'Drive Empty';
+      mountedInfo.textContent = 'No media inserted';
+      if (ejectBtn) ejectBtn.style.display = 'none';
+    }
+
+    const curVal = select.value;
+    select.innerHTML = '<option value="">Select an ISO or disk image...</option>';
+    (data.images || []).forEach(img => {
+      const opt = document.createElement('option');
+      opt.value = img.name;
+      opt.textContent = `${img.name} (${img.size_mb} MB, ${img.type.toUpperCase()})${img.mounted ? ' [MOUNTED]' : ''}`;
+      if (img.mounted) opt.selected = true;
+      select.appendChild(opt);
+    });
+    if (!select.value && curVal) select.value = curVal;
+  } catch (e) {}
+}
+
+const mediaMountBtn = document.getElementById('media-mount-btn');
+if (mediaMountBtn) {
+  mediaMountBtn.onclick = async () => {
+    const sel = document.getElementById('media-select');
+    if (!sel || !sel.value) {
+      statusNote('Please select an image to mount');
+      return;
+    }
+    statusNote(`Mounting ${sel.value}…`);
+    const r = await post('/api/media/mount', {image: sel.value});
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) {
+      statusNote(`Mounted: ${j.mounted.name}`);
+      loadMediaStatus();
+    } else {
+      statusNote(`Mount failed: ${j.error || r.status}`);
+    }
+  };
+}
+
+const mediaEjectBtn = document.getElementById('media-eject-btn');
+if (mediaEjectBtn) {
+  mediaEjectBtn.onclick = async () => {
+    statusNote('Ejecting virtual media…');
+    const r = await post('/api/media/eject', {});
+    if (r.ok) {
+      statusNote('Virtual media ejected');
+      loadMediaStatus();
+    } else {
+      statusNote('Eject failed');
+    }
+  };
+}
+
 document.getElementById('pair-linux').onclick = () => pairHost('linux');
 document.getElementById('pair-win').onclick = () => pairHost('windows');
 document.getElementById('dlg-pair-linux').onclick = () => pairHost('linux');

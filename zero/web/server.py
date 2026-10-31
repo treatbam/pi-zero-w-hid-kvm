@@ -66,7 +66,7 @@ GET /api/term needs the X-KVM-PIN header too (host terminal output can hold secr
 """
 import argparse, fcntl, signal, hmac, json, os, socket, struct, subprocess, threading, time
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
-import autolaunch, hid, history, hostview, term, ws
+import autolaunch, hid, history, hostview, media, term, ws
 from urllib.parse import urlsplit, parse_qs
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -93,6 +93,7 @@ THEME_FILE = os.path.join(os.environ.get("KVM_DATA_DIR", "/var/lib/kvm"), "ui_th
 USB_MODES = ("pc", "android")
 USB_MODE_FILE = os.environ.get("KVM_USB_MODE_FILE",
     os.path.join(os.environ.get("KVM_DATA_DIR", "/var/lib/kvm"), "usb_mode"))
+MEDIA = media.MediaManager()
 
 def _load_theme():
     env_t = os.environ.get("KVM_THEME", "").strip()
@@ -287,6 +288,24 @@ def validate(path, body):
         m = body.get("mode")
         if m not in ("ap", "client", "toggle"): raise ValueError('mode must be "ap", "client", or "toggle"')
         return (m,)
+    if path == "/api/media/mount":
+        img = body.get("image")
+        if not isinstance(img, str) or not img.strip():
+            raise ValueError("image must be a non-empty string")
+        cdrom = body.get("cdrom")
+        if cdrom is not None and not isinstance(cdrom, bool):
+            raise ValueError("cdrom must be a bool or null")
+        ro = body.get("ro", True)
+        if not isinstance(ro, bool):
+            raise ValueError("ro must be a bool")
+        return (img.strip(), cdrom, ro)
+    if path == "/api/media/eject":
+        return ()
+    if path == "/api/media/delete":
+        img = body.get("image")
+        if not isinstance(img, str) or not img.strip():
+            raise ValueError("image must be a non-empty string")
+        return (img.strip(),)
     if path == "/api/bootstrap":
         method = body.get("method", "probe")
         if method == "probe":
@@ -569,6 +588,13 @@ class H(SimpleHTTPRequestHandler):
             if pv is None:
                 self.send_response(204); self.send_header("Content-Length", "0"); self.end_headers(); return
             return self._json(200, pv)
+        if u.path == "/api/media":
+            ok = self._pin_ok()
+            local = self.client_address[0] in ("127.0.0.1", "::1")
+            if not ok and not local:
+                if ok is None: return self._json(429, {"error": "too many wrong PINs, wait a minute"})
+                return self._json(401, {"error": "wrong or missing PIN"})
+            return self._json(200, MEDIA.status())
         if u.path == "/api/term":
             ok = self._pin_ok()
             if ok is None: return self._json(429, {"error": "too many wrong PINs, wait a minute"})
@@ -619,6 +645,28 @@ class H(SimpleHTTPRequestHandler):
         except (ValueError, TypeError) as e:  # JSONDecodeError is a ValueError
             return self._json(400, {"error": f"bad request: {e}"})
         if self.path == "/api/auth": return self._json(200, {"ok": True})
+        if self.path == "/api/media/mount":
+            img, cdrom, ro = args
+            try:
+                res = MEDIA.mount(img, cdrom=cdrom, ro=ro)
+                return self._json(200, res)
+            except (FileNotFoundError, ValueError) as e:
+                return self._json(404, {"error": str(e)})
+            except RuntimeError as e:
+                return self._json(503, {"error": str(e)})
+        if self.path == "/api/media/eject":
+            try:
+                MEDIA.eject()
+                return self._json(200, {"ok": True, "ejected": True})
+            except RuntimeError as e:
+                return self._json(503, {"error": str(e)})
+        if self.path == "/api/media/delete":
+            img = args[0]
+            try:
+                MEDIA.delete(img)
+                return self._json(200, {"ok": True, "deleted": img})
+            except (FileNotFoundError, ValueError) as e:
+                return self._json(404, {"error": str(e)})
         if self.path == "/api/theme":
             _save_theme(args[0])
             return self._json(200, {"ok": True, "ui_theme": args[0]})
