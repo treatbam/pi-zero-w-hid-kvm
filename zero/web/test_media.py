@@ -3,7 +3,7 @@ import shutil
 import tempfile
 import unittest
 
-from zero.web.media import MediaManager
+from zero.web.media import MediaManager, expected_sha256, fetch_netboot, NETBOOT_URL, NETBOOT_SUMS_URL
 
 class TestMediaManager(unittest.TestCase):
     def setUp(self):
@@ -154,6 +154,46 @@ class TestMediaManager(unittest.TestCase):
             self.assertEqual(f.read().strip(), "1")
         with open(os.path.join(self.lun, "file")) as f:
             self.assertEqual(f.read().strip(), "")
+
+
+
+class TestNetboot(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def _getter(self, iso, sums):
+        def get(url, limit):
+            return {NETBOOT_URL: iso, NETBOOT_SUMS_URL: sums}[url]
+        return get
+
+    def test_expected_sha256_parses_star_and_space_forms(self):
+        h = "a" * 64
+        self.assertEqual(expected_sha256(f"{h} *netboot.xyz.iso\n", "netboot.xyz.iso"), h)
+        self.assertEqual(expected_sha256(f"{h}  netboot.xyz.iso\n", "netboot.xyz.iso"), h)
+        self.assertIsNone(expected_sha256(f"{h} *other.iso\n", "netboot.xyz.iso"))
+
+    def test_fetch_writes_file_when_hash_matches(self):
+        import hashlib
+        iso = b"ISO" * 1000
+        sums = f"{hashlib.sha256(iso).hexdigest()} *netboot.xyz.iso\n".encode()
+        res = fetch_netboot(self.tmp, get=self._getter(iso, sums))
+        self.assertTrue(res["ok"])
+        with open(os.path.join(self.tmp, "netboot.xyz.iso"), "rb") as f:
+            self.assertEqual(f.read(), iso)
+
+    def test_fetch_refuses_bad_hash_and_leaves_nothing(self):
+        sums = ("0" * 64 + " *netboot.xyz.iso\n").encode()
+        with self.assertRaises(RuntimeError):
+            fetch_netboot(self.tmp, get=self._getter(b"tampered", sums))
+        self.assertEqual(os.listdir(self.tmp), [])
+
+    def test_fetch_refuses_missing_checksum(self):
+        with self.assertRaises(RuntimeError):
+            fetch_netboot(self.tmp, get=self._getter(b"x", b"nothing here\n"))
+
 
 if __name__ == "__main__":
     unittest.main()

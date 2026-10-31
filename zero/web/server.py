@@ -40,6 +40,7 @@ API:
   POST /api/type   {"text":"hello"}
   POST /api/mouse  {"dx":0,"dy":0,"wheel":0,"buttons":0}
   POST /api/macro  {"name":"ctrl_alt_del"}
+  POST /api/media/netboot {}                  -> download netboot.xyz.iso into the images dir, SHA256-checked
   POST /api/auth   {}                          -> 200 if the PIN header is right (UI login check)
   GET  /api/term?n=40            -> {"seq","lines":[..],"partial","open","error"}  (PIN required)
   POST /api/term   {"text":"ls","newline":true}  -> keystrokes to the host's serial console
@@ -300,6 +301,8 @@ def validate(path, body):
             raise ValueError("ro must be a bool")
         return (img.strip(), cdrom, ro)
     if path == "/api/media/eject":
+        return ()
+    if path == "/api/media/netboot":
         return ()
     if path == "/api/media/delete":
         img = body.get("image")
@@ -660,6 +663,13 @@ class H(SimpleHTTPRequestHandler):
                 return self._json(200, {"ok": True, "ejected": True})
             except RuntimeError as e:
                 return self._json(503, {"error": str(e)})
+        if self.path == "/api/media/netboot":
+            try:
+                return self._json(200, media.fetch_netboot(MEDIA.images_dir))
+            except OSError as e:
+                return self._json(502, {"error": f"download failed: {e}"})
+            except (RuntimeError, ValueError) as e:
+                return self._json(502, {"error": str(e)})
         if self.path == "/api/media/delete":
             img = args[0]
             try:

@@ -12,6 +12,7 @@ Images belong on the SD card (default /opt/pi-zero-w-hid-kvm/images).
 and it is too small for an installer.
 """
 import os
+import re
 import subprocess
 import tempfile
 
@@ -24,6 +25,57 @@ BOOT_IMAGE_DEFAULT = "/var/lib/kvm/boot-image"
 # kernel keeps only the first (256*60*75 - 1) sectors of anything larger.
 CDROM_MIN_BYTES = 300 * 2048
 CDROM_MAX_BYTES = 256 * 60 * 75 * 2048
+
+# netboot.xyz: a ~2.5 MB boot CD that pulls installers over the host's own network.
+NETBOOT_URL = "https://boot.netboot.xyz/ipxe/netboot.xyz.iso"
+NETBOOT_SUMS_URL = "https://boot.netboot.xyz/ipxe/netboot.xyz-sha256-checksums.txt"
+NETBOOT_NAME = "netboot.xyz.iso"
+NETBOOT_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _http_get(url, limit, timeout=60):
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "pi-zero-w-hid-kvm"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = r.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError(f"{url} is larger than {limit} bytes")
+    return data
+
+
+def expected_sha256(sums_text, name):
+    """Hash for name from a sha256sum-style list ("<hex> *name" or "<hex>  name")."""
+    for line in sums_text.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1].lstrip("*") == name and re.fullmatch(r"[0-9a-fA-F]{64}", parts[0]):
+            return parts[0].lower()
+    return None
+
+
+def fetch_netboot(images_dir, get=_http_get):
+    """Download netboot.xyz.iso into images_dir, checked against its published SHA256.
+
+    Writes to a temp file and renames only after the hash matches, so a bad or
+    partial download never shows up in the image list.
+    """
+    import hashlib
+    sums = get(NETBOOT_SUMS_URL, 64 * 1024).decode("utf-8", "replace")
+    want = expected_sha256(sums, NETBOOT_NAME)
+    if not want:
+        raise RuntimeError("netboot.xyz checksum list has no entry for " + NETBOOT_NAME)
+    data = get(NETBOOT_URL, NETBOOT_MAX_BYTES)
+    got = hashlib.sha256(data).hexdigest()
+    if got != want:
+        raise RuntimeError(f"netboot.xyz SHA256 mismatch: got {got}, expected {want}")
+    os.makedirs(images_dir, exist_ok=True)
+    dest = os.path.join(images_dir, NETBOOT_NAME)
+    tmp = dest + ".part"
+    with open(tmp, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, dest)
+    return {"ok": True, "name": NETBOOT_NAME, "path": dest, "size": len(data), "sha256": got}
 
 
 def find_images_dir():

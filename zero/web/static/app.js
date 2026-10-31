@@ -454,6 +454,26 @@ if (mediaEjectBtn) {
   };
 }
 
+const mediaNetbootBtn = document.getElementById('media-netboot-btn');
+if (mediaNetbootBtn) {
+  mediaNetbootBtn.onclick = async () => {
+    mediaNetbootBtn.disabled = true;
+    statusNote('Downloading netboot.xyz and checking its SHA256…');
+    try {
+      const r = await post('/api/media/netboot', {});
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) {
+        statusNote(`netboot.xyz ready (${Math.round(j.size / 1024)} KB, SHA256 verified). Select it and Mount.`);
+        loadMediaStatus();
+      } else {
+        statusNote(`netboot.xyz failed: ${j.error || r.status}`);
+      }
+    } finally {
+      mediaNetbootBtn.disabled = false;
+    }
+  };
+}
+
 document.getElementById('pair-linux').onclick = () => pairHost('linux');
 document.getElementById('pair-win').onclick = () => pairHost('windows');
 document.getElementById('dlg-pair-linux').onclick = () => pairHost('linux');
