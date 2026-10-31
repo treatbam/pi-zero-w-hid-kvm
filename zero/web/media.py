@@ -15,6 +15,8 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
+import functools
 
 LUN_DEFAULT = "/sys/kernel/config/usb_gadget/kvm/functions/mass_storage.usb0/lun.0"
 SETUP_IMG_DEFAULT = "/opt/pi-zero-w-hid-kvm/zero/gadget/kvm-setup.img"
@@ -94,6 +96,15 @@ def find_boot_image_path():
     return ""
 
 
+def _locked(fn):
+    """Serialize LUN changes so two requests can't leave the drive half-configured."""
+    @functools.wraps(fn)
+    def wrap(self, *a, **kw):
+        with self._lock:
+            return fn(self, *a, **kw)
+    return wrap
+
+
 class MediaManager:
     def __init__(self, lun_path=None, images_dir=None, setup_img=None, selection_path=None):
         self.lun_path = lun_path or os.environ.get("KVM_LUN_PATH", LUN_DEFAULT)
@@ -102,6 +113,7 @@ class MediaManager:
         if selection_path is None:
             selection_path = find_boot_image_path()
         self.selection_path = selection_path or None
+        self._lock = threading.RLock()
         try:
             os.makedirs(self.images_dir, exist_ok=True)
         except OSError:
@@ -310,12 +322,15 @@ class MediaManager:
             raise ValueError("image name must be a file in the images directory")
         return real, False
 
+    @_locked
     def mount(self, name_or_path, cdrom=None, ro=True):
         """Mount an image file onto the LUN."""
         if not self.is_available():
             raise RuntimeError("mass_storage gadget is not active")
 
         target, is_setup = self._resolve(name_or_path)
+        if not ro and os.environ.get("KVM_ALLOW_RW", "0") != "1":
+            raise ValueError("writable mounts are off; set KVM_ALLOW_RW=1 to let the host write to images")
         if is_setup:
             cdrom = False
             ro = True
@@ -352,7 +367,11 @@ class MediaManager:
                 self._restore(prev)
             raise
 
-        saved = self._save_boot(target)
+        if is_setup:
+            self._clear_boot()
+            saved = False
+        else:
+            saved = self._save_boot(target)
         sz = os.path.getsize(target) if os.path.exists(target) else 0
         return {
             "ok": True,
@@ -368,6 +387,7 @@ class MediaManager:
             "boot": saved,
         }
 
+    @_locked
     def delete(self, name):
         """Delete an image file from the images directory."""
         if name in ("setup", "kvm-setup.img", os.path.basename(self.setup_img)):
@@ -392,6 +412,7 @@ class MediaManager:
             subprocess.run(["sudo", "-n", "rm", "-f", "--", p], check=True)
         return True
 
+    @_locked
     def eject_and_forget(self):
         """Drop the boot disc and put the setup stick back in the slot."""
         self.eject()

@@ -124,6 +124,15 @@ SEL=""
 if [ -f "$BOOT_FILE" ]; then
   SEL=$(head -n 1 "$BOOT_FILE" | tr -d '\r')
 fi
+# Only trust a saved path that really resolves inside the images folder.
+IMAGES_DIR=$(realpath -m -- "${KVM_IMAGES_DIR:-/opt/pi-zero-w-hid-kvm/images}")
+if [ -n "$SEL" ]; then
+  RSEL=$(realpath -e -- "$SEL" 2>/dev/null || true)
+  case "$RSEL" in
+    "$IMAGES_DIR"/*) SEL="$RSEL" ;;
+    *) [ "$SEL" = "$SETUP_IMG" ] || echo "WARN: saved boot image $SEL is outside $IMAGES_DIR; ignoring it" >&2; SEL="" ;;
+  esac
+fi
 if [ -n "$SEL" ] && [ -f "$SEL" ] && [ "$SEL" != "$SETUP_IMG" ]; then
   case "$SEL" in
     *.iso|*.ISO)
@@ -170,12 +179,16 @@ fi
 
 UDC_NAME=$(ls /sys/class/udc 2>/dev/null | head -n1 || true)
 [ -n "$UDC_NAME" ] || { echo "ERROR: no UDC in /sys/class/udc (is [all] dtoverlay=dwc2 set? rebooted?)" >&2; exit 1; }
-if ! echo "$UDC_NAME" > UDC 2>/dev/null || [ -z "$(cat UDC 2>/dev/null)" ]; then
-  if [ -L configs/c.1/mass_storage.usb0 ]; then
-    echo "WARN: UDC bind with mass_storage exceeded dwc2 endpoint budget; binding HID+ACM only" >&2
-    rm -f configs/c.1/mass_storage.usb0
-    echo "$UDC_NAME" > UDC
-  fi
+bind_udc() { echo "$UDC_NAME" > UDC 2>/dev/null && [ -n "$(cat UDC 2>/dev/null)" ]; }
+# Over the dwc2 endpoint budget: drop the disk first, then serial, so the keyboard always survives.
+if ! bind_udc && [ -L configs/c.1/mass_storage.usb0 ]; then
+  echo "WARN: UDC bind with mass_storage exceeded dwc2 endpoint budget; dropping the disk" >&2
+  rm -f configs/c.1/mass_storage.usb0
+fi
+if [ -z "$(cat UDC 2>/dev/null)" ] && ! bind_udc && [ -L configs/c.1/acm.usb0 ]; then
+  echo "WARN: UDC bind still failing; dropping serial, HID only" >&2
+  rm -f configs/c.1/acm.usb0
+  bind_udc || true
 fi
 [ -n "$(cat UDC)" ] || { echo "ERROR: UDC bind failed" >&2; exit 1; }
 finish

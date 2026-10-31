@@ -3,7 +3,12 @@ import shutil
 import tempfile
 import unittest
 
-from zero.web.media import MediaManager, expected_sha256, fetch_netboot, NETBOOT_URL, NETBOOT_SUMS_URL
+import sys
+
+# Works from the repo root (zero.web.media) and from zero/web (media).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from media import (MediaManager, expected_sha256, fetch_netboot,  # noqa: E402
+                   NETBOOT_URL, NETBOOT_SUMS_URL)
 
 class TestMediaManager(unittest.TestCase):
     def setUp(self):
@@ -141,8 +146,8 @@ class TestMediaManager(unittest.TestCase):
             os.chmod(os.path.join(self.lun, "cdrom"), 0o644)
         with open(os.path.join(self.lun, "file")) as f:
             self.assertEqual(f.read().strip(), self.setup_img)
-        with open(self.boot) as f:
-            self.assertEqual(f.read().strip(), self.setup_img)
+        # The setup stick is the default, so mounting it leaves no saved boot image.
+        self.assertEqual(self.mgr._saved_boot_path(), "")
 
     def test_forced_eject_clears_a_locked_disc(self):
         forced = os.path.join(self.lun, "forced_eject")
@@ -155,6 +160,19 @@ class TestMediaManager(unittest.TestCase):
         with open(os.path.join(self.lun, "file")) as f:
             self.assertEqual(f.read().strip(), "")
 
+    def test_writable_mount_refused_by_default(self):
+        p = os.path.join(self.img_dir, "disk.img")
+        with open(p, "wb") as f:
+            f.write(b"\0" * 4096)
+        os.environ.pop("KVM_ALLOW_RW", None)
+        with self.assertRaises(ValueError):
+            self.mgr.mount("disk.img", ro=False)
+
+    def test_mounting_setup_clears_saved_boot(self):
+        with open(self.boot, "w") as f:
+            f.write("/somewhere/old.iso\n")
+        self.mgr.mount("kvm-setup.img")
+        self.assertEqual(self.mgr._saved_boot_path(), "")
 
 
 class TestNetboot(unittest.TestCase):
