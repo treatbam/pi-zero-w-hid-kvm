@@ -310,6 +310,32 @@ button.danger {
   color: var(--rx);
   border-color: color-mix(in oklab, var(--rx) 45%, var(--div));
 }
+.pwr-badge {
+  font: 700 11px/1 ui-monospace, monospace;
+  padding-block: 4px;
+  padding-inline: 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  cursor: help;
+}
+.pwr-badge.pwr-active {
+  background: color-mix(in oklab, var(--bad) 25%, var(--well));
+  color: var(--bad);
+  border: 1px solid var(--bad);
+  animation: pwr-pulse 1.2s infinite ease-in-out;
+}
+.pwr-badge.pwr-warn {
+  background: color-mix(in oklab, var(--warn) 22%, var(--well));
+  color: var(--warn);
+  border: 1px solid var(--warn);
+}
+@keyframes pwr-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.65; transform: scale(0.96); }
+}
 
 /* Desktop inline workspace switcher */
 .top-nav {
@@ -1646,6 +1672,7 @@ dialog::backdrop {
 
   <div class="topbar-actions">
     <span id="xport" class="xport-badge" title="Active HID input transport">http</span>
+    <span id="pwr-alert" class="pwr-badge" hidden title="Zero Undervoltage / Power Warning">⚡ PWR</span>
     <button type="button" id="tablet-btn" aria-pressed="false" title="Toggle touch-ergonomic Tablet Mode (44px keys, two-hand thumb pad &amp; stand keyboard)">Tablet</button>
     <button type="button" id="mode" title="Switch host serial between telemetry helper and interactive shell">serial: …</button>
     <button type="button" id="ping-top" title="Bounce CapsLock LED to verify host responsiveness">Ping</button>
@@ -1931,6 +1958,7 @@ dialog::backdrop {
             <span class="s-kpi-lbl">Zero SoC</span>
             <span id="st-z-temp" class="s-kpi-val" style="font-size:16px">--°C</span>
             <span id="st-z-load" class="s-kpi-sub">load --</span>
+            <span id="st-z-pwr" class="s-kpi-sub" style="font-weight:600"></span>
           </div>
           <div class="s-kpi well">
             <span class="s-kpi-lbl">Zero RAM &amp; Up</span>

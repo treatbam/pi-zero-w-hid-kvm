@@ -1464,6 +1464,37 @@ function updateTelemetry(s) {
   stBarDisk.style.background = meterColorCss(diskPct, 90, 99);
 
   // Pi Zero W Appliance & Radio Link (Page 4)
+  const pwrBadge = document.getElementById('pwr-alert');
+  const zPwr = document.getElementById('st-z-pwr');
+  if (s.under_voltage) {
+    if (pwrBadge) {
+      pwrBadge.hidden = false;
+      pwrBadge.className = 'pwr-badge pwr-active';
+      pwrBadge.textContent = '⚡ PWR DROP';
+      pwrBadge.title = 'Active undervoltage detected (<4.63V)! Power supply is dipping, brownout imminent.';
+    }
+    if (zPwr) { zPwr.textContent = '⚡ UNDERVOLTAGE'; zPwr.style.color = 'var(--bad)'; }
+  } else if (s.under_voltage_ever) {
+    if (pwrBadge) {
+      pwrBadge.hidden = false;
+      pwrBadge.className = 'pwr-badge pwr-warn';
+      pwrBadge.textContent = '⚡ PWR DIPPED';
+      pwrBadge.title = 'Undervoltage occurred since boot. Consider external 5V power.';
+    }
+    if (zPwr) { zPwr.textContent = '⚡ Power Dipped'; zPwr.style.color = 'var(--warn)'; }
+  } else if (s.throttled_active) {
+    if (pwrBadge) {
+      pwrBadge.hidden = false;
+      pwrBadge.className = 'pwr-badge pwr-warn';
+      pwrBadge.textContent = '⚡ THROTTLED';
+      pwrBadge.title = `SoC throttled / capped (status ${s.throttled ? '0x' + Number(s.throttled).toString(16) : ''})`;
+    }
+    if (zPwr) { zPwr.textContent = '⚡ Throttled'; zPwr.style.color = 'var(--warn)'; }
+  } else {
+    if (pwrBadge) pwrBadge.hidden = true;
+    if (zPwr) { zPwr.textContent = 'power: solid'; zPwr.style.color = 'var(--dimg)'; }
+  }
+
   document.getElementById('st-zero-ip').textContent = `Zero ${s.ip || '--'}`;
   const zTemp = document.getElementById('st-z-temp');
   zTemp.textContent = s.temp_c != null ? `${s.temp_c}°C` : '--°C';

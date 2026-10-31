@@ -63,6 +63,7 @@ static uint16_t gFrame[W * H];
 static bool gFrameOk = false;
 static volatile bool gFrameBusy = false;
 static bool gShown = false;
+static bool gDeskZoom = false; // false = full fit (240x119), true = 1:1 cursor loupe
 
 struct Cfg { String ssid, pass, host, pin, ota; int port; } cfg;
 String BASE;
@@ -148,6 +149,8 @@ struct Status {
   char serialMode[8] = "";
   char mode[8] = "";             // /api/status "mode": hid | term | desktop; "" = Zero too old to say
   char usbMode[9] = "pc";       // /api/status "usb_mode": pc | android
+  uint32_t throttled = 0;
+  bool underVolt = false, underVoltEver = false;
   char helperState[12] = "";     // /api/status "helper_state": linked | streaming | probing | missing | no_host
   uint8_t uiTheme = 0;           // 0 = slate (default), 1 = braun, 2 = cobalt (synced from /api/status "ui_theme")
   // type-8 extended stats (absent -> NAN / 0)
@@ -305,6 +308,9 @@ void pollOnce() {
         copyStr(s.serialMode, sizeof s.serialMode, d["serial_mode"] | "");
         copyStr(s.mode, sizeof s.mode, d["mode"] | "");
         copyStr(s.usbMode, sizeof s.usbMode, d["usb_mode"] | "pc");
+        if (!d["throttled"].isNull()) s.throttled = d["throttled"].as<uint32_t>();
+        if (!d["under_voltage"].isNull()) s.underVolt = d["under_voltage"].as<bool>();
+        if (!d["under_voltage_ever"].isNull()) s.underVoltEver = d["under_voltage_ever"].as<bool>();
         copyStr(s.helperState, sizeof s.helperState, d["helper_state"] | "");
         const char* ut = d["ui_theme"] | "slate";
         s.uiTheme = strcmp(ut, "braun") == 0 ? 1 : strcmp(ut, "cobalt") == 0 ? 2 : 0;
@@ -417,7 +423,8 @@ void pollFrame() {
   bool ok = false;
   if (WiFi.status() == WL_CONNECTED && gDeskOn) {
     HTTPClient http; http.setTimeout(4000); http.setConnectTimeout(1500);
-    http.begin(BASE + "/api/frame"); http.addHeader("X-KVM-PIN", cfg.pin);
+    String u = BASE + "/api/frame?crop=" + (gDeskZoom ? "loupe" : "full");
+    http.begin(u); http.addHeader("X-KVM-PIN", cfg.pin);
     int code = http.GET();
     if (code == 401 || code == 429) pinFailed();
     if (code == 200) {
@@ -1513,6 +1520,8 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
   // ZERO card
   int L = 6, R = MID - 5;
   txt(L, 5, "Zero", V_LAB);
+  if (s.underVolt) txtR(R, 5, "! PWR", V_BAD);
+  else if (s.underVoltEver) txtR(R, 5, "pwr dip", V_WARN);
   ftS(L, 36, s.api ? "HID" : "--", stale || !s.api ? V_GREY : V_WHITE, &FreeSans18pt7b);
   uint16_t val = stale ? V_GREY : V_WHITE;
   const char* zip = s.tsIp[0] ? s.tsIp : s.ip;
@@ -1703,6 +1712,8 @@ void drawNet(const Status& s, const PcHist& h, uint32_t now) {
 // Page control. Short press: next page (and acknowledges an alert). Long press: auto-rotate the
 // 4 stats pages every 10 s, on/off. Something going red jumps to the page that shows it and
 // returns once it clears; the PC going offline drops to the dimmed ZERO|GEEK page until it's back.
+enum Page { P_PC, P_CORES, P_NET, P_ZG, P_DESK, P_TERM, NPAGES };
+int page = P_PC;   // boot into the v2 PC page
 bool gAuto = false;
 uint32_t gAutoMs = 0;
 int gHome = -1;          // page to return to after an alert/offline jump (-1 = not jumped)
@@ -1733,11 +1744,16 @@ void statusBar(const Status& s, const PcHist& h, uint32_t now) {
   uint16_t gc = rssiC(s.wifi, s.rssi);
   int rw = strlen(rs) * CW, gx = W - 4 - rw - 5 * CW - 7;
   vMark(gx, ty + 1, gc); txt(gx + 7, ty, "Geek", V_LAB); txtR(W - 4, ty, rs, gc);
-  if (strcmp(s.usbMode, "android") == 0) txt(74, ty, "AND", V_WARN);
+  if (page == P_DESK) {
+    txt(74, ty, gDeskZoom ? "1:1" : "FIT", gDeskZoom ? V_OK : V_LAB);
+  } else if (strcmp(s.usbMode, "android") == 0) {
+    txt(74, ty, "AND", V_WARN);
+  }
+  if (s.underVolt) txt(142, ty, "!PWR", V_BAD);
+  else if (s.underVoltEver) txt(142, ty, "PWR~", V_WARN);
 }
 
-enum Page { P_PC, P_CORES, P_NET, P_ZG, P_DESK, P_TERM, NPAGES };
-int page = P_PC;   // boot into the v2 PC page
+
 
 void drawWaiting() {
   fb.fillScreen(V_BG);
@@ -1844,6 +1860,10 @@ void paint() {
       xSemaphoreGive(gLock);
     } else show = gShown;
     if (!show) drawWaiting();
+    else if (gDeskZoom) {
+      fb.fillRect(W - 28, 2, 26, 11, V_WELL);
+      txt(W - 25, 4, "1:1", V_OK);
+    }
     statusBar(s, h, millis());
     pageDots(statDot(page, s), statPages(s));
     tft.drawRGBBitmap(0, 0, fb.getBuffer(), W, H);
@@ -1919,7 +1939,14 @@ void loop() {
       if (gHome >= 0) { gAck = page; int h = gHome; gHome = -1; go(h); }   // dismiss the alert jump
       else { static Status st; xSemaphoreTake(gLock, portMAX_DELAY); st = gStat; xSemaphoreGive(gLock); go(nextVisible(page, st)); }
       gAutoMs = now;
-    } else if (e == EV_LONG) { gAuto = !gAuto; gAutoMs = now; }
+    } else if (e == EV_LONG) {
+      if (page == P_DESK) {
+        gDeskZoom = !gDeskZoom;
+        gFramePull = true;
+      } else {
+        gAuto = !gAuto; gAutoMs = now;
+      }
+    }
     else if (e == EV_VLONG) gUsbFlip = true;
   }
   static uint32_t lastPaint = 0;

@@ -352,6 +352,32 @@ def geek_rssi(header):
     fresh = GEEK_RSSI["dbm"] is not None and now - GEEK_RSSI["at"] < GEEK_RSSI_TTL
     return GEEK_RSSI["dbm"] if fresh else None
 
+def read_throttled():
+    """Read Linux / Raspberry Pi undervoltage and throttling state.
+    Returns integer bitmask or None if unavailable.
+    Bit 0: Under-voltage detected (active)
+    Bit 1: Arm frequency capped (active)
+    Bit 2: Currently throttled (active)
+    Bit 16: Under-voltage occurred (since boot)
+    Bit 17: Arm frequency capped occurred (since boot)
+    Bit 18: Throttling occurred (since boot)
+    """
+    for p in ("/sys/devices/platform/soc/soc:firmware/get_throttled",
+              "/sys/bus/platform/devices/soc:firmware/get_throttled"):
+        try:
+            with open(p, "r") as f:
+                val = f.read().strip()
+                return int(val, 0)
+        except (OSError, ValueError):
+            pass
+    try:
+        out = subprocess.check_output(["vcgencmd", "get_throttled"], timeout=1).decode().strip()
+        if "throttled=" in out:
+            return int(out.split("=", 1)[1], 16)
+    except Exception:
+        pass
+    return None
+
 def sysstats():
     """Cheap /proc reads for the GEEK dashboard; any failure just omits the field."""
     out = {}
@@ -366,6 +392,13 @@ def sysstats():
     except (OSError, ValueError, KeyError, ZeroDivisionError): pass
     try: out["uptime_s"] = int(float(open("/proc/uptime").read().split()[0]))
     except (OSError, ValueError, IndexError): pass
+    t_val = read_throttled()
+    if t_val is not None:
+        out["throttled"] = t_val
+        out["under_voltage"] = bool(t_val & 0x1)
+        out["under_voltage_ever"] = bool(t_val & 0x10000)
+        out["throttled_active"] = bool(t_val & 0x7)
+        out["throttled_ever"] = bool(t_val & 0x70000)
     return out
 
 def local_ip():
