@@ -548,9 +548,12 @@ class StatsKeeper:
         self.last_sent = None
 
     def due(self):
-        if not self.want or self.view.helper_returned == self.seen:
+        if not self.want:
             return False
         if self.view.mode()[0] != "helper":
+            return False
+        need_rearm = self.view.helper_returned > 0 and self.view.ext() is None
+        if self.view.helper_returned == self.seen and not need_rearm:
             return False
         return self.last_sent is None or self._now() - self.last_sent >= self.min_s
 
