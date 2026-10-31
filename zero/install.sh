@@ -48,5 +48,11 @@ fi
 cp zero/systemd/*.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable hid-gadget.service kvm-web.service
+if command -v nmcli >/dev/null 2>&1; then
+  if ! nmcli con show "kvm-hotspot" >/dev/null 2>&1; then
+    nmcli con add type wifi ifname wlan0 con-name kvm-hotspot autoconnect yes       connection.autoconnect-priority -10       ssid KVM-GEEK-DIRECT mode ap       802-11-wireless.band bg 802-11-wireless.channel 1       802-11-wireless-security.key-mgmt wpa-psk       802-11-wireless-security.psk "kvmgeek1234"       ipv4.method shared 2>/dev/null || true
+    echo "Configured direct peer-to-peer Wi-Fi hotspot (KVM-GEEK-DIRECT)"
+  fi
+fi
 echo "Done. Reboot required for dwc2. AP setup: see README."
 echo "Console PIN: $(cat /etc/pi-zero-w-hid-kvm/pin)${NEW_PIN:+ (new)}  — change it by editing /etc/pi-zero-w-hid-kvm/pin and running: sudo systemctl restart kvm-web"

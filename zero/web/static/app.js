@@ -356,6 +356,19 @@ async function resetNetHist() {
   if (r.ok) poll();
 }
 document.getElementById('rst-hist').onclick = resetNetHist;
+const wifiApBtn = document.getElementById('wifi-ap-btn');
+if (wifiApBtn) {
+  wifiApBtn.onclick = async () => {
+    if (!confirm('Toggle between Home Wi-Fi and Direct Hotspot (KVM-GEEK-DIRECT)?
+
+If switching to Hotspot, reconnect your device to Wi-Fi "KVM-GEEK-DIRECT" (password: kvmgeek1234).')) return;
+    menuDlg.close();
+    statusNote('Switching Wi-Fi mode…');
+    const r = await post('/api/wifi_ap', {mode: 'toggle'});
+    if (r.ok) statusNote('Wi-Fi mode switch requested');
+    else statusNote('Failed to switch Wi-Fi');
+  };
+}
 document.getElementById('st-rst-hist').onclick = resetNetHist;
 
 async function pairHost(osName) {
@@ -1495,6 +1508,10 @@ function updateTelemetry(s) {
     if (zPwr) { zPwr.textContent = 'power: solid'; zPwr.style.color = 'var(--dimg)'; }
   }
 
+  if (wifiApBtn) {
+    const isAp = s.ip && s.ip.startsWith('10.42.');
+    wifiApBtn.textContent = '📡 Hotspot: ' + (isAp ? 'ON (Direct)' : 'OFF (Client)');
+  }
   document.getElementById('st-zero-ip').textContent = `Zero ${s.ip || '--'}`;
   const zTemp = document.getElementById('st-z-temp');
   zTemp.textContent = s.temp_c != null ? `${s.temp_c}°C` : '--°C';

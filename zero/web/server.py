@@ -72,6 +72,8 @@ from urllib.parse import urlsplit, parse_qs
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 MACROS = {"ctrl_alt_del": lambda: hid.key_combo(["delete"], ["ctrl", "alt"]),
           "win_l": lambda: hid.key_combo(["l"], ["gui"]),
+          "lock": lambda: hid.key_combo(["l"], ["gui"]),
+          "taskmgr": lambda: hid.key_combo(["escape"], ["ctrl", "shift"]),
           "alt_tab": lambda: hid.key_combo(["tab"], ["alt"])}
 LOCK = threading.Lock()      # serialize writes so reports don't interleave
 PIN_LOCK = threading.Lock()  # guard per-IP failed-PIN counters
@@ -280,6 +282,10 @@ def validate(path, body):
     if path == "/api/usb_mode":
         m = body.get("mode")
         if m not in USB_MODES: raise ValueError('mode must be "pc" or "android"')
+        return (m,)
+    if path == "/api/wifi_ap":
+        m = body.get("mode")
+        if m not in ("ap", "client", "toggle"): raise ValueError('mode must be "ap", "client", or "toggle"')
         return (m,)
     if path == "/api/bootstrap":
         method = body.get("method", "probe")
@@ -538,6 +544,21 @@ class H(SimpleHTTPRequestHandler):
                     time.sleep(0.02)
             text, age, _ = hostview.shared.clipboard()
             return self._json(200, {"ok": True, "text": text or "", "age_s": age})
+        if u.path == "/api/wifi_ap":
+            is_ap = False
+            cur_conn = "none"
+            try:
+                out = subprocess.check_output(["nmcli", "-t", "-f", "NAME,DEVICE", "con", "show", "--active"], timeout=2).decode()
+                for line in out.splitlines():
+                    parts = line.split(":")
+                    if len(parts) >= 2 and parts[1] == "wlan0":
+                        cur_conn = parts[0]
+                        if "hotspot" in parts[0].lower() or "ap" in parts[0].lower() or parts[0] == "KVM-GEEK-DIRECT":
+                            is_ap = True
+                        break
+            except Exception:
+                pass
+            return self._json(200, {"active": is_ap, "mode": "ap" if is_ap else "client", "connection": cur_conn, "ip": self._my_ip()})
         if u.path == "/api/preview":
             ok = self._pin_ok()
             if ok is None: return self._json(429, {"error": "too many wrong PINs, wait a minute"})
@@ -601,6 +622,24 @@ class H(SimpleHTTPRequestHandler):
         if self.path == "/api/theme":
             _save_theme(args[0])
             return self._json(200, {"ok": True, "ui_theme": args[0]})
+        if self.path == "/api/wifi_ap":
+            mode = args[0]
+            def _switch_wifi(m):
+                try:
+                    if m == "ap":
+                        subprocess.run(["sudo", "-n", "nmcli", "con", "up", "kvm-hotspot"], timeout=10)
+                    elif m == "client":
+                        subprocess.run(["sudo", "-n", "nmcli", "con", "up", "preconfigured"], timeout=10)
+                    elif m == "toggle":
+                        out = subprocess.check_output(["nmcli", "-t", "-f", "NAME", "con", "show", "--active"], timeout=2).decode()
+                        if "kvm-hotspot" in out:
+                            subprocess.run(["sudo", "-n", "nmcli", "con", "up", "preconfigured"], timeout=10)
+                        else:
+                            subprocess.run(["sudo", "-n", "nmcli", "con", "up", "kvm-hotspot"], timeout=10)
+                except Exception:
+                    pass
+            threading.Thread(target=_switch_wifi, args=(mode,), daemon=True).start()
+            return self._json(202, {"ok": True, "switching_to": mode})
         if self.path == "/api/usb_mode":
             _save_usb_mode(args[0])
             threading.Thread(target=apply_usb_mode, daemon=True).start()

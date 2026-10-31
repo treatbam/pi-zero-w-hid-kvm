@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>KVM Wireless Remote</title>
+  <style>
+    :root {
+      --bg: #0b0f17;
+      --card: #151d2c;
+      --border: #233047;
+      --accent: #38bdf8;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --btn-bg: #1e293b;
+      --btn-active: #0284c7;
+      --danger: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      height: 100dvh;
+      overflow: hidden;
+      touch-action: none;
+    }
+    header {
+      padding: 10px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+    }
+    .title { font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 6px; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #64748b; }
+    .status-dot.connected { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+    .connect-btn {
+      background: var(--btn-bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .connect-btn.connected { border-color: #22c55e; color: #22c55e; }
+    
+    #trackpad {
+      flex: 1;
+      margin: 10px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      position: relative;
+      touch-action: none;
+    }
+    #trackpad-hint { color: var(--muted); font-size: 13px; pointer-events: none; }
+
+    .mouse-buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      padding: 0 10px 10px;
+      height: 60px;
+    }
+    .mouse-btn {
+      background: var(--btn-bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+    .mouse-btn:active { background: var(--btn-active); }
+
+    .action-bar {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+      padding: 0 10px 12px;
+    }
+    .action-btn {
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 10px 4px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      text-align: center;
+      cursor: pointer;
+    }
+    .action-btn:active { background: var(--btn-active); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="title">
+      <span id="dot" class="status-dot"></span>
+      <span>GEEK BLE Remote</span>
+    </div>
+    <button id="ble-btn" class="connect-btn">Connect BLE</button>
+  </header>
+
+  <div id="trackpad">
+    <span id="trackpad-hint">Touch to Move Pointer · Tap to Click</span>
+  </div>
+
+  <div class="mouse-buttons">
+    <button id="btn-left" class="mouse-btn">Left Click</button>
+    <button id="btn-right" class="mouse-btn">Right Click</button>
+  </div>
+
+  <div class="action-bar">
+    <button class="action-btn" data-act="lock">Win+L</button>
+    <button class="action-btn" data-act="taskmgr">TaskMgr</button>
+    <button class="action-btn" data-act="alt_tab">Alt+Tab</button>
+    <button class="action-btn" data-act="ctrl_alt_del">CAD</button>
+  </div>
+
+  <script>
+    const BLE_SVC = 0xffe0;
+    const BLE_CHR = 0xffe1;
+    let bleDevice = null;
+    let bleChar = null;
+
+    const dot = document.getElementById('dot');
+    const bleBtn = document.getElementById('ble-btn');
+    const pad = document.getElementById('trackpad');
+
+    bleBtn.onclick = async () => {
+      try {
+        bleDevice = await navigator.bluetooth.requestDevice({
+          filters: [{namePrefix: 'KVM-GEEK'}],
+          optionalServices: [BLE_SVC]
+        });
+        bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+        const server = await bleDevice.gatt.connect();
+        const service = await server.getPrimaryService(BLE_SVC);
+        bleChar = await service.getCharacteristic(BLE_CHR);
+        dot.classList.add('connected');
+        bleBtn.classList.add('connected');
+        bleBtn.textContent = 'Connected';
+      } catch (err) {
+        console.warn('BLE connect error:', err);
+      }
+    };
+
+    function onDisconnected() {
+      dot.classList.remove('connected');
+      bleBtn.classList.remove('connected');
+      bleBtn.textContent = 'Connect BLE';
+      bleChar = null;
+    }
+
+    async function sendCmd(cmd) {
+      if (bleChar) {
+        try {
+          const enc = new TextEncoder();
+          await bleChar.writeValueWithoutResponse(enc.encode(cmd + '\n'));
+          return;
+        } catch (e) {}
+      }
+      // Fallback to local Zero HTTP API if running on Zero's web server
+      if (cmd.startsWith('M ')) {
+        const [, dx, dy, b, w] = cmd.split(' ').map(Number);
+        fetch('/api/mouse', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json', 'X-KVM-PIN': localStorage.getItem('kvm_pin') || ''},
+          body: JSON.stringify({dx, dy, buttons: b, wheel: w})
+        }).catch(() => {});
+      } else if (cmd.startsWith('A ')) {
+        const name = cmd.slice(2).trim();
+        fetch('/api/macro', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json', 'X-KVM-PIN': localStorage.getItem('kvm_pin') || ''},
+          body: JSON.stringify({name})
+        }).catch(() => {});
+      }
+    }
+
+    let lastX = 0, lastY = 0, touchDown = false, moved = false, startMs = 0;
+
+    pad.addEventListener('touchstart', (e) => {
+      const t = e.touches[0];
+      lastX = t.clientX;
+      lastY = t.clientY;
+      touchDown = true;
+      moved = false;
+      startMs = Date.now();
+    }, {passive: false});
+
+    pad.addEventListener('touchmove', (e) => {
+      if (!touchDown) return;
+      e.preventDefault();
+      const t = e.touches[0];
+      const dx = Math.round((t.clientX - lastX) * 1.4);
+      const dy = Math.round((t.clientY - lastY) * 1.4);
+      if (Math.abs(dx) > 0 || Math.abs(dy) > 0) {
+        moved = true;
+        sendCmd(`M ${dx} ${dy} 0 0`);
+      }
+      lastX = t.clientX;
+      lastY = t.clientY;
+    }, {passive: false});
+
+    pad.addEventListener('touchend', (e) => {
+      touchDown = false;
+      if (!moved && Date.now() - startMs < 250) {
+        // Quick tap = Left Click
+        sendCmd('M 0 0 1 0');
+        setTimeout(() => sendCmd('M 0 0 0 0'), 40);
+      }
+    });
+
+    document.getElementById('btn-left').onmousedown = () => sendCmd('M 0 0 1 0');
+    document.getElementById('btn-left').onmouseup = () => sendCmd('M 0 0 0 0');
+    document.getElementById('btn-left').ontouchstart = () => sendCmd('M 0 0 1 0');
+    document.getElementById('btn-left').ontouchend = () => sendCmd('M 0 0 0 0');
+
+    document.getElementById('btn-right').onmousedown = () => sendCmd('M 0 0 2 0');
+    document.getElementById('btn-right').onmouseup = () => sendCmd('M 0 0 0 0');
+    document.getElementById('btn-right').ontouchstart = () => sendCmd('M 0 0 2 0');
+    document.getElementById('btn-right').ontouchend = () => sendCmd('M 0 0 0 0');
+
+    document.querySelectorAll('[data-act]').forEach(btn => {
+      btn.onclick = () => sendCmd(`A ${btn.dataset.act}`);
+    });
+  </script>
+</body>
+</html>

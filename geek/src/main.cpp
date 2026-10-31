@@ -19,6 +19,7 @@
 #include <ArduinoOTA.h>
 #include <esp_memory_utils.h>
 #include <ESPmDNS.h>
+#include <NimBLEDevice.h>
 #include <Fonts/FreeSans9pt7b.h>
 #include <Fonts/FreeSans12pt7b.h>
 #include <Fonts/FreeSans18pt7b.h>
@@ -64,6 +65,68 @@ static bool gFrameOk = false;
 static volatile bool gFrameBusy = false;
 static bool gShown = false;
 static bool gDeskZoom = false; // false = full fit (240x119), true = 1:1 cursor loupe
+static const char* DIRECT_SSID = "KVM-GEEK-DIRECT";
+static const char* DIRECT_PASS = "kvmgeek1234";
+static bool gDirectAp = false;
+
+#define BLE_REMOTE_SVC_UUID  "ffe0"
+#define BLE_REMOTE_CHR_UUID  "ffe1"
+
+static bool gBleConnected = false;
+static volatile bool gBlePendingMouse = false;
+static int gBleMouseDx = 0, gBleMouseDy = 0, gBleMouseBtns = 0, gBleMouseWheel = 0;
+static volatile bool gBlePendingMacro = false;
+static char gBleMacroName[32] = "";
+
+class BleServerCallbacks : public NimBLEServerCallbacks {
+  void onConnect(NimBLEServer* pServer) override {
+    gBleConnected = true;
+  }
+  void onDisconnect(NimBLEServer* pServer) override {
+    gBleConnected = false;
+    NimBLEDevice::startAdvertising();
+  }
+};
+
+class BleCharCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* pChar) override {
+    std::string val = pChar->getValue();
+    if (val.empty()) return;
+    if (val[0] == 'M' && val.size() > 2) {
+      int dx = 0, dy = 0, b = 0, w = 0;
+      if (sscanf(val.c_str() + 2, "%d %d %d %d", &dx, &dy, &b, &w) >= 2) {
+        gBleMouseDx = dx; gBleMouseDy = dy; gBleMouseBtns = b; gBleMouseWheel = w;
+        gBlePendingMouse = true;
+      }
+    } else if (val[0] == 'A' && val.size() > 2) {
+      char act[32] = "";
+      if (sscanf(val.c_str() + 2, "%31s", act) == 1) {
+        strlcpy(gBleMacroName, act, sizeof gBleMacroName);
+        gBlePendingMacro = true;
+      }
+    }
+  }
+};
+
+static void setupBleRemote() {
+  NimBLEDevice::init("KVM-GEEK-Remote");
+  NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+  NimBLEServer* pServer = NimBLEDevice::createServer();
+  pServer->setCallbacks(new BleServerCallbacks());
+
+  NimBLEService* pService = pServer->createService(BLE_REMOTE_SVC_UUID);
+  NimBLECharacteristic* pChar = pService->createCharacteristic(
+    BLE_REMOTE_CHR_UUID,
+    NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY
+  );
+  pChar->setCallbacks(new BleCharCallbacks());
+  pService->start();
+
+  NimBLEAdvertising* pAdv = NimBLEDevice::getAdvertising();
+  pAdv->addServiceUUID(BLE_REMOTE_SVC_UUID);
+  pAdv->setName("KVM-GEEK-Remote");
+  pAdv->start();
+}
 
 struct Cfg { String ssid, pass, host, pin, ota; int port; } cfg;
 String BASE;
@@ -477,6 +540,38 @@ void netTask(void*) {
     bool up = WiFi.status() == WL_CONNECTED;
     if (up && !wasUp) last = now - 2001;
     wasUp = up;
+    if (up) {
+      if (WiFi.SSID() == DIRECT_SSID && !gDirectAp) {
+        gDirectAp = true;
+        BASE = "http://" + WiFi.gatewayIP().toString() + ":" + String(cfg.port);
+      } else if (WiFi.SSID() != DIRECT_SSID && gDirectAp) {
+        gDirectAp = false;
+        BASE = "http://" + cfg.host + ":" + String(cfg.port);
+      }
+    }
+    if (gBlePendingMouse && up && pinUsable()) {
+      gBlePendingMouse = false;
+      HTTPClient http; http.setTimeout(400); http.setConnectTimeout(300);
+      http.begin(BASE + "/api/mouse");
+      http.addHeader("Content-Type", "application/json");
+      http.addHeader("X-KVM-PIN", cfg.pin);
+      char buf[64];
+      snprintf(buf, sizeof buf, "{\"dx\":%d,\"dy\":%d,\"buttons\":%d,\"wheel\":%d}",
+               gBleMouseDx, gBleMouseDy, gBleMouseBtns, gBleMouseWheel);
+      http.POST(buf);
+      http.end();
+    }
+    if (gBlePendingMacro && up && pinUsable()) {
+      gBlePendingMacro = false;
+      HTTPClient http; http.setTimeout(800); http.setConnectTimeout(500);
+      http.begin(BASE + "/api/macro");
+      http.addHeader("Content-Type", "application/json");
+      http.addHeader("X-KVM-PIN", cfg.pin);
+      char buf[64];
+      snprintf(buf, sizeof buf, "{\"name\":\"%s\"}", gBleMacroName);
+      http.POST(buf);
+      http.end();
+    }
     if (gUsbFlip && pinUsable() && WiFi.status() == WL_CONNECTED) {
       gUsbFlip = false;
       HTTPClient http; http.setTimeout(2000); http.setConnectTimeout(1500);
@@ -1750,6 +1845,8 @@ void statusBar(const Status& s, const PcHist& h, uint32_t now) {
   }
   if (s.underVolt) txt(142, ty, "!PWR", V_BAD);
   else if (s.underVoltEver) txt(142, ty, "PWR~", V_WARN);
+  if (gBleConnected) txt(158, ty, "BLE", V_OK);
+  if (gDirectAp) txt(gx - 20, ty, "DIR", V_OK);
 }
 
 
@@ -1922,8 +2019,26 @@ void setup() {
 #endif
   if (bootHeld || unconfigured) setupPortal();
   gLock = xSemaphoreCreateMutex();
+  setupBleRemote();
   WiFi.mode(WIFI_STA); WiFi.setAutoReconnect(true);
   WiFi.begin(cfg.ssid.c_str(), cfg.pass.length() ? cfg.pass.c_str() : nullptr);
+  uint32_t t_wifi = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t_wifi < 6000) delay(100);
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.disconnect();
+    WiFi.begin(DIRECT_SSID, DIRECT_PASS);
+    t_wifi = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - t_wifi < 5000) delay(100);
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    if (WiFi.SSID() == DIRECT_SSID) {
+      gDirectAp = true;
+      BASE = "http://" + WiFi.gatewayIP().toString() + ":" + String(cfg.port);
+    } else {
+      gDirectAp = false;
+      BASE = "http://" + cfg.host + ":" + String(cfg.port);
+    }
+  }
   xTaskCreatePinnedToCore(netTask, "net", 12288, nullptr, 1, nullptr, 0);
   if (cfg.ota.length() >= 8) xTaskCreatePinnedToCore(otaTask, "ota", 8192, nullptr, 1, nullptr, 0);
   else Serial.println("OTA off: set an OTA password in the setup portal (hold BOOT at power-on)");
