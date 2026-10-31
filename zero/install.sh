@@ -45,6 +45,19 @@ if [ ! -s /etc/pi-zero-w-hid-kvm/pin ]; then
   ( umask 077; python3 -c 'import secrets; print("%08d" % secrets.randbelow(10**8))' > /etc/pi-zero-w-hid-kvm/pin )
   NEW_PIN=1
 fi
+# One-time move: images used to live in /opt/pi-zero-w-hid-kvm/images (RAM overlay
+# on a read-only root). Move them onto kvmdata and repoint a saved boot image.
+OLD_IMG=/opt/pi-zero-w-hid-kvm/images NEW_IMG=/var/lib/kvm/images
+if [ -d "$OLD_IMG" ] && mountpoint -q /var/lib/kvm; then
+  mkdir -p "$NEW_IMG"
+  for f in "$OLD_IMG"/*; do
+    [ -f "$f" ] || continue
+    if [ -e "$NEW_IMG/${f##*/}" ]; then echo "WARN: $NEW_IMG/${f##*/} exists; leaving $f"; else mv -n -- "$f" "$NEW_IMG/" && echo "Moved ${f##*/} to $NEW_IMG"; fi
+  done
+  if [ -f /var/lib/kvm/boot-image ] && grep -q "^$OLD_IMG/" /var/lib/kvm/boot-image; then
+    sed -i "s|^$OLD_IMG/|$NEW_IMG/|" /var/lib/kvm/boot-image
+  fi
+fi
 cp zero/systemd/*.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable hid-gadget.service kvm-web.service
