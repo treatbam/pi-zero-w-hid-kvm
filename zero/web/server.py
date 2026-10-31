@@ -65,6 +65,7 @@ A custom header also forces a CORS preflight, so other web pages can't send thes
 GET /api/status stays open (read-only; the GEEK and the console poll it).
 GET /api/term needs the X-KVM-PIN header too (host terminal output can hold secrets).
 """
+import errno
 import argparse, fcntl, signal, hmac, json, os, socket, struct, subprocess, threading, time
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import autolaunch, hid, history, hostview, media, term, ws
@@ -666,7 +667,11 @@ class H(SimpleHTTPRequestHandler):
         if self.path == "/api/media/netboot":
             try:
                 return self._json(200, media.fetch_netboot(MEDIA.images_dir))
+            except media.Busy as e:
+                return self._json(409, {"error": str(e)})
             except OSError as e:
+                if e.errno == errno.ENOSPC:
+                    return self._json(507, {"error": "SD card is full"})
                 return self._json(502, {"error": f"download failed: {e}"})
             except (RuntimeError, ValueError) as e:
                 return self._json(502, {"error": str(e)})

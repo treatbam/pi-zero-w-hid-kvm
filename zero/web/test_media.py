@@ -7,8 +7,10 @@ import sys
 
 # Works from the repo root (zero.web.media) and from zero/web (media).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from media import (MediaManager, expected_sha256, fetch_netboot,  # noqa: E402
-                   NETBOOT_URL, NETBOOT_SUMS_URL)
+import hashlib  # noqa: E402
+import io  # noqa: E402
+import media  # noqa: E402
+from media import MediaManager, expected_sha256, fetch_verified, Busy  # noqa: E402
 
 class TestMediaManager(unittest.TestCase):
     def setUp(self):
@@ -175,17 +177,20 @@ class TestMediaManager(unittest.TestCase):
         self.assertEqual(self.mgr._saved_boot_path(), "")
 
 
-class TestNetboot(unittest.TestCase):
+class TestDownload(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
+        os.environ["KVM_DATA_REQUIRE_MOUNT"] = "0"
 
     def tearDown(self):
         shutil.rmtree(self.tmp)
 
-    def _getter(self, iso, sums):
-        def get(url, limit):
-            return {NETBOOT_URL: iso, NETBOOT_SUMS_URL: sums}[url]
-        return get
+    def _opener(self, data):
+        return lambda url: io.BytesIO(data)
+
+    def _fetch(self, data, sha, **kw):
+        return fetch_verified("https://github.com/x", sha, "nb.iso", self.tmp, 1 << 20,
+                              opener=self._opener(data), **kw)
 
     def test_expected_sha256_parses_star_and_space_forms(self):
         h = "a" * 64
@@ -193,25 +198,70 @@ class TestNetboot(unittest.TestCase):
         self.assertEqual(expected_sha256(f"{h}  netboot.xyz.iso\n", "netboot.xyz.iso"), h)
         self.assertIsNone(expected_sha256(f"{h} *other.iso\n", "netboot.xyz.iso"))
 
-    def test_fetch_writes_file_when_hash_matches(self):
-        import hashlib
-        iso = b"ISO" * 1000
-        sums = f"{hashlib.sha256(iso).hexdigest()} *netboot.xyz.iso\n".encode()
-        res = fetch_netboot(self.tmp, get=self._getter(iso, sums))
-        self.assertTrue(res["ok"])
-        with open(os.path.join(self.tmp, "netboot.xyz.iso"), "rb") as f:
-            self.assertEqual(f.read(), iso)
+    def test_keeps_file_when_hash_matches(self):
+        data = b"ISO" * 50000
+        res = self._fetch(data, hashlib.sha256(data).hexdigest())
+        self.assertEqual(res["size"], len(data))
+        self.assertEqual(sorted(os.listdir(self.tmp)), ["nb.iso"])
 
-    def test_fetch_refuses_bad_hash_and_leaves_nothing(self):
-        sums = ("0" * 64 + " *netboot.xyz.iso\n").encode()
+    def test_bad_hash_leaves_nothing(self):
         with self.assertRaises(RuntimeError):
-            fetch_netboot(self.tmp, get=self._getter(b"tampered", sums))
+            self._fetch(b"tampered", "0" * 64)
         self.assertEqual(os.listdir(self.tmp), [])
 
-    def test_fetch_refuses_missing_checksum(self):
+    def test_oversize_is_refused_and_cleaned(self):
+        data = b"x" * ((1 << 20) + 1)
         with self.assertRaises(RuntimeError):
-            fetch_netboot(self.tmp, get=self._getter(b"x", b"nothing here\n"))
+            self._fetch(data, hashlib.sha256(data).hexdigest())
+        self.assertEqual(os.listdir(self.tmp), [])
 
+    def test_overall_deadline(self):
+        t = iter(range(0, 10000, 100))
+        with self.assertRaises(RuntimeError):
+            self._fetch(b"y" * 300000, "0" * 64, deadline_s=150, clock=lambda: next(t))
+        self.assertEqual(os.listdir(self.tmp), [])
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_disk_full_cleans_temp(self):
+        class Full(io.BytesIO):
+            pass
+        real = os.fdopen
+        def fake_fdopen(fd, mode):
+            f = real(fd, mode)
+            def boom(_):
+                raise OSError(28, "No space left on device")
+            f.write = boom
+            return f
+        media.os.fdopen = fake_fdopen
+        try:
+            with self.assertRaises(OSError):
+                self._fetch(b"z" * 10, "0" * 64)
+        finally:
+            media.os.fdopen = real
+        self.assertEqual(os.listdir(self.tmp), [])
+
+    def test_second_download_is_busy(self):
+        media._DOWNLOAD_LOCK.acquire()
+        try:
+            with self.assertRaises(Busy):
+                self._fetch(b"a", "0" * 64)
+        finally:
+            media._DOWNLOAD_LOCK.release()
+
+    def test_rejects_http_and_foreign_hosts(self):
+        for url in ("http://github.com/x", "https://evil.example/x"):
+            with self.assertRaises(RuntimeError):
+                media._check_url(url)
+        media._check_url("https://release-assets.githubusercontent.com/a")
+
+    def test_mount_check_wants_writable_ext4(self):
+        os.environ["KVM_DATA_REQUIRE_MOUNT"] = "1"
+        try:
+            m = os.path.join(self.tmp, "mounts")
+            with open(m, "w") as f:
+                f.write("overlayroot / overlay rw 0 0\n")
+            self.assertFalse(media._mount_ok("/var/lib/kvm/images", m))
+            with open(m, "a") as f:
+                f.write("/dev/mmcblk0p3 /var/lib/kvm ext4 rw,noatime 0 0\n")
+            self.assertTrue(media._mount_ok("/var/lib/kvm/images", m))
+        finally:
+            os.environ["KVM_DATA_REQUIRE_MOUNT"] = "0"

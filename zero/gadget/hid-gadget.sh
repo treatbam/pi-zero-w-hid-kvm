@@ -125,7 +125,7 @@ if [ -f "$BOOT_FILE" ]; then
   SEL=$(head -n 1 "$BOOT_FILE" | tr -d '\r')
 fi
 # Only trust a saved path that really resolves inside the images folder.
-IMAGES_DIR=$(realpath -m -- "${KVM_IMAGES_DIR:-/opt/pi-zero-w-hid-kvm/images}")
+IMAGES_DIR=$(realpath -m -- "${KVM_IMAGES_DIR:-/var/lib/kvm/images}")
 if [ -n "$SEL" ]; then
   RSEL=$(realpath -e -- "$SEL" 2>/dev/null || true)
   case "$RSEL" in

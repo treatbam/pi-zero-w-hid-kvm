@@ -7,9 +7,10 @@ CD limit is presented as a CD so a PC can boot it. The chosen path is
 saved on the writable data partition and put back in the slot at boot
 by hid-gadget.sh.
 
-Images belong on the SD card (default /opt/pi-zero-w-hid-kvm/images).
-/home/pi/images sits on the read-only-root overlay and disappears on reboot,
-and it is too small for an installer.
+Images live on the kvmdata partition (default /var/lib/kvm/images). Anywhere
+else under the read-only root overlay is RAM and disappears on reboot.
+kvmdata defaults to 64 MB: enough for netboot.xyz, not for a full installer ISO
+(re-run tools/setup-kvmdata.sh with a larger --size-mb for those).
 """
 import os
 import re
@@ -20,7 +21,7 @@ import functools
 
 LUN_DEFAULT = "/sys/kernel/config/usb_gadget/kvm/functions/mass_storage.usb0/lun.0"
 SETUP_IMG_DEFAULT = "/opt/pi-zero-w-hid-kvm/zero/gadget/kvm-setup.img"
-IMAGES_DIR_DEFAULT = "/opt/pi-zero-w-hid-kvm/images"
+IMAGES_DIR_DEFAULT = "/var/lib/kvm/images"  # on kvmdata, so images survive the read-only root
 BOOT_IMAGE_DEFAULT = "/var/lib/kvm/boot-image"
 
 # f_mass_storage CD emulation: at least 300 sectors of 2048 bytes, and the
@@ -28,21 +29,46 @@ BOOT_IMAGE_DEFAULT = "/var/lib/kvm/boot-image"
 CDROM_MIN_BYTES = 300 * 2048
 CDROM_MAX_BYTES = 256 * 60 * 75 * 2048
 
-# netboot.xyz: a ~2.5 MB boot CD that pulls installers over the host's own network.
-NETBOOT_URL = "https://boot.netboot.xyz/ipxe/netboot.xyz.iso"
-NETBOOT_SUMS_URL = "https://boot.netboot.xyz/ipxe/netboot.xyz-sha256-checksums.txt"
+# netboot.xyz: a ~2.4 MB boot CD that pulls installers over the host's own network.
+# Pinned release, hash stored here, so a hacked mirror can't swap the file.
+# To bump: change the version, download the ISO, and paste its sha256sum below.
+NETBOOT_VERSION = "3.0.3"
+NETBOOT_URL = f"https://github.com/netbootxyz/netboot.xyz/releases/download/{NETBOOT_VERSION}/netboot.xyz.iso"
+NETBOOT_SHA256 = "2206b05c1c7a8ec7a7a4356dd5f811e19c8081d7d5e2bc856f1f3f4059c5fed1"
 NETBOOT_NAME = "netboot.xyz.iso"
-NETBOOT_MAX_BYTES = 64 * 1024 * 1024
+NETBOOT_MAX_BYTES = 8 * 1024 * 1024
+# GitHub serves release files from its asset CDN after a redirect.
+DOWNLOAD_HOSTS = ("github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com")
+DOWNLOAD_DEADLINE_S = 120
+
+_DOWNLOAD_LOCK = threading.Lock()
 
 
-def _http_get(url, limit, timeout=60):
+class Busy(RuntimeError):
+    """Another download is already running."""
+
+
+def _check_url(url):
+    from urllib.parse import urlsplit
+    u = urlsplit(url)
+    if u.scheme != "https" or u.hostname not in DOWNLOAD_HOSTS:
+        raise RuntimeError(f"refusing download from {url!r}: not https on an allowed host")
+
+
+def _http_stream(url, timeout=30):
+    """Open url; every redirect hop must stay https on an allowed host."""
     import urllib.request
-    req = urllib.request.Request(url, headers={"User-Agent": "pi-zero-w-hid-kvm"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        data = r.read(limit + 1)
-    if len(data) > limit:
-        raise ValueError(f"{url} is larger than {limit} bytes")
-    return data
+
+    class _Redirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            _check_url(newurl)
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    _check_url(url)
+    opener = urllib.request.build_opener(_Redirect)
+    r = opener.open(urllib.request.Request(url, headers={"User-Agent": "pi-zero-w-hid-kvm"}), timeout=timeout)
+    _check_url(r.geturl())
+    return r
 
 
 def expected_sha256(sums_text, name):
@@ -54,30 +80,81 @@ def expected_sha256(sums_text, name):
     return None
 
 
-def fetch_netboot(images_dir, get=_http_get):
-    """Download netboot.xyz.iso into images_dir, checked against its published SHA256.
+def _mount_ok(path, mounts="/proc/mounts"):
+    """True if path sits on a real writable mount (kvmdata), not the RAM overlay."""
+    if os.environ.get("KVM_DATA_REQUIRE_MOUNT", "1") == "0":
+        return True
+    path = os.path.realpath(path)
+    best, info = "", (None, set())
+    try:
+        with open(mounts) as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                mnt = parts[1].replace("\\040", " ")
+                if (path == mnt or path.startswith(mnt.rstrip("/") + "/")) and len(mnt) >= len(best):
+                    best, info = mnt, (parts[2], set(parts[3].split(",")))
+    except OSError:
+        return False
+    return info[0] == "ext4" and "rw" in info[1]
 
-    Writes to a temp file and renames only after the hash matches, so a bad or
-    partial download never shows up in the image list.
+
+def fetch_verified(url, sha256, name, images_dir, max_bytes, opener=_http_stream,
+                   deadline_s=DOWNLOAD_DEADLINE_S, clock=None):
+    """Stream url into images_dir/name, keeping it only if its SHA256 matches.
+
+    The file goes to a private temp file in images_dir and is renamed into place
+    after the hash checks out; any failure removes the temp file.
     """
     import hashlib
-    sums = get(NETBOOT_SUMS_URL, 64 * 1024).decode("utf-8", "replace")
-    want = expected_sha256(sums, NETBOOT_NAME)
-    if not want:
-        raise RuntimeError("netboot.xyz checksum list has no entry for " + NETBOOT_NAME)
-    data = get(NETBOOT_URL, NETBOOT_MAX_BYTES)
-    got = hashlib.sha256(data).hexdigest()
-    if got != want:
-        raise RuntimeError(f"netboot.xyz SHA256 mismatch: got {got}, expected {want}")
-    os.makedirs(images_dir, exist_ok=True)
-    dest = os.path.join(images_dir, NETBOOT_NAME)
-    tmp = dest + ".part"
-    with open(tmp, "wb") as f:
-        f.write(data)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, dest)
-    return {"ok": True, "name": NETBOOT_NAME, "path": dest, "size": len(data), "sha256": got}
+    import time
+    clock = clock or time.monotonic
+    if not _DOWNLOAD_LOCK.acquire(blocking=False):
+        raise Busy("another download is already running")
+    try:
+        os.makedirs(images_dir, exist_ok=True)
+        if not _mount_ok(images_dir):
+            raise RuntimeError(f"{images_dir} is not on the kvmdata partition; "
+                               "a download there would live in RAM and vanish on reboot")
+        start = clock()
+        h = hashlib.sha256()
+        size = 0
+        fd, tmp = tempfile.mkstemp(prefix="." + name + ".", suffix=".part", dir=images_dir)
+        try:
+            with os.fdopen(fd, "wb") as f, opener(url) as r:
+                while True:
+                    if clock() - start > deadline_s:
+                        raise RuntimeError(f"download took longer than {deadline_s} s")
+                    chunk = r.read(64 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > max_bytes:
+                        raise RuntimeError(f"{name} is larger than {max_bytes} bytes")
+                    h.update(chunk)
+                    f.write(chunk)
+                f.flush()
+                os.fsync(f.fileno())
+            got = h.hexdigest()
+            if got != sha256.lower():
+                raise RuntimeError(f"{name} SHA256 mismatch: got {got}, expected {sha256.lower()}")
+            dest = os.path.join(images_dir, name)
+            os.replace(tmp, dest)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        return {"ok": True, "name": name, "path": dest, "size": size, "sha256": got}
+    finally:
+        _DOWNLOAD_LOCK.release()
+
+
+def fetch_netboot(images_dir, **kw):
+    """Download the pinned netboot.xyz release, checked against the hash stored in this file."""
+    return fetch_verified(NETBOOT_URL, NETBOOT_SHA256, NETBOOT_NAME, images_dir, NETBOOT_MAX_BYTES, **kw)
 
 
 def find_images_dir():
