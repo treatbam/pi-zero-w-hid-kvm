@@ -108,24 +108,61 @@ if [ "$MODE" = pc ]; then
   ln -s functions/acm.usb0 configs/c.1/
 fi
 
-# Optional read-only KVM-SETUP FAT12 pairing drive (mass_storage.usb0).
-# If dwc2 runs out of hardware IN endpoints on bind, we automatically drop it so HID+ACM always binds.
+# One mass-storage slot. A path saved in /var/lib/kvm/boot-image (by the web
+# media manager) is presented again at boot, so a PC can boot that disc after
+# the Zero reboots. Anything else is the read-only KVM-SETUP pairing stick.
+# If dwc2 runs out of hardware IN endpoints on bind, drop the slot so HID+ACM still binds.
 SETUP_IMG="$HERE/kvm-setup.img"
 if [ ! -f "$SETUP_IMG" ] && [ -f "$HERE/build_setup_img.py" ]; then
   python3 "$HERE/build_setup_img.py" /run/kvm-setup.img >/dev/null 2>&1 && SETUP_IMG=/run/kvm-setup.img || true
 fi
-if [ "$MODE" = pc ] && [ "${KVM_SETUP_DRIVE:-1}" != "0" ] && [ -f "$SETUP_IMG" ]; then
+BOOT_FILE="${KVM_BOOT_IMAGE:-/var/lib/kvm/boot-image}"
+DISC=""
+CDROM=0
+INQ="DIY      KVM-SETUP"
+SEL=""
+if [ -f "$BOOT_FILE" ]; then
+  SEL=$(head -n 1 "$BOOT_FILE" | tr -d '\r')
+fi
+if [ -n "$SEL" ] && [ -f "$SEL" ] && [ "$SEL" != "$SETUP_IMG" ]; then
+  case "$SEL" in
+    *.iso|*.ISO)
+      bytes=$(stat -c %s "$SEL" 2>/dev/null || echo 0)
+      # Same limits as the kernel CD emulator: >= 300 sectors, and it cuts a
+      # disc at 256*60*75 sectors (about 2.2 GB).
+      if [ "$bytes" -ge 614400 ] && [ "$bytes" -lt 2359296000 ]; then
+        DISC="$SEL"
+        CDROM=1
+        INQ="KVM      BOOT-CD"
+      else
+        echo "WARN: $SEL is ${bytes} bytes, not a bootable CD; using the setup drive" >&2
+      fi
+      ;;
+    *)
+      DISC="$SEL"
+      CDROM=0
+      INQ="KVM      BOOT-DISK"
+      ;;
+  esac
+fi
+if [ -z "$DISC" ] && [ -f "$SETUP_IMG" ]; then
+  DISC="$SETUP_IMG"
+  CDROM=0
+  INQ="DIY      KVM-SETUP"
+fi
+if [ "$MODE" = pc ] && [ "${KVM_SETUP_DRIVE:-1}" != "0" ] && [ -n "$DISC" ]; then
   if mkdir -p functions/mass_storage.usb0 2>/dev/null; then
     echo 0 > functions/mass_storage.usb0/stall 2>/dev/null || true
     echo 1 > functions/mass_storage.usb0/lun.0/ro
     echo 1 > functions/mass_storage.usb0/lun.0/removable
     echo 1 > functions/mass_storage.usb0/lun.0/nofua 2>/dev/null || true
-    echo "DIY      KVM-SETUP" > functions/mass_storage.usb0/lun.0/inquiry_string 2>/dev/null || true
+    echo "$CDROM" > functions/mass_storage.usb0/lun.0/cdrom 2>/dev/null || true
+    echo "$INQ" > functions/mass_storage.usb0/lun.0/inquiry_string 2>/dev/null || true
     # A missing or empty image used to abort the whole gadget (set -e) and take the console with it.
-    if echo "$SETUP_IMG" > functions/mass_storage.usb0/lun.0/file; then
+    if echo "$DISC" > functions/mass_storage.usb0/lun.0/file; then
       ln -s functions/mass_storage.usb0 configs/c.1/
     else
-      echo "WARN: setup image rejected; HID+ACM only" >&2
+      echo "WARN: boot image rejected; HID+ACM only" >&2
       rm -rf functions/mass_storage.usb0
     fi
   fi

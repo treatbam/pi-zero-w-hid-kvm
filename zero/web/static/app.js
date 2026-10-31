@@ -398,7 +398,8 @@ async function loadMediaStatus() {
       const typeStr = data.cdrom ? 'CD-ROM' : 'Flash Drive';
       const roStr = data.ro ? 'Read-Only' : 'Read-Write';
       mountedName.textContent = data.mounted.name;
-      mountedInfo.textContent = `${data.mounted.size_mb} MB • ${typeStr} (${roStr})`;
+      const stay = data.boot ? ' • stays in after reboot' : '';
+      mountedInfo.textContent = `${data.mounted.size_mb} MB • ${typeStr} (${roStr})${stay}`;
       if (ejectBtn) ejectBtn.style.display = 'inline-block';
     } else {
       mountedName.textContent = 'Drive Empty';

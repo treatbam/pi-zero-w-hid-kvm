@@ -656,7 +656,7 @@ class H(SimpleHTTPRequestHandler):
                 return self._json(503, {"error": str(e)})
         if self.path == "/api/media/eject":
             try:
-                MEDIA.eject()
+                MEDIA.eject_and_forget()
                 return self._json(200, {"ok": True, "ejected": True})
             except RuntimeError as e:
                 return self._json(503, {"error": str(e)})
