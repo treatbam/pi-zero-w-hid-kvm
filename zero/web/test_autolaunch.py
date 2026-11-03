@@ -169,11 +169,22 @@ class AutoLaunchUnitTest(unittest.TestCase):
         self.assertEqual(img[510:512], b"\x55\xaa")
         self.assertEqual(img[43:54], b"KVM-SETUP  ")
         files = build_setup_img.list_fat12_files(img)
-        self.assertEqual(set(files.keys()), {"install-linux.sh", "install-windows.ps1", "kvm_stub.py", "README.txt"})
+        self.assertEqual(set(files.keys()), {"install-linux.sh", "install-windows.ps1", "install-windows.cmd", "kvm_stub.py", "README.txt"})
         host_dir = os.path.join(ROOT, "host")
         for fname in ("install-linux.sh", "install-windows.ps1", "kvm_stub.py"):
             with open(os.path.join(host_dir, fname), "rb") as f:
                 self.assertEqual(files[fname], f.read())
+        self.assertIn(b"ExecutionPolicy Bypass", files["install-windows.cmd"])
+        self.assertTrue(files["install-windows.cmd"].endswith(b"\r\n"))
+
+    def test_windows_pair_command_fits_the_run_box(self):
+        import hid
+        cmd = autolaunch.WINDOWS_HID_ONELINER
+        self.assertLess(len(cmd.strip()), 259)
+        self.assertTrue(cmd.endswith("\n"))
+        self.assertNotIn("KVMINST", cmd)
+        missing = [ch for ch in cmd if hid._char_combo(ch) is None]
+        self.assertEqual(missing, [])
 
 
 class ServerWsAndThemeTest(unittest.TestCase):
@@ -280,6 +291,59 @@ class ServerWsAndThemeTest(unittest.TestCase):
             self.assertEqual(r5.status, 200)
         finally:
             conn.close()
+
+    def test_geek_rssi_round_trips_through_status(self):
+        self.srv_mod.GEEK_RSSI.update(dbm=None, at=0.0)
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+
+        def status(hdrs):
+            conn.request("GET", "/api/status", headers=hdrs)
+            r = conn.getresponse()
+            self.assertEqual(r.status, 200)
+            return json.loads(r.read())
+
+        try:
+            self.assertIsNone(status({"X-KVM-PIN": self.pin})["geek_rssi"])
+            self.assertEqual(status({"X-KVM-PIN": self.pin, "X-Geek-RSSI": "-58"})["geek_rssi"], -58)
+            # The console polls without the header and still sees the GEEK's last value.
+            self.assertEqual(status({"X-KVM-PIN": self.pin})["geek_rssi"], -58)
+            self.assertEqual(status({"X-KVM-PIN": self.pin, "X-Geek-RSSI": "junk"})["geek_rssi"], -58)
+            # Without the PIN the header is ignored and the field is not sent.
+            st = status({"X-Geek-RSSI": "-40"})
+            self.assertNotIn("geek_rssi", st)
+            self.assertEqual(status({"X-KVM-PIN": self.pin})["geek_rssi"], -58)
+            self.srv_mod.GEEK_RSSI["at"] -= self.srv_mod.GEEK_RSSI_TTL + 1
+            self.assertIsNone(status({"X-KVM-PIN": self.pin})["geek_rssi"])
+        finally:
+            conn.close()
+
+    def test_usb_mode_is_saved_and_reported(self):
+        path = os.path.join(self.tmp, "usb_mode")
+        saved_file, saved_mode = self.srv_mod.USB_MODE_FILE, dict(self.srv_mod.USB_STATE)
+        self.srv_mod.USB_MODE_FILE = path
+        self.srv_mod.USB_STATE["mode"] = "pc"
+        os.environ["KVM_USB_MODE_APPLY"] = "0"
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            hdrs = {"Content-Type": "application/json", "X-KVM-PIN": self.pin}
+            conn.request("POST", "/api/usb_mode", json.dumps({"mode": "android"}), hdrs)
+            r = conn.getresponse()
+            self.assertEqual(r.status, 202)
+            self.assertEqual(json.loads(r.read())["usb_mode"], "android")
+            self.assertEqual(open(path).read().strip(), "android")
+            conn.request("GET", "/api/status")
+            st = json.loads(conn.getresponse().read())
+            self.assertEqual(st["usb_mode"], "android")
+            conn.request("POST", "/api/usb_mode", json.dumps({"mode": "phone"}), hdrs)
+            bad = conn.getresponse()
+            self.assertEqual(bad.status, 400)
+            bad.read()
+        finally:
+            conn.close()
+            self.srv_mod.USB_MODE_FILE = saved_file
+            self.srv_mod.USB_STATE.clear()
+            self.srv_mod.USB_STATE.update(saved_mode)
+            os.environ.pop("KVM_USB_MODE_APPLY", None)
 
     def test_websocket_auth_ping_and_mouse_dispatch(self):
         s = socket.create_connection(("127.0.0.1", self.port), timeout=5)

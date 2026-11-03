@@ -1,5 +1,5 @@
 // Trackpad-first KVM cockpit (Phone Portrait, Touch-Ergonomic Tablet Mode, Wide Split Cockpit & Full Stats Dashboard).
-// Shares the GEEK visual lineage (#2 matte charcoal ground + #3 studio periwinkle/mint-teal/indigo/warning ramp),
+// Shares the GEEK visual lineage (lifted charcoal tiles, bone figures until warm, mint/indigo telemetry),
 // low-latency /api/ws WebSocket HID transport with HTTP/1.1 keep-alive fallback, 2-finger scroll + right-tap,
 // sticky/locked modifiers, Drag-Lock, acceleration curves, and supervised 1-tap target host pairing.
 
@@ -34,7 +34,7 @@ for (const dlg of [menuDlg, pinDlg]) {
   }
 }
 
-document.getElementById('menu-btn').onclick = () => menuDlg.showModal();
+document.getElementById('menu-btn').onclick = () => { loadMediaStatus(); menuDlg.showModal(); };
 
 // ---- Responsive & Explicit Layout Mode (Auto | Tablet | Phone | Desktop) ----------------
 let layoutPref = localStorage.getItem('kvmLayout') || 'auto';
@@ -226,6 +226,25 @@ applyTheme(currentTheme, false);
 document.querySelectorAll('[data-theme-pick]').forEach(btn => {
   btn.onclick = () => applyTheme(btn.dataset.themePick, true);
 });
+
+function showUsbMode(mode) {
+  document.querySelectorAll('[data-usb-pick]').forEach(btn => {
+    btn.classList.toggle('chip-on', btn.dataset.usbPick === mode);
+  });
+}
+document.querySelectorAll('[data-usb-pick]').forEach(btn => {
+  btn.onclick = async () => {
+    const mode = btn.dataset.usbPick;
+    const r = await post('/api/usb_mode', {mode});
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) {
+      showUsbMode(mode);
+      statusNote(mode === 'android' ? 'USB: Android keyboard and mouse' : 'USB: PC gadget');
+    } else {
+      statusNote(`USB mode: ${j.error || r.status}`);
+    }
+  };
+});
 syncLayoutUI();
 
 // ---- Low-Latency WebSocket Transport (/api/ws) + HTTP/1.1 Fallback ----------------------
@@ -337,6 +356,17 @@ async function resetNetHist() {
   if (r.ok) poll();
 }
 document.getElementById('rst-hist').onclick = resetNetHist;
+const wifiApBtn = document.getElementById('wifi-ap-btn');
+if (wifiApBtn) {
+  wifiApBtn.onclick = async () => {
+    if (!confirm('Toggle between Home Wi-Fi and Direct Hotspot (KVM-GEEK-DIRECT)?\n\nIf switching to Hotspot, reconnect your device to Wi-Fi "KVM-GEEK-DIRECT" (password: kvmgeek1234).')) return;
+    menuDlg.close();
+    statusNote('Switching Wi-Fi mode…');
+    const r = await post('/api/wifi_ap', {mode: 'toggle'});
+    if (r.ok) statusNote('Wi-Fi mode switch requested');
+    else statusNote('Failed to switch Wi-Fi');
+  };
+}
 document.getElementById('st-rst-hist').onclick = resetNetHist;
 
 async function pairHost(osName) {
@@ -348,6 +378,102 @@ async function pairHost(osName) {
   statusNote(r.ok ? `Pairing ${pretty} host over USB…` : `Pairing failed: ${j.error || r.status}`);
   setTimeout(poll, 600);
 }
+
+// ---- Virtual Media / ISO Mounting ----
+async function loadMediaStatus() {
+  const select = document.getElementById('media-select');
+  const mountedName = document.getElementById('media-mounted-name');
+  const mountedInfo = document.getElementById('media-mounted-info');
+  const ejectBtn = document.getElementById('media-eject-btn');
+  if (!select) return;
+
+  try {
+    const res = await fetch('/api/media', {
+      headers: {'X-KVM-PIN': pin || ''}
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+
+    if (data.mounted) {
+      const typeStr = data.cdrom ? 'CD-ROM' : 'Flash Drive';
+      const roStr = data.ro ? 'Read-Only' : 'Read-Write';
+      mountedName.textContent = data.mounted.name;
+      const stay = data.boot ? ' • stays in after reboot' : '';
+      mountedInfo.textContent = `${data.mounted.size_mb} MB • ${typeStr} (${roStr})${stay}`;
+      if (ejectBtn) ejectBtn.style.display = 'inline-block';
+    } else {
+      mountedName.textContent = 'Drive Empty';
+      mountedInfo.textContent = 'No media inserted';
+      if (ejectBtn) ejectBtn.style.display = 'none';
+    }
+
+    const curVal = select.value;
+    select.innerHTML = '<option value="">Select an ISO or disk image...</option>';
+    (data.images || []).forEach(img => {
+      const opt = document.createElement('option');
+      opt.value = img.name;
+      opt.textContent = `${img.name} (${img.size_mb} MB, ${img.type.toUpperCase()})${img.mounted ? ' [MOUNTED]' : ''}`;
+      if (img.mounted) opt.selected = true;
+      select.appendChild(opt);
+    });
+    if (!select.value && curVal) select.value = curVal;
+  } catch (e) {}
+}
+
+const mediaMountBtn = document.getElementById('media-mount-btn');
+if (mediaMountBtn) {
+  mediaMountBtn.onclick = async () => {
+    const sel = document.getElementById('media-select');
+    if (!sel || !sel.value) {
+      statusNote('Please select an image to mount');
+      return;
+    }
+    statusNote(`Mounting ${sel.value}…`);
+    const r = await post('/api/media/mount', {image: sel.value});
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) {
+      statusNote(`Mounted: ${j.mounted.name}`);
+      loadMediaStatus();
+    } else {
+      statusNote(`Mount failed: ${j.error || r.status}`);
+    }
+  };
+}
+
+const mediaEjectBtn = document.getElementById('media-eject-btn');
+if (mediaEjectBtn) {
+  mediaEjectBtn.onclick = async () => {
+    statusNote('Ejecting virtual media…');
+    const r = await post('/api/media/eject', {});
+    if (r.ok) {
+      statusNote('Virtual media ejected');
+      loadMediaStatus();
+    } else {
+      statusNote('Eject failed');
+    }
+  };
+}
+
+const mediaNetbootBtn = document.getElementById('media-netboot-btn');
+if (mediaNetbootBtn) {
+  mediaNetbootBtn.onclick = async () => {
+    mediaNetbootBtn.disabled = true;
+    statusNote('Downloading netboot.xyz and checking its SHA256…');
+    try {
+      const r = await post('/api/media/netboot', {});
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) {
+        statusNote(`netboot.xyz ready (${Math.round(j.size / 1024)} KB, SHA256 verified). Select it and Mount.`);
+        loadMediaStatus();
+      } else {
+        statusNote(`netboot.xyz failed: ${j.error || r.status}`);
+      }
+    } finally {
+      mediaNetbootBtn.disabled = false;
+    }
+  };
+}
+
 document.getElementById('pair-linux').onclick = () => pairHost('linux');
 document.getElementById('pair-win').onclick = () => pairHost('windows');
 document.getElementById('dlg-pair-linux').onclick = () => pairHost('linux');
@@ -666,9 +792,10 @@ document.getElementById('clip-pull').onclick = async () => {
 
 function showLeds(leds) {
   const l = leds || {};
-  document.getElementById('led-num').className = 'led' + (l.num ? ' on' : '');
-  document.getElementById('led-caps').className = 'led' + (l.caps ? ' on' : '');
-  document.getElementById('led-scroll').className = 'led' + (l.scroll ? ' on' : '');
+  const set = (id, on) => { const el = document.getElementById(id); if (el) el.className = 'led' + (on ? ' on' : ''); };
+  set('led-num', l.num);
+  set('led-caps', l.caps);
+  set('led-scroll', l.scroll);
 }
 
 async function runCapsPing() {
@@ -1075,20 +1202,33 @@ const fmtUp = s => {
   return Math.floor(s / 86400) + 'd ' + Math.floor((s % 86400) / 3600) + 'h';
 };
 
-const histTemp = [], histLoad = [], histRx = [], histTx = [];
+const histTemp = [], histLoad = [], histRx = [], histTx = [], histZeroLoad = [], histGeekRssi = [];
 const MAX_HIST = 240; // 240 * 2s = 8 minutes (matches GEEK HIST = 240!)
 
 function cssVar(name) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#74a8ee';
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#989898';
+}
+function hexToRgba(hex, a) {
+  let h = (hex || '').trim().replace('#', '');
+  if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  const n = parseInt(h.slice(0, 6), 16);
+  if (!Number.isFinite(n)) return `rgba(240,240,240,${a})`;
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
 }
 
+// Cool figures stay bone (--fig) until `warm`, then warn → hot → bad. Same stops as the GEEK vHeat ramp.
 function heatColorCss(val, warm, hot) {
-  if (val == null || !Number.isFinite(val)) return 'var(--val)';
+  if (val == null || !Number.isFinite(val)) return 'var(--fig)';
   if (val >= hot) return 'var(--bad)';
   if (val >= (warm + hot) * 0.5) return 'var(--hot)';
   if (val >= warm) return 'var(--warn)';
-  return 'var(--rx)';
+  return 'var(--fig)';
 }
+function meterColorCss(val, warm, hot) {
+  const c = heatColorCss(val, warm, hot);
+  return c === 'var(--fig)' ? 'color-mix(in oklab, var(--fig) 55%, transparent)' : c;
+}
+let loadTop = 4;
 
 function prepHiDpiCanvas(cv) {
   if (!cv) return null;
@@ -1106,106 +1246,151 @@ function prepHiDpiCanvas(cv) {
   return {g, w: r.width, h: r.height};
 }
 
-function drawTempCurve(cv, detailed) {
-  const ctx = prepHiDpiCanvas(cv);
-  if (!ctx) return;
-  const {g, w, h} = ctx;
-  const cWarn = cssVar('--warn'), cHot = cssVar('--hot'), cBad = cssVar('--bad'), cDiv = cssVar('--div');
-
-  if (detailed) {
-    // Draw 70C warm and 85C hot reference lines
-    const y70 = h - ((70 - 25) / 70) * (h - 8) - 4;
-    const y85 = h - ((85 - 25) / 70) * (h - 8) - 4;
-    g.save();
-    g.setLineDash([3, 4]);
-    g.lineWidth = 1;
-    g.strokeStyle = cWarn;
-    g.globalAlpha = 0.28;
-    g.beginPath(); g.moveTo(0, y70); g.lineTo(w, y70); g.stroke();
-    g.strokeStyle = cBad;
-    g.beginPath(); g.moveTo(0, y85); g.lineTo(w, y85); g.stroke();
-    g.restore();
-  }
-
+function hexRgb(hex) {
+  let h = (hex || '').trim().replace('#', '');
+  if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  const n = parseInt(h.slice(0, 6), 16);
+  return Number.isFinite(n) ? [(n >> 16) & 255, (n >> 8) & 255, n & 255] : [240, 240, 240];
+}
+// Heat colour for a level 0..1: green when low, yellow halfway, red at the top of the range.
+// `invert` flips it where higher is better (Wi-Fi signal). Same ramp as the panel.
+let heatStops = null;   // [ok, warn, hot, bad] as RGB, read from the theme once per redraw
+function heatColor(t, alpha, invert, lift = 0) {
+  if (!heatStops) heatStops = ['--ok', '--warn', '--hot', '--bad'].map(v => hexRgb(cssVar(v)));
+  t = Math.max(0, Math.min(1, invert ? 1 - t : t));
+  // Smooth green to yellow, then orange, then red. Red starts just under halfway.
+  const smooth = u => { u = Math.max(0, Math.min(1, u)); return u * u * (3 - 2 * u); };
+  let ca, cb, u;
+  if (t < 0.28) { ca = heatStops[0]; cb = heatStops[1]; u = smooth(t / 0.28); }
+  else if (t < 0.46) { ca = heatStops[1]; cb = heatStops[2]; u = smooth((t - 0.28) / 0.18); }
+  else { ca = heatStops[2]; cb = heatStops[3]; u = smooth((t - 0.46) / 0.54); }
+  const ch = ca.map((v, i) => {
+    const m = v + (cb[i] - v) * u;
+    return Math.round(m + (255 - m) * lift);
+  });
+  return `rgba(${ch[0]},${ch[1]},${ch[2]},${alpha})`;
+}
+function seriesPoints(series, w, h, map) {
+  const n = series.length;
   const pts = [];
-  const n = histTemp.length;
-  const step = detailed ? Math.max(2.2, w / Math.max(60, n)) : 2.8;
   for (let i = 0; i < n; i++) {
-    const v = histTemp[i];
+    const v = series[i];
     if (!Number.isFinite(v)) continue;
-    const x = w - (n - 1 - i) * step;
-    if (x < -step) continue;
-    const norm = Math.max(0.06, Math.min(1, (v - 25) / 70));
-    const y = h - norm * (h - 6) - 2;
-    pts.push({x, y, v});
+    const x = n === 1 ? w - 1 : (i / (n - 1)) * (w - 1);
+    const t = Math.max(0, Math.min(1, map(v)));
+    pts.push({x, y: h - 1 - t * (h - 1), t});
   }
-  if (pts.length === 1) pts.unshift({x: Math.max(0, pts[0].x - 16), y: pts[0].y, v: pts[0].v});
+  return pts;
+}
+// Each slice under the line takes the heat colour of its own sample, strongest just under the
+// line and fading toward the bottom.
+function fillUnder(g, pts, h, invert) {
+  // Slice edges sit on whole pixels so neighbouring slices neither overlap nor leave a gap.
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    const x0 = Math.round(a.x), x1 = Math.round(b.x);
+    if (x1 <= x0) continue;
+    const top = Math.min(a.y, b.y);
+    const grad = g.createLinearGradient(0, top, 0, h);
+    grad.addColorStop(0, heatColor(b.t, 0.84, invert));
+    grad.addColorStop(1, heatColor(b.t, 0.32, invert));
+    g.beginPath();
+    g.moveTo(x0, h);
+    g.lineTo(x0, a.y);
+    g.lineTo(x1, b.y);
+    g.lineTo(x1, h);
+    g.closePath();
+    g.fillStyle = grad;
+    g.fill();
+  }
+}
+// The history line in a brighter tint of the same heat colours, on a dark drop shadow.
+function heatLine(g, pts, invert) {
   if (pts.length < 2) return;
-
-  const maxV = Math.max(...pts.map(p => p.v));
-  const strokeCol = maxV >= 85 ? cBad : maxV >= 72 ? cHot : cWarn;
-
-  const grad = g.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, strokeCol);
-  grad.addColorStop(1, 'rgba(0,0,0,0)');
-
-  g.save();
-  g.beginPath();
-  g.moveTo(pts[0].x, h);
-  for (const p of pts) g.lineTo(p.x, p.y);
-  g.lineTo(pts[pts.length - 1].x, h);
-  g.closePath();
-  g.globalAlpha = 0.24;
-  g.fillStyle = grad;
-  g.fill();
-  g.restore();
-
-  g.beginPath();
-  pts.forEach((p, idx) => { if (idx === 0) g.moveTo(p.x, p.y); else g.lineTo(p.x, p.y); });
-  g.strokeStyle = strokeCol;
-  g.lineWidth = detailed ? 2 : 1.75;
   g.lineJoin = 'round';
+  g.lineCap = 'round';
+  for (const [dy, width] of [[1.25, 2.75], [0, 1.75]]) {
+    for (let i = 1; i < pts.length; i++) {
+      g.beginPath();
+      g.moveTo(pts[i - 1].x, pts[i - 1].y + dy);
+      g.lineTo(pts[i].x, pts[i].y + dy);
+      g.strokeStyle = dy ? 'rgba(0,0,0,0.7)' : heatColor(pts[i].t, 1, invert, 0.12);
+      g.lineWidth = width;
+      g.stroke();
+    }
+  }
+}
+// Second series as a plain line with a dark drop shadow (upload, load).
+function shadowLine(g, pts, color, width) {
+  if (pts.length < 2) return;
+  const path = () => {
+    g.beginPath();
+    pts.forEach((p, i) => { if (i) g.lineTo(p.x, p.y); else g.moveTo(p.x, p.y); });
+  };
+  g.lineJoin = 'round';
+  g.lineCap = 'round';
+  g.save();
+  g.translate(0, 1.25);
+  path();
+  g.strokeStyle = 'rgba(0,0,0,0.7)';
+  g.lineWidth = width + 1;
+  g.stroke();
+  g.restore();
+  path();
+  g.strokeStyle = color;
+  g.lineWidth = width;
   g.stroke();
 }
-
-function drawDuplexWaterfall(cv, detailed) {
+// Fill from the top down to a line that peaks toward the bottom.
+function fillFromTop(g, pts, h, invert) {
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    const x0 = Math.round(a.x), x1 = Math.round(b.x);
+    if (x1 <= x0) continue;
+    const bot = Math.max(a.y, b.y);
+    const grad = g.createLinearGradient(0, bot, 0, 0);
+    grad.addColorStop(0, heatColor(b.t, 0.84, invert));
+    grad.addColorStop(1, heatColor(b.t, 0.32, invert));
+    g.beginPath();
+    g.moveTo(x0, 0);
+    g.lineTo(x0, a.y);
+    g.lineTo(x1, b.y);
+    g.lineTo(x1, 0);
+    g.closePath();
+    g.fillStyle = grad;
+    g.fill();
+  }
+}
+// Filled history on the plain cell. `hangExtra` draws the second series down from the top
+// (upload). Otherwise `extra` is a dimmer line over the fill (load on the mini CPU card).
+function drawHeatGraph(cv, series, map, {invert = false, extra = null, extraMap = map, hangExtra = false} = {}) {
   const ctx = prepHiDpiCanvas(cv);
   if (!ctx) return;
   const {g, w, h} = ctx;
-  const mid = Math.floor(h / 2);
-  g.fillStyle = cssVar('--div');
-  g.fillRect(0, mid, w, 1);
-
-  const cRx = cssVar('--rx'), cTx = cssVar('--tx');
-  const logR = bps => (!Number.isFinite(bps) || bps <= 300) ? 0 : Math.min(1, Math.max(0.04, Math.log10(bps / 300) / 5.5));
-  const n = histRx.length;
-  const barW = detailed ? 2.5 : 2;
-  const pitch = detailed ? 3.6 : 2.8;
-  for (let i = 0; i < n; i++) {
-    const x = w - (n - i) * pitch;
-    if (x < 0) continue;
-    const rh = Math.round(logR(histRx[i]) * (mid - 2));
-    const th = Math.round(logR(histTx[i]) * (mid - 3));
-    if (rh > 0) {
-      g.fillStyle = cRx;
-      g.globalAlpha = 0.88;
-      g.fillRect(x, mid - rh, barW, rh);
-    }
-    if (th > 0) {
-      g.fillStyle = cTx;
-      g.globalAlpha = 0.88;
-      g.fillRect(x, mid + 1, barW, th);
-    }
+  if (extra && hangExtra) {
+    const up = seriesPoints(extra, w, h, extraMap).map(p => ({x: p.x, t: p.t, y: (h - 1) - p.y}));
+    fillFromTop(g, up, h, invert);
+    heatLine(g, up, invert);
   }
-  g.globalAlpha = 1;
+  const pts = seriesPoints(series, w, h, map);
+  fillUnder(g, pts, h, invert);
+  if (extra && !hangExtra) shadowLine(g, seriesPoints(extra, w, h, extraMap), hexToRgba(cssVar('--fig'), 0.6), 1.25);
+  heatLine(g, pts, invert);
 }
-
+const logRate = bps => (!Number.isFinite(bps) || bps <= 300) ? 0 : Math.min(1, Math.max(0, Math.log10(bps / 300) / 5.5));
+const tempLevel = v => (v - 40) / 50;
+const zeroLoadLevel = v => v / 2;
+const rssiLevel = v => (v + 90) / 50;
 function drawSparks() {
-  drawTempCurve(document.getElementById('sp-temp'), false);
-  drawDuplexWaterfall(document.getElementById('sp-net'), false);
+  heatStops = null;
+  drawHeatGraph(document.getElementById('sp-temp'), histTemp, tempLevel, {extra: histLoad, extraMap: v => v / loadTop});
+  drawHeatGraph(document.getElementById('sp-net'), histRx, logRate, {extra: histTx, hangExtra: true});
   if (activeDeck === 'stats') {
-    drawTempCurve(document.getElementById('st-canvas-temp'), true);
-    drawDuplexWaterfall(document.getElementById('st-canvas-net'), true);
+    drawHeatGraph(document.getElementById('st-canvas-temp'), histTemp, tempLevel);
+    drawHeatGraph(document.getElementById('st-canvas-load'), histLoad, v => v / loadTop);
+    drawHeatGraph(document.getElementById('st-canvas-net'), histRx, logRate, {extra: histTx, hangExtra: true});
+    drawHeatGraph(document.getElementById('st-canvas-zload'), histZeroLoad, zeroLoadLevel);
+    drawHeatGraph(document.getElementById('st-canvas-geek'), histGeekRssi, rssiLevel, {invert: true});
   }
 }
 
@@ -1248,6 +1433,8 @@ function updateTelemetry(s) {
     histRx.push(s.pc_rx_bps ?? 0); if (histRx.length > MAX_HIST) histRx.shift();
     histTx.push(s.pc_tx_bps ?? 0); if (histTx.length > MAX_HIST) histTx.shift();
   }
+  histZeroLoad.push(s.load1 ?? NaN); if (histZeroLoad.length > MAX_HIST) histZeroLoad.shift();
+  histGeekRssi.push(s.geek_rssi ?? NaN); if (histGeekRssi.length > MAX_HIST) histGeekRssi.shift();
 
   // ---- Mini Telemetry Strip (4 GEEK Cards under Desktop/Tablet Stage) ----
   const ncpu = s.pc_ncpu || (Array.isArray(s.pc_cores_all) ? s.pc_cores_all.length : null);
@@ -1255,19 +1442,16 @@ function updateTelemetry(s) {
 
   const tempEl = document.getElementById('tc-temp');
   tempEl.textContent = linked && cpuT != null ? `${Math.round(cpuT)}°C` : '--°C';
-  tempEl.style.color = linked && cpuT != null ? (cpuT >= 82 ? 'var(--bad)' : cpuT >= 68 ? 'var(--warn)' : 'var(--warn)') : 'var(--val)';
+  tempEl.style.color = 'var(--fig)';
   document.getElementById('tc-temp-sr').textContent = linked && cpuT != null ? `CPU temperature ${Math.round(cpuT)} degrees Celsius` : 'Offline';
-  document.getElementById('tc-load').textContent = linked && s.pc_load1 != null ? `ld ${Number(s.pc_load1).toFixed(2)}` : 'offline';
+  document.getElementById('tc-load').textContent = linked && s.pc_load1 != null ? Number(s.pc_load1).toFixed(2) : 'offline';
+  if (linked && ncpu) loadTop = Math.max(4, ncpu * 0.5);
 
-  const sens = [];
-  if (linked && s.pc_gpu_temp_c != null) {
-    sens.push(`GPU ${Math.round(s.pc_gpu_temp_c)}°C` + (s.pc_gpu_pct != null ? ` (${Math.round(s.pc_gpu_pct)}%)` : ''));
-  } else if (linked && s.pc_gpu_pct != null) {
-    sens.push(`GPU ${Math.round(s.pc_gpu_pct)}%`);
-  }
-  if (linked && s.pc_nvme_temp_c != null) sens.push(`NVMe ${Math.round(s.pc_nvme_temp_c)}°C`);
-  if (!sens.length) sens.push(linked ? `Host up ${fmtUp(s.pc_uptime_s)}` : `Zero ${s.temp_c ?? '--'}°C · up ${fmtUp(s.uptime_s)}`);
-  document.getElementById('tc-sensors').textContent = sens.join(' · ');
+  const top = linked && s.pc_top_proc
+    ? `${s.pc_top_proc}${s.pc_top_cpu_pct != null ? ` ${Math.round(s.pc_top_cpu_pct)}%` : ''}`
+    : '';
+  document.getElementById('tc-sensors').textContent = top
+    || (linked ? `up ${fmtUp(s.pc_uptime_s)}` : `Zero ${s.temp_c ?? '--'}°C · up ${fmtUp(s.uptime_s)}`);
 
   const rawCores = linked ? (s.pc_cores_all || s.pc_cores || []) : [];
   const sortedCores = rawCores.slice().sort((a, b) => b - a);
@@ -1275,9 +1459,9 @@ function updateTelemetry(s) {
   const cEl = document.getElementById('tc-cores');
   if (sortedCores.length) {
     cEl.innerHTML = sortedCores.slice(0, 20).map(v => {
-      const col = heatColorCss(v, 55, 85);
+      const col = heatColorCss(v, 75, 98);
       const pct = Math.max(6, Math.min(100, Math.round(v)));
-      return `<span class="core-bar"><i style="block-size:${pct}%;background:${col}"></i></span>`;
+      return `<span class="core-bar"><i style="block-size:${pct}%;background:linear-gradient(to top, color-mix(in oklab, var(--ok) 20%, transparent), ${col})"></i></span>`;
     }).join('');
   } else {
     cEl.innerHTML = Array.from({length: 12}, () => `<span class="core-bar"><i style="block-size:6%;opacity:.25"></i></span>`).join('');
@@ -1287,7 +1471,7 @@ function updateTelemetry(s) {
   const procs = linked && Array.isArray(s.pc_procs) ? s.pc_procs : [];
   if (procs.length) {
     pEl.innerHTML = procs.slice(0, 3).map(([n, p]) => {
-      const col = heatColorCss(p, 50, 85);
+      const col = heatColorCss(p, 55, 90);
       const w = Math.max(3, Math.min(100, Math.round(p)));
       return `<div class="proc-row"><span>${escHtml(n)}</span><span style="color:${col};font-weight:700">${Math.round(p)}%</span><i class="proc-line" style="inline-size:${w}%;background:${col}"></i></div>`;
     }).join('');
@@ -1307,11 +1491,11 @@ function updateTelemetry(s) {
     : '-- <small>/ --G</small>';
   const barMem = document.getElementById('bar-mem');
   barMem.style.inlineSize = `${Math.max(0, Math.min(100, memPct))}%`;
-  barMem.style.background = heatColorCss(memPct, 78, 92);
+  barMem.style.background = meterColorCss(memPct, 80, 97);
 
   const dPair = fmtGBPair(s.pc_disk_used, s.pc_disk_total);
   const diskPct = linked ? (s.pc_disk_pct ?? (dPair ? Math.round((s.pc_disk_used / s.pc_disk_total) * 100) : 0)) : 0;
-  const diskDev = (linked && s.pc_disk_dev) ? `${s.pc_disk_dev.toUpperCase()} (/)` : 'DISK (/)';
+  const diskDev = (linked && s.pc_disk_dev) ? s.pc_disk_dev : 'disk';
   document.getElementById('tc-disk-lbl').textContent = diskDev;
   document.getElementById('tc-disk-pct').textContent = linked && diskPct ? `${diskPct}%` : '';
   document.getElementById('tc-disk').innerHTML = linked
@@ -1319,10 +1503,10 @@ function updateTelemetry(s) {
     : '-- <small>/ --G</small>';
   const barDisk = document.getElementById('bar-disk');
   barDisk.style.inlineSize = `${Math.max(0, Math.min(100, diskPct))}%`;
-  barDisk.style.background = diskPct >= 90 ? 'var(--bad)' : diskPct >= 80 ? 'var(--warn)' : 'var(--lab)';
+  barDisk.style.background = meterColorCss(diskPct, 90, 99);
 
   // Network card + cumulative totals
-  document.getElementById('tc-iface').textContent = (linked && s.pc_net_iface) ? `${s.pc_net_iface} · NET` : 'NETWORK';
+  document.getElementById('tc-iface').textContent = (linked && s.pc_net_iface) ? s.pc_net_iface : 'NET';
   document.getElementById('tc-net-ip').textContent = linked ? (s.pc_net_ip || s.pc_ip || '') : '';
   document.getElementById('tc-rx').textContent = linked ? `dn ${fmtRate(s.pc_rx_bps)}` : 'dn --';
   document.getElementById('tc-tx').textContent = linked ? `up ${fmtRate(s.pc_tx_bps)}` : 'up --';
@@ -1348,19 +1532,25 @@ function updateTelemetry(s) {
 
   const kCpu = document.getElementById('st-kpi-cpu');
   kCpu.textContent = linked && cpuT != null ? `${cpuT.toFixed(1)}°C` : '--°C';
-  kCpu.style.color = linked && cpuT != null ? heatColorCss(cpuT, 68, 84) : 'var(--val)';
+  kCpu.style.color = 'var(--fig)';
   if (histTemp.length >= 2) {
     const mn = Math.round(Math.min(...histTemp)), mx = Math.round(Math.max(...histTemp));
     document.getElementById('st-kpi-cpu-sub').textContent = `min ${mn}° · peak ${mx}°`;
     document.getElementById('st-temp-range').textContent = `${histTemp.length * 2}s window · min ${mn}°C / peak ${mx}°C`;
   } else {
-    document.getElementById('st-kpi-cpu-sub').textContent = 'warm 70°C · red 85°C';
+    document.getElementById('st-kpi-cpu-sub').textContent = 'warm 70°C · red 90°C';
   }
 
-  document.getElementById('st-kpi-gpu').textContent = linked && s.pc_gpu_temp_c != null ? `${Math.round(s.pc_gpu_temp_c)}°C` : 'n/a';
+  const kGpu = document.getElementById('st-kpi-gpu');
+  kGpu.textContent = linked && s.pc_gpu_temp_c != null ? `${Math.round(s.pc_gpu_temp_c)}°C` : 'n/a';
+  kGpu.style.color = 'var(--fig)';
   document.getElementById('st-kpi-gpu-sub').textContent = linked && s.pc_gpu_pct != null ? `busy ${Math.round(s.pc_gpu_pct)}%` : 'sensor optional';
-  document.getElementById('st-kpi-nvme').textContent = linked && s.pc_nvme_temp_c != null ? `${Math.round(s.pc_nvme_temp_c)}°C` : 'n/a';
+  const kNvme = document.getElementById('st-kpi-nvme');
+  kNvme.textContent = linked && s.pc_nvme_temp_c != null ? `${Math.round(s.pc_nvme_temp_c)}°C` : 'n/a';
+  kNvme.style.color = 'var(--fig)';
   document.getElementById('st-kpi-load').textContent = linked && s.pc_load1 != null ? Number(s.pc_load1).toFixed(2) : '--';
+  document.getElementById('st-heat-temp').textContent = linked && cpuT != null ? `${Math.round(cpuT)}°C` : '--';
+  document.getElementById('st-heat-load').textContent = linked && s.pc_load1 != null ? Number(s.pc_load1).toFixed(2) : '--';
   document.getElementById('st-kpi-threads').textContent = linked && ncpu ? `${ncpu} logical threads` : '-- threads';
 
   document.getElementById('st-mem-pct').textContent = linked ? `${memPct}%` : '--%';
@@ -1369,7 +1559,7 @@ function updateTelemetry(s) {
     : 'Waiting for host telemetry';
   const stBarMem = document.getElementById('st-bar-mem');
   stBarMem.style.inlineSize = `${Math.max(0, Math.min(100, memPct))}%`;
-  stBarMem.style.background = heatColorCss(memPct, 78, 92);
+  stBarMem.style.background = meterColorCss(memPct, 80, 97);
 
   document.getElementById('st-disk-title').textContent = linked && s.pc_disk_dev ? `Primary Storage (${s.pc_disk_dev})` : 'Host Primary Storage';
   document.getElementById('st-disk-pct').textContent = linked ? `${diskPct}%` : '--%';
@@ -1378,11 +1568,48 @@ function updateTelemetry(s) {
     : 'Waiting for host telemetry';
   const stBarDisk = document.getElementById('st-bar-disk');
   stBarDisk.style.inlineSize = `${Math.max(0, Math.min(100, diskPct))}%`;
-  stBarDisk.style.background = diskPct >= 90 ? 'var(--bad)' : diskPct >= 80 ? 'var(--warn)' : 'var(--lab)';
+  stBarDisk.style.background = meterColorCss(diskPct, 90, 99);
 
   // Pi Zero W Appliance & Radio Link (Page 4)
+  const pwrBadge = document.getElementById('pwr-alert');
+  const zPwr = document.getElementById('st-z-pwr');
+  if (s.under_voltage) {
+    if (pwrBadge) {
+      pwrBadge.hidden = false;
+      pwrBadge.className = 'pwr-badge pwr-active';
+      pwrBadge.textContent = '⚡ PWR DROP';
+      pwrBadge.title = 'Active undervoltage detected (<4.63V)! Power supply is dipping, brownout imminent.';
+    }
+    if (zPwr) { zPwr.textContent = '⚡ UNDERVOLTAGE'; zPwr.style.color = 'var(--bad)'; }
+  } else if (s.under_voltage_ever) {
+    if (pwrBadge) {
+      pwrBadge.hidden = false;
+      pwrBadge.className = 'pwr-badge pwr-warn';
+      pwrBadge.textContent = '⚡ PWR DIPPED';
+      pwrBadge.title = 'Undervoltage occurred since boot. Consider external 5V power.';
+    }
+    if (zPwr) { zPwr.textContent = '⚡ Power Dipped'; zPwr.style.color = 'var(--warn)'; }
+  } else if (s.throttled_active) {
+    if (pwrBadge) {
+      pwrBadge.hidden = false;
+      pwrBadge.className = 'pwr-badge pwr-warn';
+      pwrBadge.textContent = '⚡ THROTTLED';
+      pwrBadge.title = `SoC throttled / capped (status ${s.throttled ? '0x' + Number(s.throttled).toString(16) : ''})`;
+    }
+    if (zPwr) { zPwr.textContent = '⚡ Throttled'; zPwr.style.color = 'var(--warn)'; }
+  } else {
+    if (pwrBadge) pwrBadge.hidden = true;
+    if (zPwr) { zPwr.textContent = 'power: solid'; zPwr.style.color = 'var(--dimg)'; }
+  }
+
+  if (wifiApBtn) {
+    const isAp = s.ip && s.ip.startsWith('10.42.');
+    wifiApBtn.textContent = '📡 Hotspot: ' + (isAp ? 'ON (Direct)' : 'OFF (Client)');
+  }
   document.getElementById('st-zero-ip').textContent = `Zero ${s.ip || '--'}`;
-  document.getElementById('st-z-temp').textContent = s.temp_c != null ? `${s.temp_c}°C` : '--°C';
+  const zTemp = document.getElementById('st-z-temp');
+  zTemp.textContent = s.temp_c != null ? `${s.temp_c}°C` : '--°C';
+  zTemp.style.color = 'var(--fig)';
   document.getElementById('st-z-load').textContent = s.load1 != null ? `load ${s.load1}` : 'load --';
   document.getElementById('st-z-mem').textContent = s.mem_pct != null ? `${s.mem_pct}%` : '--%';
   document.getElementById('st-z-up').textContent = `up ${fmtUp(s.uptime_s)}`;
@@ -1393,6 +1620,8 @@ function updateTelemetry(s) {
   document.getElementById('st-z-tsip').textContent = s.tailscale_ip || (s.tailscale === 'down' ? 'interface down' : '--');
   document.getElementById('st-z-helper').textContent = s.helper_state || s.link || '--';
   document.getElementById('st-z-serial').textContent = `serial: ${s.serial_mode || s.mode || 'idle'}`;
+  document.getElementById('st-heat-zload').textContent = s.load1 != null ? Number(s.load1).toFixed(2) : '--';
+  document.getElementById('st-heat-geek').textContent = s.geek_rssi != null ? `${s.geek_rssi}` : (pin ? '--' : 'PIN req');
 
   // Per-Core Matrix + Top 8 CPU Processes (Page 2)
   const coreGrid = document.getElementById('st-cores-grid');
@@ -1402,7 +1631,7 @@ function updateTelemetry(s) {
     document.getElementById('st-cores-summary').textContent = `${rawCores.length} threads · avg ${avgCore}% · peak ${maxCore}%`;
     coreGrid.innerHTML = rawCores.map((v, idx) => {
       const pct = Math.max(0, Math.min(100, Math.round(v)));
-      const col = heatColorCss(pct, 55, 85);
+      const col = heatColorCss(pct, 75, 98);
       return `<div class="s-core-tile"><div class="s-core-top"><span>C${idx}</span><b style="color:${col}">${pct}%</b></div><div class="s-core-track"><i style="inline-size:${pct}%;background:${col}"></i></div></div>`;
     }).join('');
   } else {
@@ -1414,7 +1643,7 @@ function updateTelemetry(s) {
   if (procs.length) {
     cpuTbody.innerHTML = procs.slice(0, 8).map(([n, p]) => {
       const pct = Number(p) || 0;
-      const col = heatColorCss(pct, 50, 85);
+      const col = heatColorCss(pct, 55, 90);
       const w = Math.max(2, Math.min(100, Math.round(pct)));
       return `<tr>
         <td>${escHtml(n)}</td>
@@ -1433,6 +1662,9 @@ function updateTelemetry(s) {
   document.getElementById('st-net-rates').textContent = linked
     ? `↓ ${fmtRate(s.pc_rx_bps)} · ↑ ${fmtRate(s.pc_tx_bps)}`
     : '↓-- · ↑--';
+  document.getElementById('st-heat-iface').textContent = linked && s.pc_net_iface ? s.pc_net_iface : 'NET';
+  document.getElementById('st-heat-rx').textContent = `↓ ${linked ? fmtRate(s.pc_rx_bps) : '--'}`;
+  document.getElementById('st-heat-tx').textContent = `↑ ${linked ? fmtRate(s.pc_tx_bps) : '--'}`;
 
   const liveNetProcs = linked && Array.isArray(s.pc_net_procs) ? s.pc_net_procs : [];
   document.getElementById('st-net-live').textContent = liveNetProcs.length
@@ -1470,6 +1702,24 @@ function updateTelemetry(s) {
   drawSparks();
 }
 
+function setGlance(id, state) {
+  const el = document.getElementById(id);
+  if (el) el.className = 'glance' + (state ? ' ' + state : '');
+}
+function updateGlance(s) {
+  let hid = '';
+  if (s) hid = !s.hid_ready ? 'bad' : (s.udc_state && s.udc_state !== 'configured' ? 'warn' : 'ok');
+  setGlance('zero-glance', hid);
+  const dbm = document.getElementById('radio-dbm');
+  let radio = '';
+  if (s && s.zero_wifi_rssi != null && Number.isFinite(Number(s.zero_wifi_rssi))) {
+    const n = Number(s.zero_wifi_rssi);
+    if (dbm) dbm.textContent = String(n);
+    radio = n >= -65 ? 'ok' : n >= -78 ? 'warn' : 'bad';
+  } else if (dbm) dbm.textContent = '--';
+  setGlance('radio-glance', radio);
+}
+
 async function poll() {
   const pill = document.getElementById('pill');
   const ip = document.getElementById('ip');
@@ -1484,6 +1734,7 @@ async function poll() {
       openPinDialog('Wrong PIN — please re-enter:');
     }
     if (s.ui_theme && s.ui_theme !== currentTheme) applyTheme(s.ui_theme, false);
+    if (s.usb_mode) showUsbMode(s.usb_mode);
 
     if (s.host_suspended) {
       pill.textContent = 'SLEEP (S3)';
@@ -1493,6 +1744,7 @@ async function poll() {
       pill.className = 'pill ' + (s.link === 'LINKED' ? 'linked' : s.link === 'KEYS' ? 'keys' : s.link === 'NO HOST' ? 'nohost' : '');
     }
     showLeds(s.leds);
+    updateGlance(s);
 
     const hostLabel = s.pc_host
       ? (s.pc_net_ip || s.pc_ip ? `${s.pc_host} (${s.pc_net_ip || s.pc_ip})` : s.pc_host)
@@ -1525,6 +1777,7 @@ async function poll() {
     pill.className = 'pill';
     ip.textContent = 'Zero unreachable';
     barSub.textContent = '';
+    updateGlance(null);
   }
 }
 setInterval(poll, 2000);

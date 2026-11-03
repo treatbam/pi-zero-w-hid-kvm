@@ -245,6 +245,20 @@ class Keeper(unittest.TestCase):
         k.sent(); k.want = False
         t[0] += 30; hv.feed(kvm_helper.pack_mode(b"helper")); self.assertFalse(k.due(), "stats:off sticks")
 
+    def test_rearms_if_extended_stats_missing(self):
+        t = [100.0]; hv = hostview.HostView(now=lambda: t[0])
+        k = hostview.StatsKeeper(hv, min_s=10.0, now=lambda: t[0])
+        hv.feed(kvm_helper.pack_mode(b"helper"))
+        self.assertTrue(k.due()); k.sent()
+        # 11 seconds later, steady acks without extended stats: re-arm!
+        t[0] += 11; hv.feed(kvm_helper.pack_mode(b"helper"))
+        self.assertTrue(k.due(), "re-arms when extended stats are missing")
+        k.sent()
+        # once type 8 arrives, it stops rearming
+        hv.feed(kvm_helper.pack_stats(40, 1, 50) + kvm_stats.pack_ext({"v": 1, "cores": [10, 20]}))
+        t[0] += 2; hv.feed(kvm_helper.pack_mode(b"helper"))
+        self.assertFalse(k.due(), "stops rearming once extended stats arrive")
+
 
 class StdlibOnly(unittest.TestCase):
     """Derek's SBC case: no Pillow/psutil/numpy, no ffmpeg/xrandr/nvidia-smi, no X."""

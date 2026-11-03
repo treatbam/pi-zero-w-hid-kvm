@@ -1,6 +1,6 @@
 [Unit]
 Description=HID KVM web console (port 8080)
-After=hid-gadget.service network-online.target
+After=hid-gadget.service network-online.target var-lib-kvm.mount
 Wants=network-online.target
 Requires=hid-gadget.service
 [Service]

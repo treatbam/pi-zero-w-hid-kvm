@@ -104,10 +104,13 @@ def _reader():
                 if text:
                     s = dec.decode(text)
                     if s: _feed(s)
-        except OSError as e:
+        # termios.error is its own Exception on this Python, not an OSError.
+        # tcgetattr raises it (EIO) when the gadget has no USB host yet. Missing
+        # it kills this thread, and the helper stays unpaired until kvm-web restarts.
+        except (OSError, termios.error) as e:
             hostview.shared.reset()
             reset_pending()
-            _err = f"{DEV}: {e.strerror or e}"
+            _err = f"{DEV}: {getattr(e, 'strerror', None) or e}"
             with _wlock:
                 # fd/_fd and wfd/_wfd are the same descriptors: close each once, or a
                 # second close could hit a number the kernel has already handed out again.

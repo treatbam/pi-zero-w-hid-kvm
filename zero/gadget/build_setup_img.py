@@ -5,6 +5,7 @@ Creates a 512 KB FAT12 disk image (volume label 'KVM-SETUP') with VFAT long
 filenames containing:
   - install-linux.sh
   - install-windows.ps1
+  - install-windows.cmd
   - kvm_stub.py
   - README.txt
 """
@@ -31,8 +32,9 @@ automatically streams the latest SHA-256-verified KVM helper over USB serial:
   Linux / macOS (run as your normal user, never root):
     bash ./install-linux.sh
 
-  Windows 10 / 11 (x64 & ARM64, PowerShell, no admin needed):
-    powershell -ExecutionPolicy Bypass -File .\\install-windows.ps1
+  Windows 10 / 11 (x64 & ARM64, no admin needed):
+    Double-click install-windows.cmd
+    Or: powershell -ExecutionPolicy Bypass -File .\\install-windows.ps1
 
 Keyboard and trackpad work immediately with zero software installed.
 """
@@ -93,6 +95,7 @@ def build_image_bytes(host_dir=None):
     files = [
         ("install-linux.sh",   b"INSTLNX SH ", _read_bytes(os.path.join(host_dir, "install-linux.sh"))),
         ("install-windows.ps1", b"INSTWIN PS1", _read_bytes(os.path.join(host_dir, "install-windows.ps1"))),
+        ("install-windows.cmd", b"INSTWIN CMD", _read_bytes(os.path.join(host_dir, "install-windows.cmd")).replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")),
         ("kvm_stub.py",        b"KVM_STUBPY ", _read_bytes(os.path.join(host_dir, "kvm_stub.py"))),
         ("README.txt",         b"README  TXT", README_TEXT.encode("utf-8")),
     ]

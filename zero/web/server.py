@@ -11,7 +11,7 @@ API:
                                       "serial_mode","serial_mode_age_s","serial_mode_requested",
                                       "preview_quality","preview_quality_requested",
                                       "pc_id","pc_host","net_hist_since","net_hist",
-                                      "zero_wifi_rssi","tailscale","tailscale_ip"}
+                                      "zero_wifi_rssi","tailscale","tailscale_ip","geek_rssi"}
                                     pc_id (12 hex, sha256 of the PC's machine-id) / pc_host identify
                                     the PC; net_hist is that PC's cumulative TCP bytes per process
                                     since net_hist_since (unix s): up to 8 {"p","rx","tx"}, busiest
@@ -19,6 +19,8 @@ API:
                                     zero_wifi_rssi (dBm) / tailscale ("up"/"down"/null) /
                                     tailscale_ip (tailscale0 IPv4 or null) are PIN-only
                                     too; the GEEK sends its KVM_PIN on the status poll.
+                                    geek_rssi (dBm, PIN-only) is what the GEEK last sent in
+                                    X-Geek-RSSI with its PIN; null once 10 s old.
                                     pc_cores_all etc. (type 8) are null when the PC can't report them.
                                     serial_* and preview_* only with a valid X-KVM-PIN header;
                                     a header that is wrong (or locked out) adds "pin_ok":false.
@@ -38,6 +40,7 @@ API:
   POST /api/type   {"text":"hello"}
   POST /api/mouse  {"dx":0,"dy":0,"wheel":0,"buttons":0}
   POST /api/macro  {"name":"ctrl_alt_del"}
+  POST /api/media/netboot {}                  -> download netboot.xyz.iso into the images dir, SHA256-checked
   POST /api/auth   {}                          -> 200 if the PIN header is right (UI login check)
   GET  /api/term?n=40            -> {"seq","lines":[..],"partial","open","error"}  (PIN required)
   POST /api/term   {"text":"ls","newline":true}  -> keystrokes to the host's serial console
@@ -62,14 +65,17 @@ A custom header also forces a CORS preflight, so other web pages can't send thes
 GET /api/status stays open (read-only; the GEEK and the console poll it).
 GET /api/term needs the X-KVM-PIN header too (host terminal output can hold secrets).
 """
+import errno
 import argparse, fcntl, signal, hmac, json, os, socket, struct, subprocess, threading, time
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
-import autolaunch, hid, history, hostview, term, ws
+import autolaunch, hid, history, hostview, media, term, ws
 from urllib.parse import urlsplit, parse_qs
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 MACROS = {"ctrl_alt_del": lambda: hid.key_combo(["delete"], ["ctrl", "alt"]),
           "win_l": lambda: hid.key_combo(["l"], ["gui"]),
+          "lock": lambda: hid.key_combo(["l"], ["gui"]),
+          "taskmgr": lambda: hid.key_combo(["escape"], ["ctrl", "shift"]),
           "alt_tab": lambda: hid.key_combo(["tab"], ["alt"])}
 LOCK = threading.Lock()      # serialize writes so reports don't interleave
 PIN_LOCK = threading.Lock()  # guard per-IP failed-PIN counters
@@ -86,6 +92,10 @@ HISTORY = history.NetHistory(os.environ.get("KVM_DATA_DIR", "/var/lib/kvm"),
 STATS = hostview.StatsKeeper(hostview.shared, min_s=float(os.environ.get("KVM_STATS_MIN_S", "10")))
 THEMES = ("slate", "braun", "cobalt")
 THEME_FILE = os.path.join(os.environ.get("KVM_DATA_DIR", "/var/lib/kvm"), "ui_theme.txt")
+USB_MODES = ("pc", "android")
+USB_MODE_FILE = os.environ.get("KVM_USB_MODE_FILE",
+    os.path.join(os.environ.get("KVM_DATA_DIR", "/var/lib/kvm"), "usb_mode"))
+MEDIA = media.MediaManager()
 
 def _load_theme():
     env_t = os.environ.get("KVM_THEME", "").strip()
@@ -110,7 +120,38 @@ def _save_theme(t):
     except OSError:
         pass
 
+def _load_usb_mode():
+    try:
+        m = open(USB_MODE_FILE).read().strip()
+        if m in USB_MODES:
+            return m
+    except OSError:
+        pass
+    return "pc"
+
+def _save_usb_mode(m):
+    USB_STATE["mode"] = m
+    try:
+        if os.path.isdir(os.path.dirname(USB_MODE_FILE)):
+            tmp = USB_MODE_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(m + "\n")
+            os.replace(tmp, USB_MODE_FILE)
+    except OSError:
+        pass
+
+def apply_usb_mode():
+    """Rebind the gadget after the HTTP reply. Skipped in tests (KVM_USB_MODE_APPLY=0)."""
+    if os.environ.get("KVM_USB_MODE_APPLY", "1") == "0":
+        return
+    time.sleep(0.4)
+    cmd = ["systemctl", "restart", "hid-gadget"]
+    if os.geteuid() != 0:
+        cmd = ["sudo", "-n"] + cmd
+    subprocess.run(cmd, check=False)
+
 UI_STATE = {"theme": _load_theme()}
+USB_STATE = {"mode": _load_usb_mode()}
 AUTOLAUNCH = autolaunch.AutoLauncher(hostview.shared, term.send_ctl, term.send_boot_frame)
 
 def autolaunch_loop():
@@ -241,6 +282,34 @@ def validate(path, body):
         t = body.get("theme")
         if t not in THEMES: raise ValueError('theme must be "slate", "braun", or "cobalt"')
         return (t,)
+    if path == "/api/usb_mode":
+        m = body.get("mode")
+        if m not in USB_MODES: raise ValueError('mode must be "pc" or "android"')
+        return (m,)
+    if path == "/api/wifi_ap":
+        m = body.get("mode")
+        if m not in ("ap", "client", "toggle"): raise ValueError('mode must be "ap", "client", or "toggle"')
+        return (m,)
+    if path == "/api/media/mount":
+        img = body.get("image")
+        if not isinstance(img, str) or not img.strip():
+            raise ValueError("image must be a non-empty string")
+        cdrom = body.get("cdrom")
+        if cdrom is not None and not isinstance(cdrom, bool):
+            raise ValueError("cdrom must be a bool or null")
+        ro = body.get("ro", True)
+        if not isinstance(ro, bool):
+            raise ValueError("ro must be a bool")
+        return (img.strip(), cdrom, ro)
+    if path == "/api/media/eject":
+        return ()
+    if path == "/api/media/netboot":
+        return ()
+    if path == "/api/media/delete":
+        img = body.get("image")
+        if not isinstance(img, str) or not img.strip():
+            raise ValueError("image must be a non-empty string")
+        return (img.strip(),)
     if path == "/api/bootstrap":
         method = body.get("method", "probe")
         if method == "probe":
@@ -297,6 +366,47 @@ def zero_link():
     out["tailscale_ip"] = tailscale_ip(out["tailscale"] == "up")
     return out
 
+GEEK_RSSI = {"dbm": None, "at": 0.0}
+GEEK_RSSI_TTL = 10.0
+
+def geek_rssi(header):
+    """Remember the GEEK's Wi-Fi dBm from its status poll; return it while it is fresh."""
+    now = time.monotonic()
+    try:
+        v = int(header) if header else None
+    except ValueError:
+        v = None
+    if v is not None and -120 <= v < 0:
+        GEEK_RSSI["dbm"], GEEK_RSSI["at"] = v, now
+    fresh = GEEK_RSSI["dbm"] is not None and now - GEEK_RSSI["at"] < GEEK_RSSI_TTL
+    return GEEK_RSSI["dbm"] if fresh else None
+
+def read_throttled():
+    """Read Linux / Raspberry Pi undervoltage and throttling state.
+    Returns integer bitmask or None if unavailable.
+    Bit 0: Under-voltage detected (active)
+    Bit 1: Arm frequency capped (active)
+    Bit 2: Currently throttled (active)
+    Bit 16: Under-voltage occurred (since boot)
+    Bit 17: Arm frequency capped occurred (since boot)
+    Bit 18: Throttling occurred (since boot)
+    """
+    for p in ("/sys/devices/platform/soc/soc:firmware/get_throttled",
+              "/sys/bus/platform/devices/soc:firmware/get_throttled"):
+        try:
+            with open(p, "r") as f:
+                val = f.read().strip()
+                return int(val, 0)
+        except (OSError, ValueError):
+            pass
+    try:
+        out = subprocess.check_output(["vcgencmd", "get_throttled"], timeout=1).decode().strip()
+        if "throttled=" in out:
+            return int(out.split("=", 1)[1], 16)
+    except Exception:
+        pass
+    return None
+
 def sysstats():
     """Cheap /proc reads for the GEEK dashboard; any failure just omits the field."""
     out = {}
@@ -311,6 +421,13 @@ def sysstats():
     except (OSError, ValueError, KeyError, ZeroDivisionError): pass
     try: out["uptime_s"] = int(float(open("/proc/uptime").read().split()[0]))
     except (OSError, ValueError, IndexError): pass
+    t_val = read_throttled()
+    if t_val is not None:
+        out["throttled"] = t_val
+        out["under_voltage"] = bool(t_val & 0x1)
+        out["under_voltage_ever"] = bool(t_val & 0x10000)
+        out["throttled_active"] = bool(t_val & 0x7)
+        out["throttled_ever"] = bool(t_val & 0x70000)
     return out
 
 def local_ip():
@@ -360,7 +477,8 @@ class H(SimpleHTTPRequestHandler):
                 sm = {"pin_ok": False}
             elif self.headers.get("X-KVM-PIN"):
                 mode, age = hostview.shared.mode()
-                sm = {"pin_ok": True, **zero_link(), "serial_mode": mode, "serial_mode_age_s": age,
+                sm = {"pin_ok": True, **zero_link(), "geek_rssi": geek_rssi(self.headers.get("X-Geek-RSSI")),
+                      "serial_mode": mode, "serial_mode_age_s": age,
                       "serial_mode_requested": hostview.shared.requested_mode,
                       "preview_quality": hostview.shared.quality(), "preview_quality_requested": MODE_REQ["quality"]}
             hm = hostview.shared.mode()[0]
@@ -377,7 +495,7 @@ class H(SimpleHTTPRequestHandler):
                 al["helper_arch"] = None
                 since, hist = None, None
             return self._json(200, {**st, "ip": self._my_ip(), **sysstats(), **pc, **al,
-                                    "ui_theme": UI_STATE["theme"], "mode": mode,
+                                    "ui_theme": UI_STATE["theme"], "usb_mode": USB_STATE["mode"], "mode": mode,
                                     "net_hist_since": since, "net_hist": hist, **sm})
         u = urlsplit(self.path)
         if u.path == "/api/ws":
@@ -449,6 +567,21 @@ class H(SimpleHTTPRequestHandler):
                     time.sleep(0.02)
             text, age, _ = hostview.shared.clipboard()
             return self._json(200, {"ok": True, "text": text or "", "age_s": age})
+        if u.path == "/api/wifi_ap":
+            is_ap = False
+            cur_conn = "none"
+            try:
+                out = subprocess.check_output(["nmcli", "-t", "-f", "NAME,DEVICE", "con", "show", "--active"], timeout=2).decode()
+                for line in out.splitlines():
+                    parts = line.split(":")
+                    if len(parts) >= 2 and parts[1] == "wlan0":
+                        cur_conn = parts[0]
+                        if "hotspot" in parts[0].lower() or "ap" in parts[0].lower() or parts[0] == "KVM-GEEK-DIRECT":
+                            is_ap = True
+                        break
+            except Exception:
+                pass
+            return self._json(200, {"active": is_ap, "mode": "ap" if is_ap else "client", "connection": cur_conn, "ip": self._my_ip()})
         if u.path == "/api/preview":
             ok = self._pin_ok()
             if ok is None: return self._json(429, {"error": "too many wrong PINs, wait a minute"})
@@ -459,6 +592,13 @@ class H(SimpleHTTPRequestHandler):
             if pv is None:
                 self.send_response(204); self.send_header("Content-Length", "0"); self.end_headers(); return
             return self._json(200, pv)
+        if u.path == "/api/media":
+            ok = self._pin_ok()
+            local = self.client_address[0] in ("127.0.0.1", "::1")
+            if not ok and not local:
+                if ok is None: return self._json(429, {"error": "too many wrong PINs, wait a minute"})
+                return self._json(401, {"error": "wrong or missing PIN"})
+            return self._json(200, MEDIA.status())
         if u.path == "/api/term":
             ok = self._pin_ok()
             if ok is None: return self._json(429, {"error": "too many wrong PINs, wait a minute"})
@@ -509,9 +649,65 @@ class H(SimpleHTTPRequestHandler):
         except (ValueError, TypeError) as e:  # JSONDecodeError is a ValueError
             return self._json(400, {"error": f"bad request: {e}"})
         if self.path == "/api/auth": return self._json(200, {"ok": True})
+        if self.path == "/api/media/mount":
+            img, cdrom, ro = args
+            try:
+                res = MEDIA.mount(img, cdrom=cdrom, ro=ro)
+                return self._json(200, res)
+            except (FileNotFoundError, ValueError) as e:
+                return self._json(404, {"error": str(e)})
+            except RuntimeError as e:
+                return self._json(503, {"error": str(e)})
+        if self.path == "/api/media/eject":
+            try:
+                MEDIA.eject_and_forget()
+                return self._json(200, {"ok": True, "ejected": True})
+            except RuntimeError as e:
+                return self._json(503, {"error": str(e)})
+        if self.path == "/api/media/netboot":
+            try:
+                return self._json(200, media.fetch_netboot(MEDIA.images_dir))
+            except media.Busy as e:
+                return self._json(409, {"error": str(e)})
+            except OSError as e:
+                if e.errno == errno.ENOSPC:
+                    return self._json(507, {"error": "SD card is full"})
+                return self._json(502, {"error": f"download failed: {e}"})
+            except (RuntimeError, ValueError) as e:
+                return self._json(502, {"error": str(e)})
+        if self.path == "/api/media/delete":
+            img = args[0]
+            try:
+                MEDIA.delete(img)
+                return self._json(200, {"ok": True, "deleted": img})
+            except (FileNotFoundError, ValueError) as e:
+                return self._json(404, {"error": str(e)})
         if self.path == "/api/theme":
             _save_theme(args[0])
             return self._json(200, {"ok": True, "ui_theme": args[0]})
+        if self.path == "/api/wifi_ap":
+            mode = args[0]
+            def _switch_wifi(m):
+                try:
+                    if m == "ap":
+                        subprocess.run(["sudo", "-n", "nmcli", "con", "up", "kvm-hotspot"], timeout=10)
+                    elif m == "client":
+                        subprocess.run(["sudo", "-n", "nmcli", "con", "up", "preconfigured"], timeout=10)
+                    elif m == "toggle":
+                        out = subprocess.check_output(["nmcli", "-t", "-f", "NAME", "con", "show", "--active"], timeout=2).decode()
+                        if "kvm-hotspot" in out:
+                            subprocess.run(["sudo", "-n", "nmcli", "con", "up", "preconfigured"], timeout=10)
+                        else:
+                            subprocess.run(["sudo", "-n", "nmcli", "con", "up", "kvm-hotspot"], timeout=10)
+                except Exception:
+                    pass
+            threading.Thread(target=_switch_wifi, args=(mode,), daemon=True).start()
+            return self._json(202, {"ok": True, "switching_to": mode})
+        if self.path == "/api/usb_mode":
+            _save_usb_mode(args[0])
+            threading.Thread(target=apply_usb_mode, daemon=True).start()
+            return self._json(202, {"ok": True, "usb_mode": args[0],
+                                    "note": "keyboard and mouse re-plug in a moment"})
         if self.path == "/api/bootstrap":
             method, os_name = args
             if method == "probe":

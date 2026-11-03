@@ -3,6 +3,8 @@ Description=USB HID composite gadget (keyboard+mouse)
 Wants=systemd-modules-load.service
 After=systemd-modules-load.service sys-kernel-config.mount
 Requires=sys-kernel-config.mount
+Wants=var-lib-kvm.mount
+After=var-lib-kvm.mount
 [Service]
 Type=oneshot
 RemainAfterExit=yes
