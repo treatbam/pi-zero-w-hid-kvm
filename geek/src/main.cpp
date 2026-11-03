@@ -1157,7 +1157,7 @@ inline const VTheme& VT() { return VTHEMES[gUiTheme < 3 ? gUiTheme : 0]; }
 #define V_CELL   (VT().cell)
 #define V_WELL   (VT().well)
 #define V_ZEBRA  (VT().zebra)
-#define V_LAB    (VT().lab)
+#define V_LAB    (mix(VT().lab, VT().white, 90))   // titles/labels lifted toward white
 #define V_WHITE  (VT().white)
 #define V_GREY   (VT().grey)
 #define V_DIMG   (VT().dimg)
@@ -1218,11 +1218,11 @@ void pageDots(int cur, int n) {
   if (n < 1) return;
   if (cur < 0) cur = 0;
   if (cur >= n) cur = n - 1;
-  int width = 8 + (n - 1) * 5 + 6, x0 = W - 2 - width, x = x0 + 3;
-  fb.fillRoundRect(x0, 1, width, 7, 3, V_WELL);
+  int width = 8 + (n - 1) * 5 + 9, x0 = W - 2 - width, x = x0 + 3;
+  fb.fillRoundRect(x0, 1, width, 8, 3, V_WELL);
   for (int i = 0; i < n; i++) {
-    if (i == cur) { fb.fillRoundRect(x, 3, 6, 3, 1, V_LAB); x += 8; }
-    else { fb.fillRect(x, 3, 2, 3, V_DIMG); x += 5; }
+    if (i == cur) { fb.fillRoundRect(x, 2, 9, 5, 1, V_WHITE); x += 11; }
+    else { fb.fillRect(x, 3, 2, 3, mix(V_WELL, V_DIMG, 150)); x += 5; }
   }
 }
 // Filled sparkline in one colour: bright top pixel, fill fading to the background.
@@ -1392,14 +1392,64 @@ uint16_t hidC(const Status& s) {
   if (!s.hid) return V_BAD;
   return s.host && strcmp(s.udc, "configured") == 0 ? V_OK : V_WARN;
 }
-uint16_t rssiC(bool up, int dbm) { return !up || !dbm ? V_BAD : dbm >= -65 ? V_OK : dbm >= -78 ? V_WARN : V_BAD; }
+// Wi-Fi: good above -60 dBm, fair above -72, else bad.
+uint16_t rssiC(bool up, int dbm) { return !up || !dbm ? V_BAD : dbm > -60 ? V_OK : dbm > -72 ? V_WARN : V_BAD; }
 // Status-poll round trip. Same three bands as the Zero's Wi-Fi row: green, yellow, red.
-uint16_t pingC(uint32_t ms) { return ms <= 200 ? V_OK : ms <= 800 ? V_WARN : V_BAD; }
+// Good under 30 ms, fair under 80 ms, else bad.
+uint16_t pingC(uint32_t ms) { return ms < 30 ? V_OK : ms < 80 ? V_WARN : V_BAD; }
 uint16_t ageC(const Status& s, uint32_t now) {
   if (!s.lastOkMs) return V_BAD;
   uint32_t a = now - s.lastOkMs; return a < 4000 ? V_OK : a <= STALE_MS ? V_WARN : V_BAD;
 }
 // Bottom row: three evenly spaced "dot LABEL value" items, centred in thirds.
+
+// Page 1 lineage, shared by the heat-graph cells on every stats page: a flat vCell with its
+// history drawn full-bleed under the top hairline, a mixed-case tag top-left, and figures in
+// white on a drop shadow (ftH/txtS) over the graph.
+// Network duplex cell: upload hangs from the top, download rises from the bottom (washed so the
+// figures read), interface name top-left, up above down rates on the right with arrows (vArrow).
+// Up/down rate arrow: 7px stem + 3px head, 2px wide, on a 1px dark shadow so it reads on
+// its own colour's graph fill. `tip` is the pointed end; the arrow spans tip..tip+-6.
+void vArrow(int x, int tip, bool down, uint16_t c) {
+  int d = down ? -1 : 1, top = down ? tip - 6 : tip;
+  for (int o = 1; o >= 0; o--) {
+    uint16_t k = o ? V_SHADOW : c;
+    fb.fillRect(x - 1 + o, top + o, 2, 7, k);
+    for (int i = 1; i <= 3; i++) fb.drawFastHLine(x - 1 - i + o, tip + d * i + o, 2 + 2 * i, k);
+  }
+}
+// List-row background: plain zebra, or the whole row tinted yellow (level 1) / red (level 2).
+uint16_t vRowBg(int level, bool odd) {
+  if (level >= 2) return mix(V_CELL, VT().bad, 80);
+  if (level == 1) return mix(V_CELL, VT().warn, 64);
+  return odd ? V_ZEBRA : V_CELL;
+}
+void vNetCell(const Status& s, int x, int y, int w, int hgt, const char* name, bool linked, bool stale, const PcHist& h) {
+  vCell(x, y, w, hgt, false);
+  uint16_t upC = stale ? V_GREY : VT().bad, dnC = stale ? V_GREY : VT().ok;
+  const int netWash = 128;   // stronger than the old 64; rates keep their drop shadow
+  vHeatGraph(x, y + 1, w, hgt - 1, h.tx, h.n, h.next, 0, 1, true, stale, false, 0, true, true, upC, netWash);
+  vHeatGraph(x, y + 1, w, hgt - 1, h.rx, h.n, h.next, 0, 1, true, stale, false, 0, true, false, dnC, netWash);
+  char ifb[20], a[16], b[16]; strlcpy(ifb, name, sizeof ifb);
+  const GFXfont* nf = &FreeSans9pt7b;
+  while (ifb[0] && ftW(nf, ifb) > w / 2) ifb[strlen(ifb) - 1] = 0;
+  ft(x + 4, y + 13, ifb, V_LAB, nf);
+  float rx = linked ? s.pcRx : NAN, tx = linked ? s.pcTx : NAN;
+  vFmtRate(a, sizeof a, rx); vFmtRate(b, sizeof b, tx);
+  int R = x + w - 2, upY = y + hgt / 2 - 11, dnY = y + hgt / 2 + 5;
+  int bx = R - (int)strlen(b) * CW, ax = R - (int)strlen(a) * CW;
+  vArrow(bx - 7, upY, false, stale ? V_GREY : V_WHITE); txtS(bx, upY, b, isnan(tx) || stale ? V_GREY : V_WHITE);   // white on a drop shadow, like the other figures
+  vArrow(ax - 7, dnY + 7, true, stale ? V_GREY : V_WHITE); txtS(ax, dnY, a, isnan(rx) || stale ? V_GREY : V_WHITE);
+}
+// History cell (page 1 temp/load style): graph from the hairline down with its shadowed line,
+// tag top-left, current figure bottom-left in white on a shadow.
+void vHistCell(int x, int y, int w, int hgt, const char* lab, const char* val, const float* ser,
+               const PcHist& h, float lo, float hi, bool invert, bool dim, const GFXfont* f = &FreeSans9pt7b) {
+  vCell(x, y, w, hgt, false);
+  vHeatGraph(x, y + 1, w, hgt - 1, ser, h.n, h.next, lo, hi, false, dim, invert);
+  vTag(x + 4, y + 2, lab);
+  ftH(x + 4, y + hgt - 4, val, dim, f);
+}
 
 void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   fb.fillScreen(V_BG);
@@ -1407,13 +1457,14 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
   bool linked = s.api && strcmp(s.link, "LINKED") == 0;
   float t = !isnan(s.pcCpuT) ? s.pcCpuT : s.pcTemp;
   bool have = linked && !isnan(t);
-  const float* ts = h.n && !isnan(lastValue(h.cpuT, h.n, h.next)) ? h.cpuT : h.temp;
   char a[24], b[24];
 
   // Top-left cell: temperature figure over its heat-coloured history.
   const int HW = have ? 72 : 236;
   vCell(2, 2, HW, 53, false);
-  if (have) vHeatGraph(2, 3, HW, 52, ts, h.n, h.next, 40.f, 90.f, false, stale);
+  // Solid fill on the same green-to-red scale as the graphs (40-90 C), driven by the current
+  // temperature and held well under full strength so the white figure and the tag stay readable.
+  if (have) fb.fillRect(2, 3, HW, 52, mix(V_CELL, heatInk(vLevel(t, 40.f, 90.f, false), false), stale ? 50 : 105));
   if (have) {
     vTag(6, 4, "Temp");
     snprintf(a, sizeof a, "%.0f", t);
@@ -1464,52 +1515,45 @@ void drawPc(const Status& s, const PcHist& h, uint32_t now) {
 
   // Memory, then the drive. The name and the /total are the narrow face; the used figure stays 9pt.
   const int NX = 70;
-  auto usedTile = [&](int cy, const char* lab, double u, double tot, int pct) {
+  // Full name on the tag row; bottom row = used figure (9pt, white) left, "/total" small grey
+  // right-aligned on the same baseline row. The used figure drops its unit when the total shows it.
+  auto usedTile = [&](int cy, const char* lab, double u, double tot, int pct, int warn, int bad) {
     vCell(2, cy, NX - 4, 29, false);
     char name[12];
     strlcpy(name, lab, sizeof name);
-    while (name[0] && (int)strlen(name) * CW > NX - 14) name[strlen(name) - 1] = 0;
+    while (name[0] && (int)strlen(name) * CW > NX - 10) name[strlen(name) - 1] = 0;
     vTag(4, cy + 2, name);
     bool bytes = linked && !isnan(u) && !isnan(tot) && tot > 0;
     if (bytes) {
-      char t2[12];
-      vFmtSize(a, sizeof a, u, false); snprintf(t2, sizeof t2, "/"); vFmtSize(t2 + 1, sizeof t2 - 1, tot, true);
+      char t2[12] = "/";
+      vFmtSize(t2 + 1, sizeof t2 - 1, tot, true);
+      vFmtSize(a, sizeof a, u, false);
+      int tx = NX - 5 - (int)strlen(t2) * CW;
+      tx = max(tx, 4 + ftW(&FreeSans9pt7b, a) + 2);   // never under the used figure
       ftS(4, cy + 25, a, stale ? V_GREY : V_WHITE, &FreeSans9pt7b);
-      txt(4 + ftW(&FreeSans9pt7b, a) + 1, cy + 18, t2, V_GREY);
+      txt(tx, cy + 18, t2, V_GREY);
     } else {
       fmtMem(a, sizeof a, pct);
       ftS(4, cy + 25, a, pct < 0 || stale ? V_GREY : V_WHITE, &FreeSans9pt7b);
     }
+    // Usage bar on the cell's last two rows, under the figure's baseline: green, yellow from
+    // `warn` %, red from `bad` %.
+    int p = pct;
+    if (p < 0 && bytes) p = (int)(u * 100.0 / tot + 0.5);
+    if (p >= 0) {
+      int bw = NX - 10, fill = bw * min(p, 100) / 100;
+      uint16_t bc = stale ? V_GREY : p >= bad ? V_BAD : p >= warn ? V_WARN : V_OK;
+      fb.fillRect(4, cy + 27, bw, 1, V_WELL);
+      if (fill > 0) fb.fillRect(4, cy + 27, fill, 1, bc);
+    }
   };
   char dlab[12] = "Disk";
   if (linked && s.pcDiskDev[0]) strlcpy(dlab, s.pcDiskDev, sizeof dlab);
-  usedTile(57, "Ram", s.pcMemUsed, s.pcMemTot, linked ? s.pcMem : -1);
-  usedTile(88, dlab, s.pcDiskUsed, s.pcDiskTot, linked ? s.pcDisk : -1);
+  usedTile(57, "Ram", s.pcMemUsed, s.pcMemTot, linked ? s.pcMem : -1, 80, 92);
+  usedTile(88, dlab, s.pcDiskUsed, s.pcDiskTot, linked ? s.pcDisk : -1, 85, 95);
 
-  // Network cell: upload hangs from the top, download rises from the bottom.
-  // The two rates sit together on the right, up above down.
-  const int NW = W - 2 - NX;
-  vCell(NX, 57, NW, 60, false);
-  uint16_t upC = stale ? V_GREY : VT().bad, dnC = stale ? V_GREY : VT().ok;
-  // Wash is well under the temp and load graphs so the rates and the interface name stay readable.
-  const int netWash = 64;
-  vHeatGraph(NX, 58, NW, 59, h.tx, h.n, h.next, 0, 1, true, stale, false, 0, true, true, upC, netWash);
-  vHeatGraph(NX, 58, NW, 59, h.rx, h.n, h.next, 0, 1, true, stale, false, 0, true, false, dnC, netWash);
-  const char* ifn = s.netIf[0] ? s.netIf : "Net";
-  char ifb[16]; strlcpy(ifb, ifn, sizeof ifb);
-  const GFXfont* nf = &FreeSans9pt7b;
-  while (ifb[0] && ftW(nf, ifb) > NW / 2) ifb[strlen(ifb) - 1] = 0;
-  ft(NX + 4, 70, ifb, V_LAB, nf);
-  float rx = linked ? s.pcRx : NAN, tx = linked ? s.pcTx : NAN;
-  vFmtRate(a, sizeof a, rx); vFmtRate(b, sizeof b, tx);
-  auto chev = [](int x, int tip, bool down, uint16_t c) {
-    int d = down ? -3 : 3;
-    fb.drawLine(x - 2, tip + d, x, tip, c); fb.drawLine(x + 2, tip + d, x, tip, c);
-  };
-  int bw = (int)strlen(b) * CW, aw = (int)strlen(a) * CW;
-  int bx = W - 4 - bw, ax = W - 4 - aw;
-  chev(bx - 5, 80, false, upC); txtS(bx, 76, b, isnan(tx) ? V_GREY : upC);
-  chev(ax - 5, 96, true, dnC);  txtS(ax, 92, a, isnan(rx) ? V_GREY : dnC);
+  // Network cell: shared with page 3 so both draw the same duplex history.
+  vNetCell(s, NX, 57, W - 2 - NX, 60, s.netIf[0] ? s.netIf : "Net", linked, stale, h);
 }
 
 void drawZg(const Status& s, const PcHist& h, uint32_t now) {
@@ -1536,14 +1580,10 @@ void drawZg(const Status& s, const PcHist& h, uint32_t now) {
   txt(L, 62, "up", V_LAB); vFmtUp(a, sizeof a, s.api ? s.upS : -1); txtR(R, 62, a, val);
   txt(L, 72, "ip", V_LAB); txtR(R, 72, s.api && zip[0] ? zip : "--", s.api && zip[0] ? V_WHITE : V_GREY);
   if (s.ts >= 0) vDot(L + 16, 75, s.ts == 1 ? V_OK : V_DIMG);
-  // History cell: label and current figure over the heat-coloured history.
+  // History cells: same build as page 1's temp/load cells (vHistCell).
   auto histCell = [&](int x, int w, const char* lab, const char* val, const float* ser,
                       float lo, float hi, bool invert, bool dim) {
-    const int CY = 82, CH = 32;
-    vCell(x, CY, w, CH, false);
-    vHeatGraph(x, CY + 1, w, CH - 1, ser, h.n, h.next, lo, hi, false, dim, invert, 0, false);
-    vTag(x + 4, CY + 6, lab);
-    ftR(x + w - 4, CY + 16, val, dim ? V_GREY : 0xFFFF, &FreeSans9pt7b);
+    vHistCell(x, 82, w, 33, lab, val, ser, h, lo, hi, invert, dim);
   };
   fmtLoad(a, sizeof a, s.api ? s.load1 : NAN);
   histCell(L - 2, R - L + 4, "Load", a, h.piLoad, 0.f, 2.f, false, stale || !s.api);
@@ -1616,16 +1656,14 @@ void drawCores(const Status& s, uint32_t now) {
     int rh = min(15, (BOT - TOP + 2) / pn);
     for (int i = 0; i < pn; i++) {
       int y = TOP + i * rh;
-      if (i & 1) fb.fillRect(PX + 1, y - 1, W - 4 - PX, rh - 1, V_ZEBRA);
       float p = s.procP[i];
+      int lvl = stale ? 0 : p >= 80.f ? 2 : p >= 50.f ? 1 : 0;   // CPU%: yellow from 50, red from 80
+      if (lvl || (i & 1)) fb.fillRect(PX + 1, y - 1, W - 4 - PX, rh - 1, vRowBg(lvl, i & 1));
       snprintf(a, sizeof a, p >= 9.5f || p == 0.f ? "%.0f%%" : "%.1f%%", p);
       int pw = 6 * strlen(a), maxc = (R - LX - pw - 6) / 6;
       char nm[24]; strlcpy(nm, s.procN[i], max(1, min((int)sizeof nm, maxc + 1)));
-      txt(LX, y, nm, stale ? V_GREY : V_WHITE);
-      uint16_t pc = stale ? V_GREY : vHeat(min(1.f, p / 100.f));
-      txtR(R, y, a, pc);
-      int barW = (int)((R - LX) * min(1.f, p / 100.f) + 0.5f);
-      if (barW > 0 && rh >= 11) fb.drawFastHLine(LX, y + 9, barW, stale ? V_DIMG : mix(V_LAB, pc, 140));
+      txtS(LX, y, nm, stale ? V_GREY : V_WHITE);
+      txtSR(R, y, a, stale ? V_GREY : lvl ? V_WHITE : vHeat(min(1.f, p / 100.f)));
     }
   }
 }
@@ -1651,7 +1689,7 @@ void drawNetHist(const Status& s, bool stale, int X, int R, int TOP, int BOT) {
   char span[16], a[12], b[12], hdr[48];
   fmtSpan(span, sizeof span, s.histSince);
   const char* host = s.pcHost[0] ? s.pcHost : s.pcId[0] ? s.pcId : "PC";
-  snprintf(hdr, sizeof hdr, "TOTAL %s", span[0] ? "since" : "");
+  snprintf(hdr, sizeof hdr, "Total %s", span[0] ? "since" : "");
   txt(X, TOP + 2, hdr, V_LAB);
   int hx = X + 6 * (int)strlen(hdr) + 6;
   if (span[0]) { txt(hx, TOP + 2, span, c); hx += 6 * (int)strlen(span) + 6; }
@@ -1666,57 +1704,58 @@ void drawNetHist(const Status& s, bool stale, int X, int R, int TOP, int BOT) {
     fmtBytes(a, sizeof a, s.histRx[i]); fmtBytes(b, sizeof b, s.histTx[i]);
     int mc = (AX - 8 - X) / 6; char nm[16]; strlcpy(nm, s.histN[i], max(1, min((int)sizeof nm, mc + 1)));
     txt(X, y, nm, c);
-    fb.drawFastVLine(AX - 5, y, 7, V_RX); fb.drawLine(AX - 7, y + 4, AX - 5, y + 6, V_RX); fb.drawLine(AX - 3, y + 4, AX - 5, y + 6, V_RX);
+    vArrow(AX - 5, y + 7, true, stale ? V_GREY : V_WHITE);
     txtR(BX - 10, y, a, c);
-    fb.drawFastVLine(BX - 5, y, 7, V_TX); fb.drawLine(BX - 7, y + 2, BX - 5, y, V_TX); fb.drawLine(BX - 3, y + 2, BX - 5, y, V_TX);
+    vArrow(BX - 5, y, false, stale ? V_GREY : V_WHITE);
     txtR(R, y, b, c);
   }
 }
 
-// v2 page 3: bandwhich-style network use inside a beveled instrument card.
+// Page 3: busiest flows (or totals) in one full-height cell, page 1 treatment: tag top-left,
+// interface + live rates on the tag line, shadowed white names, heat-ramp rates and share bars.
+// No duplex graph here; page 1 already has it.
 void drawNet(const Status& s, const PcHist& h, uint32_t now) {
   fb.fillScreen(V_BG);
   bool stale = isStale(s, now);
   bool linked = s.api && strcmp(s.link, "LINKED") == 0;
   char a[24], b[24];
-  const int X = 6, R = W - 6;
-  txt(3, 1, "NET", V_LAB);
-  vFmtRate(a, sizeof a, linked ? s.pcRx : NAN); vFmtRate(b, sizeof b, linked ? s.pcTx : NAN);
+  const int CY = 2, X = 6, R = W - 6, BOT = 116;
+  vCell(2, CY, W - 4, 117 - CY, false);
+  const uint32_t NET_VIEW_MS = 10000;
+  if (linked && s.histCount && (now / NET_VIEW_MS) % 2) { drawNetHist(s, stale, X, R, CY + 2, BOT); return; }
+  // Tag line: "Net  enp3s0 / ip" left, down and up rates right (same red/green as page 1).
+  vTag(X, CY + 2, "Net");
   const uint32_t NET_TITLE_MS = 5000;
   bool showIp = linked && s.netIp[0] && (now / NET_TITLE_MS) % 2;
-  char ifn[16]; strlcpy(ifn, showIp ? s.netIp : (linked && s.netIf[0] ? s.netIf : "eth"), sizeof ifn);
-  const int TX0 = 26, R_HDR = W - 34;
-  auto fit = [&]() { int bw = 6 * strlen(b), aw = 6 * strlen(a); return R_HDR - bw - 12 - aw - 6 >= TX0 + 6 * (int)strlen(ifn) + 4; };
-  if (!fit()) for (char* t : {a, b}) { char* q = strstr(t, "/s"); if (q) *q = 0; }
-  int bw = 6 * strlen(b), aw = 6 * strlen(a), bx = R_HDR - bw, ax = bx - 12 - aw;
-  int maxc = (ax - 8 - TX0) / 6; if ((int)strlen(ifn) > maxc) ifn[max(1, maxc)] = 0;
-  txt(TX0, 1, ifn, stale ? V_GREY : V_WHITE);
-  fb.drawFastVLine(ax - 5, 1, 7, V_RX); fb.drawLine(ax - 7, 5, ax - 5, 7, V_RX); fb.drawLine(ax - 3, 5, ax - 5, 7, V_RX);
-  txt(ax, 1, a, stale ? V_GREY : V_WHITE);
-  fb.drawFastVLine(bx - 5, 1, 7, V_TX); fb.drawLine(bx - 7, 3, bx - 5, 1, V_TX); fb.drawLine(bx - 3, 3, bx - 5, 1, V_TX);
-  txt(bx, 1, b, stale ? V_GREY : V_WHITE);
-
-  vCell(2, 12, W - 4, 105, false);
-  const int TOP = 14, BOT = 115;
-  const uint32_t NET_VIEW_MS = 10000;
-  if (linked && s.histCount && (now / NET_VIEW_MS) % 2) { drawNetHist(s, stale, X, R, TOP, BOT); return; }
-  int n = linked ? s.netpCount : 0;
-  if (!n) txt(X, TOP + 4, linked ? "no active TCP flows" : "--", V_GREY);
-  else {
-    float mx = 1.f; for (int i = 0; i < n; i++) mx = max(mx, s.netpB[i]);
-    int rh = min(16, (BOT - TOP) / n);
-    for (int i = 0; i < n; i++) {
-      int y = TOP + 1 + i * rh;
-      if (i & 1) fb.fillRect(4, y - 1, W - 8, rh - 1, V_ZEBRA);
-      vFmtRate(a, sizeof a, s.netpB[i]);
-      int mc = (R - X - 6 * (int)strlen(a) - 6) / 6;
-      char nm[24]; strlcpy(nm, s.netpN[i], max(1, min((int)sizeof nm, mc + 1)));
-      txt(X, y, nm, stale ? V_GREY : V_WHITE);
-      txtR(R, y, a, stale ? V_GREY : V_WHITE);
-      int len = (int)((R - X) * s.netpB[i] / mx + 0.5f);
-      fb.fillRect(X, y + 9, R - X, 2, V_WELL);
-      for (int x = 0; x < len; x++) fb.drawFastVLine(X + x, y + 9, 2, stale ? V_GREY : mix(V_RX, V_TX, 255 * x / max(1, R - X)));
-    }
+  char ifn[16]; strlcpy(ifn, showIp ? s.netIp : (linked && s.netIf[0] ? s.netIf : "--"), sizeof ifn);
+  vFmtRate(a, sizeof a, linked ? s.pcRx : NAN); vFmtRate(b, sizeof b, linked ? s.pcTx : NAN);
+  uint16_t upC = stale ? V_GREY : VT().bad, dnC = stale ? V_GREY : VT().ok;
+  const int R_HDR = W - 37;   // clear of the page-dots pill at the top right
+  int bx = R_HDR - 6 * (int)strlen(b), ax = bx - 12 - 6 * (int)strlen(a), ix = X + 6 * 6;
+  int maxc = (ax - 14 - ix) / 6; if ((int)strlen(ifn) > maxc) ifn[max(1, maxc)] = 0;
+  txt(ix, CY + 2, ifn, stale ? V_GREY : V_LAB);
+  vArrow(ax - 7, CY + 8, true, stale ? V_GREY : V_WHITE);
+  txtS(ax, CY + 2, a, linked ? dnC : V_GREY);
+  vArrow(bx - 7, CY + 2, false, stale ? V_GREY : V_WHITE);
+  txtS(bx, CY + 2, b, linked ? upC : V_GREY);
+  fb.drawFastHLine(X, CY + 11, R - X, V_DIV);
+  int n = linked ? min(s.netpCount, 8) : 0;
+  if (!n) { txt(X, CY + 15, linked ? "no active TCP flows" : "--", V_GREY); return; }
+  float mx = 1.f; for (int i = 0; i < n; i++) mx = max(mx, s.netpB[i]);
+  int y0 = CY + 14, rh = min(16, (BOT - y0) / n);
+  for (int i = 0; i < n; i++) {
+    int y = y0 + i * rh;
+    if (!(s.netpB[i] > 0.f) || !s.netpN[i][0]) continue;   // no flow: leave the row blank, no stripe
+    float bps = s.netpB[i];
+    int lvl = stale ? 0 : bps >= 5e6f ? 2 : bps >= 1e6f ? 1 : 0;   // yellow from 1 MB/s, red from 5 MB/s
+    if (lvl || (i & 1)) fb.fillRect(3, y - 1, W - 6, rh, vRowBg(lvl, i & 1));
+    vFmtRate(a, sizeof a, s.netpB[i]);
+    int mc = (R - X - 6 * (int)strlen(a) - 6) / 6;
+    char nm[24]; strlcpy(nm, s.netpN[i], max(1, min((int)sizeof nm, mc + 1)));
+    float share = s.netpB[i] / mx;
+    uint16_t hc = stale ? V_GREY : lvl ? V_WHITE : heatInk(share, false);
+    txtS(X, y, nm, stale ? V_GREY : V_WHITE);
+    txtS(R - 6 * (int)strlen(a), y, a, hc);
   }
 }
 
@@ -1853,6 +1892,35 @@ void pageLogic(const Status& s, uint32_t now, bool* offline) {
   if (a < 0 && gHome >= 0) { int h = gHome; gHome = -1; go(h); gAutoMs = now; return; }
   if (gAuto && gHome < 0 && page <= P_ZG && now - gAutoMs >= AUTO_MS) { gAutoMs = now; go((page + 1) % (P_ZG + 1)); }
 }
+// Stale: the whole frame goes greyscale (luma of each RGB565 pixel), then a centred toast says
+// which source went quiet and for how long.
+void greyFrame() {
+  uint16_t* p = fb.getBuffer();
+  for (int i = 0; i < W * H; i++) {
+    uint16_t c = p[i];
+    int r = (c >> 8) & 0xF8, g = (c >> 3) & 0xFC, b = (c << 3) & 0xF8;
+    int y = (r * 77 + g * 150 + b * 29) >> 8;
+    p[i] = rgb(y, y, y);
+  }
+}
+void staleToast(const char* what, uint32_t ageS) {
+  char t[32];
+  if (ageS >= 120) snprintf(t, sizeof t, "last seen %um ago", (unsigned)(ageS / 60));
+  else snprintf(t, sizeof t, "last seen %us ago", (unsigned)ageS);
+  int tw = max((int)strlen(what), (int)strlen(t)) * CW;
+  int w = 10 + 15 + 8 + tw + 12, h = 36, x = (W - w) / 2, y = (H - h) / 2;
+  fb.fillRoundRect(x + 2, y + 2, w, h, 6, V_SHADOW);              // soft drop shadow
+  fb.fillRoundRect(x, y, w, h, 6, rgb(20, 20, 20));               // dark card
+  fb.drawRoundRect(x, y, w, h, 6, rgb(150, 112, 30));             // thin dim-amber border
+  fb.drawFastHLine(x + 6, y + 1, w - 12, rgb(44, 44, 44));        // faint top highlight
+  int ix = x + 10, iy = y + (h - 13) / 2;                          // warning icon, 15x13
+  fb.fillTriangle(ix + 7, iy, ix, iy + 12, ix + 14, iy + 12, V_WARN);
+  fb.fillRect(ix + 6, iy + 4, 3, 5, rgb(20, 20, 20));             // "!" stem
+  fb.fillRect(ix + 6, iy + 10, 3, 2, rgb(20, 20, 20));            // "!" dot
+  int tx = ix + 15 + 8;
+  txt(tx, y + 9, what, rgb(240, 240, 240));
+  txt(tx, y + 21, t, rgb(140, 140, 140));
+}
 void paint() {
   fb.setTextWrap(false);
   if (gOtaPct >= 0) { drawOta(); tft.drawRGBBitmap(0, 0, fb.getBuffer(), W, H); return; }
@@ -1893,6 +1961,14 @@ void paint() {
   else drawPc(s, h, millis());
   statusBar(s, h, millis());
   pageDots(statDot(page, s), statPages(s));
+  uint32_t now = millis();
+  bool zeroStale = isStale(s, now) && s.polls;
+  bool pcGone = !zeroStale && page <= P_NET && h.had && !(s.api && strcmp(s.link, "LINKED") == 0);
+  if (page <= P_ZG && (zeroStale || pcGone)) {
+    greyFrame();
+    if (zeroStale) staleToast("Zero not responding", s.lastOkMs ? (now - s.lastOkMs) / 1000 : 0);
+    else staleToast("PC helper offline", (now - h.lastMs) / 1000);
+  }
   tft.drawRGBBitmap(0, 0, fb.getBuffer(), W, H);
 }
 
