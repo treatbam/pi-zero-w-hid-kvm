@@ -1772,6 +1772,9 @@ const uint32_t AUTO_MS = 10000, OFFLINE_MS = 10000;
 // Shared status bar, drawn on every page (stats, desktop, terminal) so it never changes:
 // ZERO + HID state, a colour-coded LINK block in the middle, GEEK + Wi-Fi dBm.
 // LINK block: green = polls coming back clean, yellow = recent misses or PC not linked, red = Zero gone.
+// Status-bar HID colour = responsiveness: round trip of the last /api/status GET (latencyMs,
+// timed around http.GET()). Looser than page 4's pingC (30/80 ms): green <100, yellow <300, red above.
+uint16_t rttC(uint32_t ms) { return ms < 100 ? V_OK : ms < 300 ? V_WARN : V_BAD; }
 void statusBar(const Status& s, const PcHist& h, uint32_t now) {
   const int Y = 119;
   fb.fillRect(0, Y, W, H - Y, V_BG);
@@ -1780,10 +1783,18 @@ void statusBar(const Status& s, const PcHist& h, uint32_t now) {
   int bad = 0, win = min(h.n, 30), st = (h.n < HIST) ? 0 : h.next;
   for (int i = h.n - win; i < h.n; i++) if (isnan(h.piLoad[(st + i) % HIST])) bad++;
   bool linked = s.api && strcmp(s.link, "LINKED") == 0;
-  uint16_t lc = !s.api || stale || bad >= 3 ? V_BAD : bad || !linked ? V_WARN : V_OK;
+  // Staleness lives in the LINK pill: Zero poll age <4 s green, 4-6 s (STALE_MS) yellow, beyond that red.
+  // The PC helper (LINK pill) goes yellow once its last sample is >4 s old and red past STALE_MS.
+  uint16_t zc = ageC(s, now);
+  uint32_t pcAge = h.had ? now - h.lastMs : 0;
+  uint16_t pc = !h.had ? V_OK : pcAge < 4000 ? V_OK : pcAge <= STALE_MS ? V_WARN : V_BAD;
+  // LINK pill and the Zero dot carry late/missing; the names stay neutral.
+  uint16_t lc = !s.api || zc == V_BAD || bad >= 3 ? V_BAD : zc == V_WARN ? V_WARN
+              : (linked && pc != V_OK) ? pc : bad || !linked ? V_WARN : V_OK;
   const int ty = Y + 4;
   // ZERO (left): a square for the HID link, same shape as the GEEK's Wi-Fi square.
-  vMark(4, ty + 1, hidC(s)); txt(11, ty, "Zero", V_LAB); txt(11 + 5 * CW, ty, s.api ? "HID" : "--", hidC(s));
+  vMark(4, ty + 1, zc); txt(11, ty, "Zero", V_LAB);   // dot = Zero reply age; name neutral; HID by its own state
+  txt(11 + 5 * CW, ty, s.api ? "HID" : "--", s.api ? rttC(s.latencyMs) : V_GREY);
   // LINK pill (centre)
   const int BW = 36, BH = 10;
   fb.fillRoundRect((W - BW) / 2, ty - 1, BW, BH, 2, lc);
@@ -1892,34 +1903,16 @@ void pageLogic(const Status& s, uint32_t now, bool* offline) {
   if (a < 0 && gHome >= 0) { int h = gHome; gHome = -1; go(h); gAutoMs = now; return; }
   if (gAuto && gHome < 0 && page <= P_ZG && now - gAutoMs >= AUTO_MS) { gAutoMs = now; go((page + 1) % (P_ZG + 1)); }
 }
-// Stale: the whole frame goes greyscale (luma of each RGB565 pixel), then a centred toast says
-// which source went quiet and for how long.
+// Connection lost (Zero past STALE_MS, or the PC helper gone past STALE_MS): the page goes
+// greyscale; the status bar is drawn after so its red item stays in colour.
 void greyFrame() {
   uint16_t* p = fb.getBuffer();
-  for (int i = 0; i < W * H; i++) {
+  for (int i = 0; i < W * 119; i++) {   // rows above the status bar (Y = 119) only
     uint16_t c = p[i];
     int r = (c >> 8) & 0xF8, g = (c >> 3) & 0xFC, b = (c << 3) & 0xF8;
     int y = (r * 77 + g * 150 + b * 29) >> 8;
     p[i] = rgb(y, y, y);
   }
-}
-void staleToast(const char* what, uint32_t ageS) {
-  char t[32];
-  if (ageS >= 120) snprintf(t, sizeof t, "last seen %um ago", (unsigned)(ageS / 60));
-  else snprintf(t, sizeof t, "last seen %us ago", (unsigned)ageS);
-  int tw = max((int)strlen(what), (int)strlen(t)) * CW;
-  int w = 10 + 15 + 8 + tw + 12, h = 36, x = (W - w) / 2, y = (H - h) / 2;
-  fb.fillRoundRect(x + 2, y + 2, w, h, 6, V_SHADOW);              // soft drop shadow
-  fb.fillRoundRect(x, y, w, h, 6, rgb(20, 20, 20));               // dark card
-  fb.drawRoundRect(x, y, w, h, 6, rgb(150, 112, 30));             // thin dim-amber border
-  fb.drawFastHLine(x + 6, y + 1, w - 12, rgb(44, 44, 44));        // faint top highlight
-  int ix = x + 10, iy = y + (h - 13) / 2;                          // warning icon, 15x13
-  fb.fillTriangle(ix + 7, iy, ix, iy + 12, ix + 14, iy + 12, V_WARN);
-  fb.fillRect(ix + 6, iy + 4, 3, 5, rgb(20, 20, 20));             // "!" stem
-  fb.fillRect(ix + 6, iy + 10, 3, 2, rgb(20, 20, 20));            // "!" dot
-  int tx = ix + 15 + 8;
-  txt(tx, y + 9, what, rgb(240, 240, 240));
-  txt(tx, y + 21, t, rgb(140, 140, 140));
 }
 void paint() {
   fb.setTextWrap(false);
@@ -1959,16 +1952,14 @@ void paint() {
   else if (page == P_CORES) drawCores(s, millis());
   else if (page == P_NET) drawNet(s, h, millis());
   else drawPc(s, h, millis());
+  {
+    uint32_t now = millis();
+    bool zeroGone = isStale(s, now) && s.polls;
+    bool pcGone = page <= P_NET && h.had && now - h.lastMs > STALE_MS;
+    if (page <= P_ZG && (zeroGone || pcGone)) greyFrame();
+  }
   statusBar(s, h, millis());
   pageDots(statDot(page, s), statPages(s));
-  uint32_t now = millis();
-  bool zeroStale = isStale(s, now) && s.polls;
-  bool pcGone = !zeroStale && page <= P_NET && h.had && !(s.api && strcmp(s.link, "LINKED") == 0);
-  if (page <= P_ZG && (zeroStale || pcGone)) {
-    greyFrame();
-    if (zeroStale) staleToast("Zero not responding", s.lastOkMs ? (now - s.lastOkMs) / 1000 : 0);
-    else staleToast("PC helper offline", (now - h.lastMs) / 1000);
-  }
   tft.drawRGBBitmap(0, 0, fb.getBuffer(), W, H);
 }
 
