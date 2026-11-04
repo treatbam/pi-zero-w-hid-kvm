@@ -98,7 +98,7 @@ document.querySelectorAll('[data-layout-pick]').forEach(btn => {
 window.addEventListener('resize', () => syncLayoutUI());
 
 // ---- Deck & Drawer Switching ------------------------------------------------------------
-let activeDeck = 'pad';
+let activeDeck = 'home';
 let prevConsoleDeck = 'pad';
 let activeDrawer = 'pad';
 
@@ -113,7 +113,7 @@ function syncDeckButtons() {
 }
 
 function setDeck(deck) {
-  if (!['pad', 'keys', 'stats', 'term'].includes(deck)) return;
+  if (!['home', 'pad', 'keys', 'stats', 'term'].includes(deck)) return;
   if (activeDeck !== 'stats' && deck === 'stats') prevConsoleDeck = activeDeck;
   activeDeck = deck;
   document.body.dataset.deck = activeDeck;
@@ -380,6 +380,23 @@ async function pairHost(osName) {
 }
 
 // ---- Virtual Media / ISO Mounting ----
+let lastMediaGlanceAt = 0;
+function updateMediaGlance(data) {
+  lastMediaGlanceAt = Date.now();
+  const el = document.getElementById('media-glance');
+  const name = document.getElementById('media-glance-name');
+  if (!el || !name) return;
+  if (data && data.mounted) {
+    const n = data.mounted.name || 'media';
+    name.textContent = n.replace(/\.(iso|img|bin)$/i, '');
+    el.title = `Mounted: ${n} • ${data.mounted.size_mb} MB • ${data.cdrom ? 'CD-ROM' : 'Flash'} • ${data.ro ? 'RO' : 'RW'}${data.boot ? ' • persists' : ''}`;
+    el.className = 'glance ok';
+  } else {
+    name.textContent = 'Empty';
+    el.title = 'Virtual media: empty';
+    el.className = 'glance';
+  }
+}
 async function loadMediaStatus() {
   const select = document.getElementById('media-select');
   const mountedName = document.getElementById('media-mounted-name');
@@ -394,6 +411,7 @@ async function loadMediaStatus() {
     if (!res.ok) return;
     const data = await res.json();
 
+    updateMediaGlance(data);
     if (data.mounted) {
       const typeStr = data.cdrom ? 'CD-ROM' : 'Flash Drive';
       const roStr = data.ro ? 'Read-Only' : 'Read-Write';
@@ -1710,12 +1728,22 @@ function updateGlance(s) {
   let hid = '';
   if (s) hid = !s.hid_ready ? 'bad' : (s.udc_state && s.udc_state !== 'configured' ? 'warn' : 'ok');
   setGlance('zero-glance', hid);
+  const zg = document.getElementById('zero-glance');
+  const zt = document.getElementById('zero-glance-txt');
+  if (s && zg) {
+    const udc = s.udc_state || 'unknown';
+    if (zt) zt.textContent = hid === 'ok' ? 'HID' : (!s.hid_ready ? 'HID ✕' : 'HID ' + udc.slice(0, 8));
+    zg.title = `Zero HID ${s.hid_ready ? 'ready' : 'not ready'} • UDC ${udc}${s.usb_mode ? ' • mode ' + s.usb_mode : ''}`;
+  }
+  if (s && Date.now() - lastMediaGlanceAt > 15000) { lastMediaGlanceAt = Date.now(); loadMediaStatus(); }
   const dbm = document.getElementById('radio-dbm');
   let radio = '';
   if (s && s.zero_wifi_rssi != null && Number.isFinite(Number(s.zero_wifi_rssi))) {
     const n = Number(s.zero_wifi_rssi);
     if (dbm) dbm.textContent = String(n);
     radio = n >= -65 ? 'ok' : n >= -78 ? 'warn' : 'bad';
+    const rg = document.getElementById('radio-glance');
+    if (rg) rg.title = `Zero Wi-Fi ${n} dBm (${radio === 'ok' ? 'good' : radio === 'warn' ? 'fair' : 'weak'})`;
   } else if (dbm) dbm.textContent = '--';
   setGlance('radio-glance', radio);
 }
@@ -1726,7 +1754,9 @@ async function poll() {
   const barSub = document.getElementById('bar-sub');
   const stageHost = document.getElementById('stage-host');
   try {
+    const gbT0 = performance.now();
     const s = await (await fetch('/api/status', {headers: pin ? {'X-KVM-PIN': pin} : {}})).json();
+    gbFetchMs = Math.round(performance.now() - gbT0);
     if (s.pin_ok === false && pin) {
       pin = '';
       localStorage.removeItem('kvmPin');
@@ -1745,6 +1775,8 @@ async function poll() {
     }
     showLeds(s.leds);
     updateGlance(s);
+    gbarSeen(s);
+    updateHome(s);
 
     const hostLabel = s.pc_host
       ? (s.pc_net_ip || s.pc_ip ? `${s.pc_host} (${s.pc_net_ip || s.pc_ip})` : s.pc_host)
@@ -1782,3 +1814,91 @@ async function poll() {
 }
 setInterval(poll, 2000);
 poll();
+
+// ---- GEEK-style bottom bar ----
+// Polls run every 2 s. LINK pill: Zero reply <5 s old = green, 5-10 s = yellow (late),
+// >10 s or unreachable = red (missing). PC helper (LINKED) late/missing uses the same ages.
+// Red also greys out everything above the bar. Names stay neutral; the dots and values colour.
+const GB_LATE_MS = 5000, GB_GONE_MS = 10000;
+let gbFetchMs = null;
+let gbZeroAt = 0, gbPcAt = 0, gbLast = null;
+function gbarSeen(s) {
+  gbZeroAt = Date.now(); gbLast = s;
+  if (s.link === 'LINKED') gbPcAt = Date.now();
+  gbarPaint();
+}
+function gbLvl(at) { const a = Date.now() - at; return !at ? 'bad' : a < GB_LATE_MS ? 'ok' : a <= GB_GONE_MS ? 'warn' : 'bad'; }
+function gbarPaint() {
+  const s = gbLast, link = document.getElementById('gb-link');
+  if (!link) return;
+  const z = gbLvl(gbZeroAt);
+  let lvl = z;
+  if (z === 'ok' && s) {
+    if (s.link === 'LINKED') lvl = 'ok';
+    else if (gbPcAt) lvl = gbLvl(gbPcAt);
+    else lvl = s.link === 'NO HOST' ? 'bad' : 'warn';
+  }
+  link.className = lvl;
+  link.textContent = s && s.link === 'LINKED' ? 'LINK' : s && s.link === 'KEYS' ? 'KEYS' : z === 'ok' ? 'IDLE' : 'LINK';
+  document.getElementById('gb-hidmk').className = 'mk ' + z;   // dot = Zero reply age; name neutral
+  // HID value colour = responsiveness: WebSocket ping/pong RTT (op 'p', every 5 s) when the
+  // socket is live, else the last /api/status fetch time. Green <100 ms, yellow <300, red above.
+  const rtt = wsRtt != null ? wsRtt : gbFetchMs;
+  const rl = !s || z === 'bad' || rtt == null ? '' : rtt < 100 ? 'ok' : rtt < 300 ? 'warn' : 'bad';
+  const hv = document.getElementById('gb-hid'); hv.className = 'v ' + rl;
+  hv.textContent = s && z !== 'bad' ? (rtt != null ? `HID ${rtt}ms` : 'HID') : '--';
+  hv.title = rtt != null ? `${wsRtt != null ? 'WebSocket' : 'HTTP status'} round trip ${rtt} ms` : '';
+  const g = s && s.geek_rssi != null && Number.isFinite(Number(s.geek_rssi)) ? Number(s.geek_rssi) : null;
+  const gl = g == null ? '' : g >= -65 ? 'ok' : g >= -78 ? 'warn' : 'bad';
+  document.getElementById('gb-geekmk').className = 'mk ' + gl;
+  const gv = document.getElementById('gb-geek'); gv.className = 'v ' + gl; gv.textContent = g == null ? '--' : g + 'dBm';
+  document.body.classList.toggle('kvm-lost', lvl === 'bad' && (z === 'bad' || gbPcAt > 0));
+}
+setInterval(gbarPaint, 1000);
+
+// ---- Home tile launcher ----
+document.querySelectorAll('#home [data-go]').forEach(t => {
+  t.onclick = () => {
+    const g = t.dataset.go;
+    if (g === 'media' || g === 'power') {
+      loadMediaStatus(); menuDlg.showModal();
+      const sec = document.getElementById(g === 'media' ? 'media-sec' : 'menu-dlg-title');
+      if (sec) sec.scrollIntoView({block: 'start'});
+    } else setDeck(g);
+  };
+});
+document.addEventListener('keydown', e => {
+  if (document.body.dataset.deck !== 'home' || e.ctrlKey || e.metaKey || e.altKey || document.querySelector('dialog[open]')) return;
+  if (e.target.closest && e.target.closest('input, textarea, select')) return;
+  const m = {d: 'pad', p: 'pad', k: 'keys', c: 'stats', m: 'stats', t: 'term', i: 'media'}[e.key.toLowerCase()];
+  if (m) { e.preventDefault(); document.querySelector(`#home [data-go="${m}"]`).click(); }
+});
+function updateHome(s) {
+  const $ = id => document.getElementById(id);
+  if (!$('home')) return;
+  const linked = s.link === 'LINKED';
+  $('ht-host').textContent = s.pc_host || (linked ? 'PC' : 'No PC');
+  const pv = $('pvst') ? $('pvst').textContent : '';
+  $('ht-pvst').textContent = linked ? (pv || 'ready') : 'helper not linked';
+  $('ht-live').className = 'tl-live' + (linked && s.frame_fresh ? ' on' : '');
+  const L = s.leds || {};
+  const on = ['caps', 'num', 'scroll'].filter(k => L[k]).map(k => k[0].toUpperCase() + k.slice(1));
+  $('ht-leds').textContent = on.length ? on.join(' · ') + ' lock on' : 'No locks on';
+  const ct = s.pc_cpu_temp_c ?? s.pc_temp_c;
+  $('ht-temp').innerHTML = (linked && ct != null ? Math.round(ct) : '--') + '<small>°C</small>';
+  $('ht-load').textContent = 'Load ' + (linked && s.pc_load1 != null ? Number(s.pc_load1).toFixed(2) : '--');
+  // solid heat tint like the GEEK temp cell (40 °C cool .. 90 °C hot)
+  const hc = ct == null ? null : ct >= 80 ? 'var(--bad)' : ct >= 70 ? 'var(--hot)' : ct >= 60 ? 'var(--warn)' : 'var(--ok)';
+  $('ht-cpu').style.setProperty('--tile-heat', linked && hc ? `color-mix(in oklab, var(--cell) 60%, ${hc})` : 'var(--cell)');
+  const mp = linked && s.pc_mem_total ? Math.round(s.pc_mem_used / s.pc_mem_total * 100) : (linked ? s.pc_mem_pct : null);
+  $('ht-mem').innerHTML = linked && s.pc_mem_total
+    ? `${(s.pc_mem_used / 1073741824).toFixed(1)}<small>/ ${Math.round(s.pc_mem_total / 1073741824)} GB</small>`
+    : (mp != null ? `${mp}<small>%</small>` : '--');
+  const bar = $('ht-membar'); bar.style.inlineSize = (mp || 0) + '%';
+  bar.className = mp >= 90 ? 'bad' : mp >= 75 ? 'warn' : '';
+  $('ht-net').innerHTML = `<b class="ar">↓</b> ${linked && s.pc_rx_bps != null ? fmtRate(s.pc_rx_bps) : '--'} &nbsp; <b class="ar">↑</b> ${linked && s.pc_tx_bps != null ? fmtRate(s.pc_tx_bps) : '--'}`;
+  $('ht-media').textContent = ($('media-glance-name') || {}).textContent || 'Empty';
+  $('ht-mode').textContent = ($('mode') || {}).textContent || '';
+  const ab = $('accel-btn'); const am = ab && ab.textContent.match(/([\d.]+)x/);
+  if (am) $('ht-accel').innerHTML = am[1] + '<small>×</small>';
+}
